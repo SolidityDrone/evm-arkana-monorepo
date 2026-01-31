@@ -1,0 +1,3 @@
+@oz/=lib/openzeppelin-contracts/
+lean-imt/=../../node_modules/@zk-kit/lean-imt.sol
+@aave/core-v3/=lib/aave-v3-core/contracts/
