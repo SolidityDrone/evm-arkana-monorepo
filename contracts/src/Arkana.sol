@@ -3,11 +3,20 @@ pragma solidity ^0.8.4;
 
 import {LeanIMTPoseidon2, LeanIMTData} from "./merkle/LeanIMTPoseidon2.sol";
 import "./merkle/Poseidon2HuffWrapper.sol";
+import {IERC20} from "@oz/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@oz/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {SafeERC20} from "@oz/contracts/token/ERC20/utils/SafeERC20.sol";
+import {AccessControl} from "@oz/contracts/access/AccessControl.sol";
+import {IPool, DataTypes} from "@aave/core-v3/interfaces/IPool.sol";
+import "./ArkanaVault.sol";
 
 // MIN_TREE_DEPTH constant (must match LeanIMTPoseidon2.sol)
 uint256 constant MIN_TREE_DEPTH = 8;
 
-contract Arkana {
+contract Arkana is AccessControl {
+    using SafeERC20 for IERC20;
+    /// @notice Role for initializing vaults
+    bytes32 public constant VAULT_INITIALIZER_ROLE = keccak256("ARKANA");
     /// @notice Mapping from verifier index to verifier address
     /// @dev Index 0 = Entry, 1 = Deposit, 2 = Send, 3 = Withdraw, 4 = Absorb
     mapping(uint256 => address) public verifiersByIndex;
@@ -30,6 +39,29 @@ contract Arkana {
 
     /// @notice The Poseidon2 hasher instance (shared across all tokens)
     Poseidon2HuffWrapper public immutable poseidon2Hasher;
+
+    /// @notice Aave v3 Pool contract address
+    IPool public immutable aavePool;
+
+    /// @notice Protocol fee in basis points (100 = 1%, 500 = 5%)
+    uint256 public protocolFeeBps;
+
+    /// @notice Protocol fee in basis points (10000 = 100%, 100 = 1%, 5 = 0.05%)
+    uint256 public protocol_fee;
+
+    /// @notice Discount window in seconds (e.g., 2592000 = 30 days)
+    uint256 public discount_window;
+
+    uint256 public TIME_TOLERANCE = 30 minutes;
+    /// @notice Mapping from token address to its ERC4626 vault address
+    /// @dev Each token can have one vault for standard ERC4626 interface
+    /// @dev The vault tracks all shares and handles ERC4626 conversions
+    mapping(address token => address vault) public tokenVaults;
+
+    /// @notice Mapping from underlying token address to its Aave aToken address
+    /// @dev Used to track which aToken corresponds to each underlying token
+    /// @dev The vault's asset is the aToken, not the underlying token
+    mapping(address token => address aToken) public tokenToAToken;
 
     /// @notice Global mappings (domain-separated by nonce commitment which includes token address)
     mapping(bytes32 => bool) public usedCommitments;
@@ -62,18 +94,125 @@ contract Arkana {
     error CommitmentAlreadyUsed();
     error InvalidPublicInputs();
     error InvalidTimeReference();
+    error VaultNotInitialized(address token);
+    error InsufficientShares(uint256 available, uint256 required);
 
-    /// @notice Constructor initializes verifiers and Poseidon2 hasher
+    /// @notice Constructor initializes verifiers, protocol fee, and Aave Pool
     /// @param _verifiers Array of verifier addresses: [Entry, Deposit, Send, Withdraw, Absorb]
+    /// @param _protocolFeeBps Protocol fee in basis points (100 = 1%, 500 = 5%)
+    /// @param _aavePool Address of the Aave v3 Pool contract
+    /// @param _protocol_fee Protocol fee in basis points (10000 = 100%, 100 = 1%, 5 = 0.05%)
+    /// @param _discount_window Discount window in seconds (e.g., 2592000 = 30 days)
     /// @param _poseidon2Huff Address of the deployed Huff Poseidon2 contract (deploy separately using HuffDeployer in tests/scripts)
-    constructor(address[] memory _verifiers, address _poseidon2Huff) {
+    constructor(
+        address[] memory _verifiers,
+        uint256 _protocolFeeBps,
+        address _aavePool,
+        uint256 _protocol_fee,
+        uint256 _discount_window,
+        address _poseidon2Huff
+    ) {
+        // Initialize AccessControl - grant DEFAULT_ADMIN_ROLE to deployer
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(VAULT_INITIALIZER_ROLE, msg.sender);
+
         // Map verifiers by index
         for (uint256 i = 0; i < _verifiers.length; i++) {
             verifiersByIndex[i] = _verifiers[i];
         }
 
+        // Initialize protocol fee
+        protocolFeeBps = _protocolFeeBps;
+
+        // Initialize protocol fee (per-mille)
+        protocol_fee = _protocol_fee;
+
+        // Initialize discount window
+        discount_window = _discount_window;
+
+        // Initialize Aave Pool
+        aavePool = IPool(_aavePool);
+
         // Initialize Poseidon2 hasher with Huff contract address
         poseidon2Hasher = new Poseidon2HuffWrapper(_poseidon2Huff);
+    }
+
+    // ============================================
+    // VAULT INITIALIZATION
+    // ============================================
+
+    /// @notice Initialize ERC4626 vaults for multiple tokens
+    /// @param tokenAddresses Array of ERC20 token addresses to create vaults for
+    /// @dev Creates an ArkanaVault for each token if one doesn't already exist
+    /// @dev Queries Aave to get the aToken address for each token
+    /// @dev Vault's asset is the aToken (not the underlying token), since deposits go to Aave
+    /// @dev Vault name and symbol are derived from the underlying token's metadata
+    /// @dev Only callable by accounts with VAULT_INITIALIZER_ROLE or DEFAULT_ADMIN_ROLE
+    function initializeVaults(address[] calldata tokenAddresses) external onlyRole(VAULT_INITIALIZER_ROLE) {
+        for (uint256 i = 0; i < tokenAddresses.length; i++) {
+            address tokenAddress = tokenAddresses[i];
+
+            // Skip if vault already exists
+            if (tokenVaults[tokenAddress] != address(0)) {
+                continue;
+            }
+
+            // Query Aave to get the aToken address for this token
+            address aTokenAddress;
+            try aavePool.getReserveData(tokenAddress) returns (DataTypes.ReserveData memory reserveData) {
+                aTokenAddress = reserveData.aTokenAddress;
+
+                // For mock pools: aTokenAddress might be the same as tokenAddress
+                // In that case, we still use it but note that it's a mock
+                if (aTokenAddress == address(0)) {
+                    // If Aave doesn't have this token, we can't create a vault
+                    // Skip this token and continue
+                    continue;
+                }
+            } catch {
+                // If getReserveData fails, we can't create a vault for this token
+                // Skip this token and continue
+                continue;
+            }
+
+            // Store the token -> aToken mapping
+            tokenToAToken[tokenAddress] = aTokenAddress;
+
+            // Get underlying token metadata for vault name and symbol
+            string memory tokenSymbol;
+            tokenSymbol = IERC20Metadata(tokenAddress).symbol();
+
+            // Create vault name and symbol (based on underlying token, not aToken)
+            string memory vaultName = string(abi.encodePacked("Arkana Vault ", tokenSymbol));
+            string memory vaultSymbol = "ARK";
+
+            // Deploy new vault with aToken as the asset (not the underlying token)
+            // The vault will track aToken balance, which includes yield from Aave
+            ArkanaVault vault =
+                new ArkanaVault(IERC20(aTokenAddress), this, tokenAddress, aavePool, vaultName, vaultSymbol);
+
+            // Store vault address
+            tokenVaults[tokenAddress] = address(vault);
+        }
+    }
+
+    /// @notice Register an external vault for a token (e.g., IndexDollarVault for iUSD)
+    /// @param tokenAddress The token address (e.g., iUSD token address)
+    /// @param vaultAddress The external vault address
+    /// @dev External vaults must implement the same interface as ArkanaVault:
+    ///      - convertToShares(uint256)
+    ///      - supplyToAave(uint256)
+    ///      - mintShares(address, uint256)
+    ///      - burnShares(address, uint256)
+    ///      - withdrawFromAave(uint256, address)
+    /// @dev Only callable by accounts with VAULT_INITIALIZER_ROLE
+    function registerExternalVault(address tokenAddress, address vaultAddress)
+        external
+        onlyRole(VAULT_INITIALIZER_ROLE)
+    {
+        require(tokenVaults[tokenAddress] == address(0), "Arkana: Vault already exists for this token");
+        require(vaultAddress != address(0), "Arkana: Invalid vault address");
+        tokenVaults[tokenAddress] = vaultAddress;
     }
 
     // ============================================

@@ -1,5 +1,14 @@
 {
   "../lib/foundry-huff": {
     "rev": "7d1ce15ccf92bd68458c7e28e0ae847b64b4fc74"
+  },
+  "lib/aave-v3-core": {
+    "tag": {
+      "name": "v1.19.4",
+      "rev": "b74526a7bc67a3a117a1963fc871b3eb8cea8435"
+    }
+  },
+  "lib/foundry-huff": {
+    "rev": "7d1ce15ccf92bd68458c7e28e0ae847b64b4fc74"
   }
 }
