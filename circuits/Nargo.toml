@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "main/entry",
+    "main/deposit",
     "lib/poseidon-ctr-encryption",
     "lib/pedersen-commitments",
     "lib/poseidon",
