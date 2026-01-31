@@ -1,0 +1,9 @@
+[package]
+name = "entry"
+type = "bin"
+authors = ["Drone"]
+
+
+[dependencies]
+poseidon = { path = "../../lib/poseidon" }
+pedersen_commitments = { path = "../../lib/pedersen-commitments" }

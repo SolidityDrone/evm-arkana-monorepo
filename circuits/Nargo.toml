@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "main/entry",
+    "lib/poseidon-ctr-encryption",
+    "lib/pedersen-commitments",
+    "lib/poseidon",
+    "lib/lean-imt-verify"
+]
+
+compiler_version = "1.0.0-beta.3"
+
+target_dir = "./main"
