@@ -98,7 +98,7 @@ contract Arkana is AccessControl {
     error InsufficientShares(uint256 available, uint256 required);
 
     /// @notice Constructor initializes verifiers, protocol fee, and Aave Pool
-    /// @param _verifiers Array of verifier addresses: [Entry, Deposit, Send, Withdraw, Absorb]
+    /// @param _verifiers Array of verifier addresses: [Entry, Deposit, Send, Withdraw, Absorb+Withdraw, Absorb+Send]
     /// @param _protocolFeeBps Protocol fee in basis points (100 = 1%, 500 = 5%)
     /// @param _aavePool Address of the Aave v3 Pool contract
     /// @param _protocol_fee Protocol fee in basis points (10000 = 100%, 100 = 1%, 5 = 0.05%)
@@ -518,4 +518,8 @@ contract Arkana is AccessControl {
         // TODO: post-proof commitment to be implemented with a vault and aave
         return 0;
     }
+
+    //function absorbAndWithdraw(bytes calldata proof, bytes32[] calldata publicInputs) public {}
+    //function absorbAndSend(btes calldata proof, bytes32[] calldata publicInputs) public {}
+    function send(bytes calldata proof, bytes32[] calldata publicInputs) public {}
 }
