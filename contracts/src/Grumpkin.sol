@@ -163,51 +163,9 @@ library Grumpkin {
     }
 
     /**
-     * @dev Compute Pedersen commitment with 3 generators: scalar1*G + scalar2*H + scalar3*D
-     * Optimized: skips D when scalar3 is 0, adds D directly when scalar3 is 1 (no multiplication)
-     * @param G First generator point
-     * @param H Second generator point
-     * @param D Third generator point
-     * @param scalar1 First scalar multiplier
-     * @param scalar2 Second scalar multiplier
-     * @param scalar3 Third scalar multiplier
-     * @return result The resulting commitment point
-     */
-    function pedersenCommitment(
-        G1Point memory G,
-        G1Point memory H,
-        G1Point memory D,
-        uint256 scalar1,
-        uint256 scalar2,
-        uint256 scalar3
-    ) internal view returns (G1Point memory result) {
-        // Compute scalar1 * G
-        G1Point memory term1 = mul(G, scalar1);
-
-        // Compute scalar2 * H
-        G1Point memory term2 = mul(H, scalar2);
-
-        // Add first two terms
-        result = add(term1, term2);
-
-        // Optimize third term: skip if 0, add D directly if 1, multiply otherwise
-        if (scalar3 == 0) {
-            // Skip D entirely (scalar3 * D = point at infinity)
-            return result;
-        } else if (scalar3 == 1) {
-            // Just add D directly (1 * D = D, no multiplication needed)
-            result = add(result, D);
-        } else {
-            // Compute scalar3 * D for scalar3 > 1
-            G1Point memory term3 = mul(D, scalar3);
-            result = add(result, term3);
-        }
-    }
-
-    /**
-     * @dev Compute Pedersen commitment with 2 scalars (third scalar is always 1): scalar1*G + scalar2*H + D
+     * @dev Compute Pedersen commitment single term
      * Optimized convenience function for note stack commitments where D is always added directly
-     * @param G First generator point
+     * @param G Generator point
      * @param scalar First scalar multiplier
      * @return term The resulting commitment point
      */
