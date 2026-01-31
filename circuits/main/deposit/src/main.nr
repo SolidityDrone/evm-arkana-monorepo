@@ -5,12 +5,14 @@ use dep::pedersen_commitments::pedersen_commitments::{
     pedersen_commitment_5
 };
 use dep::lean_imt_verify::lean_imt_verify::verify_merkle_proof;
+mod test;
 
 // === ARKANA-DEPOSIT CIRCUIT ===
 
 global VIEW_STRING: Field = 0x76696577696e675f6b6579 as Field;
 
-/// Deposit circuit for adding funds to an existing note in the Arkana 
+/// Deposit circuit for adding funds to an existing note in the Arkana system
+
 fn main(
     user_key: Field,
     token_address: pub Field,

@@ -1,0 +1,5 @@
+target/
+
+# Generated test files
+**/test_merkle_data.nr
+**/test_merkle_data_real.nr

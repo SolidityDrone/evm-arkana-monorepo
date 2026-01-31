@@ -1,0 +1,3 @@
+#!/bin/bash
+export PATH="$HOME/.huff/bin:$PATH"
+exec huffc "$@"

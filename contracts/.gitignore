@@ -13,3 +13,7 @@ docs/
 # Dotenv file
 .env
 
+node_modules/
+
+test/merkle_tree_data.json
+test/merkle_tree_data_real.json
