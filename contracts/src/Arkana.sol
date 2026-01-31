@@ -9,6 +9,9 @@ import {SafeERC20} from "@oz/contracts/token/ERC20/utils/SafeERC20.sol";
 import {AccessControl} from "@oz/contracts/access/AccessControl.sol";
 import {IPool, DataTypes} from "@aave/core-v3/interfaces/IPool.sol";
 import "./ArkanaVault.sol";
+import {Field} from "../lib/poseidon2-evm/src/Field.sol";
+import {Grumpkin} from "./crypto-utils/Grumpkin.sol";
+import {Generators} from "./crypto-utils/Generators.sol";
 
 // MIN_TREE_DEPTH constant (must match LeanIMTPoseidon2.sol)
 uint256 constant MIN_TREE_DEPTH = 8;
@@ -65,6 +68,43 @@ contract Arkana is AccessControl {
 
     /// @notice Global mappings (domain-separated by nonce commitment which includes token address)
     mapping(bytes32 => bool) public usedCommitments;
+
+    /// @notice Mapping from nonce commitment to encrypted state details
+    mapping(bytes32 => EncryptedStateDetails) public encryptedStateDetails;
+
+    /// @notice Mapping from nonce commitment to operation info
+    mapping(bytes32 => OperationInfo) public operationInfo;
+
+    /// @notice Mapping from token address to nonce discovery entries
+    /// @dev Stores nonce discovery entries for each token
+    mapping(address => NonceDiscoveryEntry[]) public tokenNonceDiscoveryEntries;
+
+    /// @notice Encrypted state details struct
+    struct EncryptedStateDetails {
+        bytes32 encryptedBalance;
+        bytes32 encryptedNullifier;
+    }
+
+    /// @notice Operation type enum
+    enum OperationType {
+        Initialize,
+        Deposit,
+        Withdraw
+    }
+
+    /// @notice Operation info struct
+    struct OperationInfo {
+        OperationType operationType;
+        uint256 sharesMinted;
+        address tokenAddress;
+    }
+
+    /// @notice Nonce discovery entry struct
+    struct NonceDiscoveryEntry {
+        uint256 x;
+        uint256 y;
+        uint256 nonceCommitment;
+    }
 
     /// @notice Historical state snapshot
     struct HistoricalState {
@@ -370,7 +410,13 @@ contract Arkana is AccessControl {
     /// @param publicInputs The public inputs for verification (contains pub params + pub outputs)
     /// @dev publicInputs structure: [token_address, amount, chain_id, balance_commitment_x, balance_commitment_y, new_nonce_commitment, nonce_discovery_entry_x, nonce_discovery_entry_y]
     /// @return The new root after adding the commitment
-    function initialize(bytes calldata proof, bytes32[] calldata publicInputs, uint256 amountIn, uint256 lockDuration)
+    function initialize(
+        bytes calldata,
+        /* proof */
+        bytes32[] calldata publicInputs,
+        uint256 amountIn,
+        uint256 lockDuration
+    )
         public
         returns (uint256)
     {
@@ -400,19 +446,107 @@ contract Arkana is AccessControl {
 
         usedCommitments[bytes32(newNonceCommitment)] = true;
 
-        // TODO: post-proof commitment to be implemented with a vault and aave
-        return 0;
+        // Calculate upfront protocol fee based on lock duration
+        // If lockDuration = 0: full fee applies
+        // If lockDuration = discount_window: 0 fee (100% discount)
+        uint256 effective_fee_bps = _calculateDiscountedProtocolFee(lockDuration);
+
+        // Calculate fee amount: amountIn * effective_fee_bps / 10000
+        uint256 feeAmount = (amountIn * effective_fee_bps) / 10000;
+
+        // Calculate amount after fee (this is what goes into shares and Aave)
+        uint256 amountAfterFee = amountIn - feeAmount;
+
+        // Get vault address
+        address vaultAddress = tokenVaults[tokenAddress];
+        if (vaultAddress == address(0)) {
+            revert VaultNotInitialized(tokenAddress);
+        }
+
+        ArkanaVault vault = ArkanaVault(vaultAddress);
+
+        // Calculate shares using the vault (ERC4626 standard)
+        // IMPORTANT: Calculate shares BEFORE supplying to vault
+        // This ensures totalAssets() == 0 when totalSupply() == 0, so convertToShares returns 1:1 ratio
+        // We calculate shares based on amountAfterFee (matching the commitment)
+        uint256 shares = vault.convertToShares(amountAfterFee);
+
+        // Transfer tokens from user to this contract
+        IERC20(tokenAddress).safeTransferFrom(msg.sender, address(this), amountIn);
+
+        // Approve vault to take tokens
+        IERC20(tokenAddress).approve(vaultAddress, amountIn);
+
+        // Vault supplies tokens to Aave (full amountIn, fee will be handled via share calculation)
+        // Fee stays in vault as assets without shares
+        vault.supplyToAave(amountIn);
+
+        // Calculate unlocks_at: pack lock_timer and unlocks_at timestamp
+        // Format: lock_timer * 2^24 + unlocks_at
+        // If lockDuration > 0: unlocks_at = current_time + lockDuration, otherwise unlocks_at = 0
+        uint256 unlocks_at_timestamp = 0;
+        if (lockDuration > 0) {
+            unlocks_at_timestamp = block.timestamp + lockDuration;
+        }
+
+        // Pack: lock_timer (24 bits) << 24 | unlocks_at (24 bits)
+        uint256 unlocks_at = (lockDuration & 0xffffff) * (2 ** 24) + (unlocks_at_timestamp & 0xffffff);
+
+        // Get generators G and K
+        (uint256 gX, uint256 gY) = Generators.getG();
+        (uint256 kX, uint256 kY) = Generators.getK();
+        Grumpkin.G1Point memory G = Grumpkin.G1Point(gX, gY);
+        Grumpkin.G1Point memory K = Grumpkin.G1Point(kX, kY);
+
+        // Get balance commitment point from circuit
+        Grumpkin.G1Point memory balanceCommitment = Grumpkin.G1Point(balanceCommitmentX, balanceCommitmentY);
+
+        // Add shares*G to balance commitment
+        Grumpkin.G1Point memory sharesCommitment = Grumpkin.getTerm(G, shares);
+        Grumpkin.G1Point memory commitmentWithShares = Grumpkin.add(balanceCommitment, sharesCommitment);
+
+        // Add unlocks_at*K to commitment
+        Grumpkin.G1Point memory unlocksAtCommitment = Grumpkin.getTerm(K, unlocks_at);
+        Grumpkin.G1Point memory finalCommitment = Grumpkin.add(commitmentWithShares, unlocksAtCommitment);
+
+        // Hash the final Pedersen commitment point to create the leaf
+        uint256 leaf =
+            Field.toUint256(poseidon2Hasher.hash_2(Field.toField(finalCommitment.x), Field.toField(finalCommitment.y)));
+
+        // Add the leaf to the token's merkle tree
+        uint256 newRoot = _addLeaf(tokenAddress, leaf);
+
+        // Add the nonce discovery entry to the token's stack
+        _addNonceDiscoveryEntry(tokenAddress, nonceDiscoveryEntryX, nonceDiscoveryEntryY, newNonceCommitment);
+
+        // For nonce 0, save plaintext balance in encryptedStateDetails
+        // Balance is stored in shares (not underlying token amount) because the ZK system tracks balances in shares
+        // For the first deposit, shares are calculated from amountAfterFee using the vault's convertToShares
+        // Nullifier is 0 for nonce 0
+        encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(bytes32(shares), bytes32(uint256(0)));
+
+        // Mint shares to Arkana contract (Arkana holds all shares for users)
+        // This allows Arkana to redeem/burn shares when fees are paid
+        vault.mintShares(address(this), shares);
+
+        return newRoot;
     }
 
     /// @notice Deposit function - adds funds to existing balance
-    /// @param proof The zero-knowledge proof
     /// @param publicInputs The public inputs for verification (contains pub params + pub outputs)
     /// @dev publicInputs structure:
     ///      Public inputs (4): [token_address, amount, chain_id, expected_root]
     ///      Public outputs (7): [pedersen_commitment[2], new_nonce_commitment, encrypted_state_details[2], nonce_discovery_entry[2]]
     ///      Total: 11 elements
     /// @return The new root after adding the commitment
-    function deposit(bytes calldata proof, bytes32[] calldata publicInputs) public returns (uint256) {
+    function deposit(
+        bytes calldata,
+        /* proof */
+        bytes32[] calldata publicInputs
+    )
+        public
+        returns (uint256)
+    {
         // Verify proof using Deposit verifier (index 1)
         //require(IVerifier(verifiersByIndex[1]).verify(proof, publicInputs), "Invalid proof");
 
@@ -450,8 +584,66 @@ contract Arkana is AccessControl {
 
         usedCommitments[bytes32(newNonceCommitment)] = true;
 
-        // TODO: post-proof commitment to be implemented with a vault and aave
-        return 0;
+        encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(encryptedBalance, encryptedNullifier);
+
+        // Calculate protocol fee (deposit has no lock duration, so full fee applies)
+        uint256 feeAmount = (amountIn * protocol_fee) / 10000;
+        uint256 amountAfterFee = amountIn - feeAmount;
+
+        // Get Pedersen commitment point from circuit
+        // This includes: previous_shares*G + nullifier*H + spending_key*D + previous_unlocks_at*K + new_nonce_commitment*J
+        Grumpkin.G1Point memory circuitCommitment = Grumpkin.G1Point(pedersenCommitmentX, pedersenCommitmentY);
+
+        // Calculate shares using the vault (ERC4626 standard)
+        address vaultAddress = tokenVaults[tokenAddress];
+        if (vaultAddress == address(0)) {
+            revert VaultNotInitialized(tokenAddress);
+        }
+
+        ArkanaVault vault = ArkanaVault(vaultAddress);
+
+        uint256 shares = vault.convertToShares(amountAfterFee);
+
+        // Store operation info for nonceCommitment
+        operationInfo[bytes32(newNonceCommitment)] =
+            OperationInfo({operationType: OperationType.Deposit, sharesMinted: shares, tokenAddress: tokenAddress});
+
+        // Get generator G
+        (uint256 gX, uint256 gY) = Generators.getG();
+        Grumpkin.G1Point memory G = Grumpkin.G1Point(gX, gY);
+
+        // Add shares*G to circuit commitment
+        Grumpkin.G1Point memory sharesCommitment = Grumpkin.getTerm(G, shares);
+        Grumpkin.G1Point memory finalCommitment = Grumpkin.add(circuitCommitment, sharesCommitment);
+
+        // Circuit keeps previous_unlocks_at unchanged (deposit doesn't change lock time)
+        // No need to modify it - circuit commitment is complete
+
+        // Hash the final Pedersen commitment point to create the leaf
+        uint256 leaf =
+            Field.toUint256(poseidon2Hasher.hash_2(Field.toField(finalCommitment.x), Field.toField(finalCommitment.y)));
+
+        // Add the leaf to the token's merkle tree
+        uint256 newRoot = _addLeaf(tokenAddress, leaf);
+
+        // Add the nonce discovery entry to the token's stack
+        _addNonceDiscoveryEntry(tokenAddress, nonceDiscoveryEntryX, nonceDiscoveryEntryY, newNonceCommitment);
+
+        // Transfer tokens from user to this contract
+        IERC20(tokenAddress).safeTransferFrom(msg.sender, address(this), amountIn);
+
+        // Approve vault to take tokens
+        IERC20(tokenAddress).approve(vaultAddress, amountIn);
+
+        // Vault supplies tokens to Aave (full amountIn)
+        // Fee stays in vault as assets without shares
+        vault.supplyToAave(amountIn);
+
+        // Mint shares to Arkana contract (Arkana holds all shares for users)
+        // This allows Arkana to redeem/burn shares when fees are paid
+        vault.mintShares(address(this), shares);
+
+        return newRoot;
     }
 
     /// @notice Withdraw function - withdraws funds from balance
@@ -481,7 +673,7 @@ contract Arkana is AccessControl {
         uint256 chainId = uint256(publicInputs[2]); // chain_id
         uint256 declaredTimeReference = uint256(publicInputs[3]); // declared_time_reference
         uint256 expectedRoot = uint256(publicInputs[4]); // expected_root
-        bytes32 arbitraryCalldataHash = publicInputs[5]; // arbitrary_calldata_hash
+        // bytes32 arbitraryCalldataHash = publicInputs[5]; // arbitrary_calldata_hash (not used, SimpleSA removed)
         address receiverAddress = address(uint160(uint256(publicInputs[6]))); // receiver_address
         uint256 relayerFeeShares = uint256(publicInputs[7]); // relayer_fee_amount (in shares)
 
@@ -505,18 +697,118 @@ contract Arkana is AccessControl {
         uint256 timeDifference = declaredTimeReference > block.timestamp
             ? declaredTimeReference - block.timestamp
             : block.timestamp - declaredTimeReference;
-        if (timeDifference > 30 minutes) {
+        if (timeDifference > TIME_TOLERANCE) {
             revert InvalidTimeReference();
         }
 
+        // Get Pedersen commitment point from circuit
+        // Circuit already calculates: new_shares_balance = previous_shares - (amount + relayer_fee_amount)
+        // and creates commitment with new_shares_balance directly
+        // So we use the commitment point as-is, no need to subtract shares
+        Grumpkin.G1Point memory finalCommitment = Grumpkin.G1Point(pedersenCommitmentX, pedersenCommitmentY);
+
+        // Total shares to burn = withdrawal shares + relayer fee shares (for accounting purposes)
+        uint256 totalSharesToBurn = sharesAmount + relayerFeeShares;
+
+        // Hash the Pedersen commitment point to create the leaf (circuit already has correct shares)
+        uint256 leaf =
+            Field.toUint256(poseidon2Hasher.hash_2(Field.toField(finalCommitment.x), Field.toField(finalCommitment.y)));
+
+        // Mark the new nonce commitment as used (required for nonce discovery)
         if (usedCommitments[bytes32(newNonceCommitment)]) {
             revert CommitmentAlreadyUsed();
         }
 
         usedCommitments[bytes32(newNonceCommitment)] = true;
 
-        // TODO: post-proof commitment to be implemented with a vault and aave
-        return 0;
+        encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(encryptedBalance, encryptedNullifier);
+
+        // Add the leaf to the token's merkle tree
+        newRoot = _addLeaf(tokenAddress, leaf);
+
+        // Add the nonce discovery entry to the token's stack
+        _addNonceDiscoveryEntry(tokenAddress, nonceDiscoveryEntryX, nonceDiscoveryEntryY, newNonceCommitment);
+
+        // Convert shares to underlying assets using the vault (ERC4626 standard)
+        // Vault uses ERC4626's convertToAssets which uses totalSupply() and totalAssets()
+        // IMPORTANT: Calculate assets BEFORE burning shares (burning changes vault state)
+        address vaultAddress = tokenVaults[tokenAddress];
+        if (vaultAddress == address(0)) {
+            revert VaultNotInitialized(tokenAddress);
+        }
+
+        ArkanaVault vault = ArkanaVault(vaultAddress);
+
+        // Calculate assets BEFORE redeeming (redeeming changes vault state)
+        uint256 withdrawalAssets = vault.convertToAssets(sharesAmount);
+        uint256 relayerFeeAssets = vault.convertToAssets(relayerFeeShares);
+
+        // Calculate protocol fee on withdrawal assets (before relayer fee)
+        uint256 protocolFee = (withdrawalAssets * protocolFeeBps) / 10000;
+        uint256 withdrawalAssetsAfterFee = withdrawalAssets - protocolFee;
+
+        // Check if Arkana has enough shares before burning
+        uint256 arkanaShares = vault.balanceOf(address(this));
+        if (arkanaShares < totalSharesToBurn) {
+            revert InsufficientShares(arkanaShares, totalSharesToBurn);
+        }
+
+        // Total assets to withdraw from Aave
+        uint256 totalAssetsToWithdraw = withdrawalAssets + relayerFeeAssets;
+
+        // Burn shares from Arkana
+        vault.burnShares(address(this), totalSharesToBurn);
+
+        // Vault withdraws from Aave and sends underlying tokens to this contract
+        vault.withdrawFromAave(totalAssetsToWithdraw, address(this));
+
+        // Pay relayer fee in underlying tokens
+        if (relayerFeeAssets > 0) {
+            IERC20(tokenAddress).safeTransfer(msg.sender, relayerFeeAssets);
+        }
+
+        // Store operation info for nonceCommitment (withdraw burns shares, doesn't mint)
+        operationInfo[bytes32(newNonceCommitment)] =
+            OperationInfo({operationType: OperationType.Withdraw, sharesMinted: 0, tokenAddress: tokenAddress});
+
+        // If call.length > 0, we would execute the call, but SimpleSA is removed
+        // For now, just transfer tokens directly to receiverAddress
+        IERC20(tokenAddress).safeTransfer(receiverAddress, withdrawalAssetsAfterFee);
+
+        return newRoot;
+    }
+
+    // ============================================
+    // HELPER FUNCTIONS
+    // ============================================
+
+    /// @notice Internal function to add a nonce discovery entry
+    /// @param tokenAddress The token address
+    /// @param x The x coordinate of the nonce discovery entry
+    /// @param y The y coordinate of the nonce discovery entry
+    /// @param nonceCommitment The nonce commitment
+    function _addNonceDiscoveryEntry(address tokenAddress, uint256 x, uint256 y, uint256 nonceCommitment) internal {
+        tokenNonceDiscoveryEntries[tokenAddress].push(
+            NonceDiscoveryEntry({x: x, y: y, nonceCommitment: nonceCommitment})
+        );
+    }
+
+    /// @notice Calculate discounted protocol fee based on lock duration
+    /// @param lockDuration The lock duration in seconds
+    /// @return effective_fee_bps The effective fee in basis points
+    /// @dev If lockDuration = 0: full fee applies (protocol_fee)
+    /// @dev If lockDuration = discount_window: 0 fee (100% discount)
+    /// @dev Linear interpolation between these two points
+    function _calculateDiscountedProtocolFee(uint256 lockDuration) internal view returns (uint256 effective_fee_bps) {
+        if (lockDuration == 0) {
+            return protocol_fee; // Full fee
+        }
+        if (lockDuration >= discount_window) {
+            return 0; // 100% discount
+        }
+        // Linear interpolation: fee = protocol_fee * (1 - lockDuration / discount_window)
+        // effective_fee_bps = protocol_fee * (discount_window - lockDuration) / discount_window
+        effective_fee_bps = (protocol_fee * (discount_window - lockDuration)) / discount_window;
     }
 
     //function absorbAndWithdraw(bytes calldata proof, bytes32[] calldata publicInputs) public {}
