@@ -1,14 +1,30 @@
-amount = ""
-chain_id = ""
-commitment_index = ""
-expected_root = ""
-merkle_proof = ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
-nullifier = ""
-previous_commitment_leaf = ""
-previous_nonce = ""
-previous_shares = ""
-previous_unlocks_at = ""
-receiver_public_key = ["", ""]
-token_address = ""
-tree_depth = ""
-user_key = ""
+
+user_key = "0x1234567890abcdef"
+
+previous_nonce = "0x00"
+
+previous_shares = "0x64"
+
+nullifier = "0x1234567890abcdef"
+
+previous_unlocks_at = "0x00"
+
+previous_commitment_leaf = "0xff58323ee5d94cdd69fb9f2724a596ccbc0982dadd95da2ce70ecdb66dc350"
+
+commitment_index = "0x01"
+
+tree_depth = "0x01"
+
+expected_root = "0x2b47e95d5944952f9cdff22f5ece26b5d5219c85d154711620d1a6d21e5b270b"
+
+merkle_proof = ["0x03fe455b25403d09c842fd0be7fbad55c8abda9148850b3d21cfc427b8ee98f3", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00"]
+
+token_address = "0x02"
+
+chain_id = "0x01"
+
+amount = "0x32"
+
+receiver_public_key = ["0x0bd0e01a563a7b2bbd4b14702542d1e09ee93b4bd996f8c2d1502d05e7ac9941", "0x146a1e792e301e0c53e2422f11b3e09c9c4b58f849fc3aa1c34ea13cb8e02254"]
+
+relayer_fee_amount = "0x01"

@@ -25,6 +25,9 @@ fn test_send_amount() -> Field { 0x32 as Field }
 /// Get test nullifier
 fn test_nullifier() -> Field { 0x1234567890abcdef as Field }
 
+/// Get test relayer fee amount
+fn test_relayer_fee_amount() -> Field { 0x01 as Field }
+
 /// Get Alice's private key (for decryption testing)
 fn alice_private_key() -> Field { 0xfedcba0987654321 as Field }
 
@@ -207,6 +210,116 @@ fn alice_perform_dh_key_exchange(alice_private_key: Field, sender_public_key: [F
     (shared_key, [alice_public_key.x, alice_public_key.y])
 }
 
+/// Print Prover.toml format
+fn print_prover_toml_format(
+    user_key: Field,
+    token_address: Field,
+    amount: Field,
+    chain_id: Field,
+    previous_nonce: Field,
+    previous_shares: Field,
+    nullifier: Field,
+    previous_unlocks_at: Field,
+    previous_commitment_leaf: Field,
+    commitment_index: Field,
+    tree_depth: Field,
+    expected_root: Field,
+    merkle_proof: [Field; 32],
+    receiver_public_key: [Field; 2],
+    relayer_fee_amount: Field
+) {
+    std::println("========================================");
+    std::println("COPY THIS TO send/Prover.toml");
+    std::println("========================================");
+    std::println("");
+    
+    std::print("user_key = \"");
+    std::print(user_key);
+    std::println("\"");
+    std::println("");
+    
+    std::print("previous_nonce = \"");
+    std::print(previous_nonce);
+    std::println("\"");
+    std::println("");
+    
+    std::print("previous_shares = \"");
+    std::print(previous_shares);
+    std::println("\"");
+    std::println("");
+    
+    std::print("nullifier = \"");
+    std::print(nullifier);
+    std::println("\"");
+    std::println("");
+    
+    std::print("previous_unlocks_at = \"");
+    std::print(previous_unlocks_at);
+    std::println("\"");
+    std::println("");
+    
+    std::print("previous_commitment_leaf = \"");
+    std::print(previous_commitment_leaf);
+    std::println("\"");
+    std::println("");
+    
+    std::print("commitment_index = \"");
+    std::print(commitment_index);
+    std::println("\"");
+    std::println("");
+    
+    std::print("tree_depth = \"");
+    std::print(tree_depth);
+    std::println("\"");
+    std::println("");
+    
+    std::print("expected_root = \"");
+    std::print(expected_root);
+    std::println("\"");
+    std::println("");
+    
+    std::print("merkle_proof = [");
+    let mut first = true;
+    for i in 0..MAX_TREE_DEPTH {
+        if !first {
+            std::print(", ");
+        }
+        first = false;
+        std::print("\"");
+        std::print(merkle_proof[i]);
+        std::print("\"");
+    }
+    std::println("]");
+    std::println("");
+    
+    std::print("token_address = \"");
+    std::print(token_address);
+    std::println("\"");
+    std::println("");
+    
+    std::print("chain_id = \"");
+    std::print(chain_id);
+    std::println("\"");
+    std::println("");
+    
+    std::print("amount = \"");
+    std::print(amount);
+    std::println("\"");
+    std::println("");
+    
+    std::print("receiver_public_key = [\"");
+    std::print(receiver_public_key[0]);
+    std::print("\", \"");
+    std::print(receiver_public_key[1]);
+    std::println("\"]");
+    std::println("");
+    
+    std::print("relayer_fee_amount = \"");
+    std::print(relayer_fee_amount);
+    std::println("\"");
+    std::println("");
+}
+
 #[test]
 fn test_send_with_merkle_tracking() {
     std::println("╔══════════════════════════════════════════════════════════════╗");
@@ -220,6 +333,7 @@ fn test_send_with_merkle_tracking() {
     let send_amount = test_send_amount(); // 50
     let nullifier = test_nullifier();
     let alice_derived_pub_key = derive_alice_public_key();
+    let relayer_fee_amount = test_relayer_fee_amount();
     
     std::println("═══════════════════════════════════════════════════════════════");
     std::println("STEP 1: CREATE ENTRY COMMITMENT");
@@ -332,7 +446,7 @@ fn test_send_with_merkle_tracking() {
     std::println(previous_commitment_leaf);
     std::println("");
     
-    let send_result = main(
+    let send_result: (Field, Field, [Field; 3], [Field; 2], [Field; 2], [Field; 2]) = main(
         user_key,
         token_address,
         send_amount,
@@ -346,7 +460,8 @@ fn test_send_with_merkle_tracking() {
         new_tree_depth,
         new_root,
         new_merkle_proof,
-        alice_derived_pub_key
+        alice_derived_pub_key,
+        relayer_fee_amount
     );
     
     std::println("Send completed:");
@@ -387,8 +502,31 @@ fn test_send_with_merkle_tracking() {
     std::println(decrypted_balance);
     std::println("");
     
-    let expected_new_balance = previous_shares - send_amount;
+    let expected_new_balance = previous_shares - send_amount - relayer_fee_amount;
     assert(decrypted_balance == expected_new_balance, "Decrypted balance should match expected new balance");
+    
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("STEP 6: PRINT PROVER.TOML");
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("");
+    
+    print_prover_toml_format(
+        user_key,
+        token_address,
+        send_amount,
+        chain_id,
+        previous_nonce,
+        previous_shares,
+        nullifier,
+        unlocks_at,
+        previous_commitment_leaf,
+        1 as Field, // commitment_index
+        new_tree_depth,
+        new_root,
+        new_merkle_proof,
+        alice_derived_pub_key,
+        relayer_fee_amount
+    );
     
     std::println("✅ Send test completed successfully!");
 }

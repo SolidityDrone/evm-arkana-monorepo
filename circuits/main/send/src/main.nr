@@ -32,7 +32,8 @@ pub fn main(
     merkle_proof: [Field; 32],
     
     // Public send parameters
-    receiver_public_key: pub [Field; 2]
+    receiver_public_key: pub [Field; 2],
+    relayer_fee_amount: pub Field
 ) -> pub (Field, Field, [Field; 3], [Field; 2], [Field; 2], [Field; 2]) {
     
     // === SETUP ===
@@ -70,12 +71,15 @@ pub fn main(
     );
     
     // === CALCULATE NEW SHARES ===
-    // For send, amount is already in shares
+    // For send, amount and relayer_fee_amount are already in shares
+    // Total shares to deduct = amount + relayer_fee_amount
+    let total_shares_to_deduct = amount + relayer_fee_amount;
+    
     // Verify sufficient shares
-    assert(gt(previous_shares, amount - 1), "Insufficient shares for send");
+    assert(gt(previous_shares, total_shares_to_deduct - 1), "Insufficient shares for send and fee");
     
     // Calculate new shares
-    let new_shares = previous_shares - amount;
+    let new_shares = previous_shares - total_shares_to_deduct;
     
     // === CALCULATE NEW NONCE ===
     let nonce = previous_nonce + 1 as Field;
@@ -91,8 +95,7 @@ pub fn main(
     let new_commitment_leaf = Poseidon2::hash([new_commitment_point.x, new_commitment_point.y], 2);
     
     // === PERFORM DIFFIE-HELLMAN KEY EXCHANGE ===
-    let sender_private_key = user_key + nonce;
-    let (sender_pub_key, shared_key) = perform_dh_key_exchange(sender_private_key, receiver_public_key);
+    let (sender_pub_key, shared_key) = perform_dh_key_exchange(user_key + nonce, receiver_public_key);
     let shared_key_hash = Poseidon2::hash([shared_key], 1);
     
     // === ENCRYPT OPERATION DETAILS ===
@@ -101,7 +104,7 @@ pub fn main(
     let encrypted_note = encrypt_operation_details(
         new_shares,  // Use shares instead of balance
         nullifier,
-        spending_key,  
+        view_key,
         shared_key_hash,
         amount  // amount is in shares
     );
@@ -134,8 +137,8 @@ fn encrypt_operation_details(
     // Encrypt for receiver's note (using shared_key_hash)
     let encrypted_amount_for_receiver = poseidon_ctr_encrypt(amount, shared_key_hash, 0);
     // Encrypt for sender's balance tracking (using view_key directly)
-    let encrypted_balance_for_sender = poseidon_ctr_encrypt(new_balance, view_key, 1);
-    let encrypted_nullifier_for_sender = poseidon_ctr_encrypt(nullifier, view_key, 2);
+    let encrypted_balance_for_sender = poseidon_ctr_encrypt(new_balance, view_key, 0);
+    let encrypted_nullifier_for_sender = poseidon_ctr_encrypt(nullifier, view_key, 1);
 
     // Return: [receiver_note_amount, sender_balance, sender_nullifier]
     [
