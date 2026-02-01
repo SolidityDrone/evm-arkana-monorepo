@@ -4,6 +4,7 @@ members = [
     "main/deposit",
     "main/withdraw", 
     "main/send",
+    "main/absorb", 
     "lib/dh-key-exchange",
     "lib/poseidon-ctr-encryption",
     "lib/pedersen-commitments",
