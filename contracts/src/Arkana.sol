@@ -57,13 +57,14 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
     /// @notice Discount window in seconds (e.g., 2592000 = 30 days)
     uint256 public discount_window;
-
+    /// @notice Time tolerance for self reported timestamp, 30 min just naively for now
     uint256 public TIME_TOLERANCE = 30 minutes;
 
     /// @notice Minimum tree depth constant (must match LeanIMTPoseidon2.sol)
     /// @dev Ensures all proofs are at least 8 levels deep for consistent verification
     uint256 public constant MIN_TREE_DEPTH = 8;
 
+    address public multicall3Address;
     /// @notice Mapping from token address to its ERC4626 vault address
     /// @dev Each token can have one vault for standard ERC4626 interface
     /// @dev The vault tracks all shares and handles ERC4626 conversions
@@ -122,8 +123,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         Initialize,
         Deposit,
         Send,
-        Withdraw,
-        Absorb
+        Withdraw
     }
 
     /// @notice Operation metadata stored for each nonceCommitment
@@ -170,7 +170,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
     error InsufficientShares(uint256 available, uint256 required);
     error NoteAlreadyUsed();
     error InvalidCalldataHash();
-    error Multicall3Failed(bytes returnData);
+    error Multicall3Failed();
 
     /// @notice Constructor initializes verifiers, protocol fee, and Aave Pool
     /// @param _verifiers Array of verifier addresses: [Entry, Deposit, Send, Withdraw, Absorb+Withdraw, Absorb+Send]
@@ -211,6 +211,15 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
         // Initialize Poseidon2 hasher with Huff contract address
         poseidon2Hasher = new Poseidon2HuffWrapper(_poseidon2Huff);
+
+        // Initialize Multicall3 address
+        multicall3Address = _multicall3;
+
+        // Grant deployer (msg.sender) the DEFAULT_ADMIN_ROLE
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+
+        // Grant deployer the VAULT_INITIALIZER_ROLE as well
+        _grantRole(VAULT_INITIALIZER_ROLE, msg.sender);
     }
 
     // ============================================
@@ -341,19 +350,6 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @dev TODO: this has to be moved into indexing (off-chain indexer should track LeafAdded events)
     function getLeaves(address tokenAddress) public view returns (uint256[] memory) {
         return tokenLeaves[tokenAddress];
-    }
-
-    /// @notice Compute commitment leaf hash from commitment point coordinates
-    /// @param x The x coordinate of the commitment point
-    /// @param y The y coordinate of the commitment point
-    /// @return The leaf hash computed using the contract's Poseidon2 implementation
-    /// @dev This ensures the frontend uses the same hash function as the contract
-    /// @dev Matches: poseidon2Hasher.hash_2(Field.toField(x), Field.toField(y))
-    function computeCommitmentLeaf(uint256 x, uint256 y) public view returns (uint256) {
-        Field.Type xField = Field.toField(x);
-        Field.Type yField = Field.toField(y);
-        Field.Type leafField = poseidon2Hasher.hash_2(xField, yField);
-        return Field.toUint256(leafField);
     }
 
     /// @notice Generate Merkle proof for a leaf at a given index
@@ -695,7 +691,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         // Parse public inputs in correct order
         address tokenAddress = address(uint160(uint256(publicInputs[0]))); // token_address
         uint256 sharesAmount = uint256(publicInputs[1]); // amount (in shares)
-        uint256 chainId = uint256(publicInputs[2]); // chain_id
+
         uint256 declaredTimeReference = uint256(publicInputs[3]); // declared_time_reference
         uint256 expectedRoot = uint256(publicInputs[4]); // expected_root
         bytes32 arbitraryCalldataHash = publicInputs[5]; // arbitrary_calldata_hash (for Multicall3)
@@ -711,7 +707,11 @@ contract Arkana is AccessControl, ReentrancyGuard {
         uint256 nonceDiscoveryEntryX = uint256(publicInputs[13]); // nonce_discovery_entry.x
         uint256 nonceDiscoveryEntryY = uint256(publicInputs[14]); // nonce_discovery_entry.y
 
-        if (chainId != block.chainid) {
+        if (
+            uint256(
+                    publicInputs[2] /*chainId*/
+                ) != block.chainid
+        ) {
             revert InvalidChainId();
         }
 
@@ -778,14 +778,11 @@ contract Arkana is AccessControl, ReentrancyGuard {
             revert InsufficientShares(arkanaShares, totalSharesToBurn);
         }
 
-        // Total assets to withdraw from Aave
-        uint256 totalAssetsToWithdraw = withdrawalAssets + relayerFeeAssets;
-
         // Burn shares from Arkana
         vault.burnShares(address(this), totalSharesToBurn);
 
         // Vault withdraws from Aave and sends underlying tokens to this contract
-        vault.withdrawFromAave(totalAssetsToWithdraw, address(this));
+        vault.withdrawFromAave(withdrawalAssets + relayerFeeAssets, address(this));
 
         // Pay relayer fee in underlying tokens
         if (relayerFeeAssets > 0) {
@@ -801,15 +798,13 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
         // Execute Multicall3 call if calldata is provided
         if (call.length > 0) {
-            // Verify the calldata hash matches the public input
-            bytes32 computedHash = keccak256(call);
-            if (computedHash != arbitraryCalldataHash) {
+            if (keccak256(call) != arbitraryCalldataHash) {
                 revert InvalidCalldataHash();
             }
             // Execute the Multicall3 call
-            (bool success, bytes memory returnData) = multicall3Address.call(call);
+            (bool success,) = multicall3Address.call(call);
             if (!success) {
-                revert Multicall3Failed(returnData);
+                revert Multicall3Failed();
             }
         }
 
@@ -932,7 +927,6 @@ contract Arkana is AccessControl, ReentrancyGuard {
         operationInfo[bytes32(newNonceCommitment)] =
             OperationInfo({operationType: OperationType.Send, sharesMinted: 0, tokenAddress: tokenAddress});
 
-        // Store receiver public key for this nonce commitment (for frontend history reconstruction)
         nonceCommitmentToReceiver[bytes32(newNonceCommitment)] = CurvePoint(receiverPublicKeyX, receiverPublicKeyY);
 
         tokenHistoricalNoteCommitments[tokenAddress][note_digest] = true;
