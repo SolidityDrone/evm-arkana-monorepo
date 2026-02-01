@@ -7,11 +7,15 @@ use dep::pedersen_commitments::pedersen_commitments::{
     pedersen_commitment,
     pedersen_commitment_5
 };
+use dep::lean_imt_verify::{
+    simulate_entry_circuit,
+    simulate_lean_imt_insert,
+    generate_merkle_proof
+};
 use crate::main;
 
 // === TEST CONSTANTS ===
 global VIEW_STRING: Field = 0x76696577696e675f6b6579 as Field;
-global MAX_TREE_DEPTH: u32 = 32;
 
 /// Get test user key
 fn test_user_key() -> Field { 0x1234567890abcdef as Field }
@@ -31,6 +35,8 @@ fn test_relayer_fee_amount() -> Field { 0x01 as Field }
 /// Get Alice's private key (for decryption testing)
 fn alice_private_key() -> Field { 0xfedcba0987654321 as Field }
 
+fn test_previous_nonce() -> Field { 0x00 as Field }
+
 /// Derive Alice's public key from her private key
 fn derive_alice_public_key() -> [Field; 2] {
     let bjj = baby_jubjub();
@@ -40,162 +46,6 @@ fn derive_alice_public_key() -> [Field; 2] {
     [alice_public_key.x, alice_public_key.y]
 }
 
-/// Simulate entry circuit to create a Pedersen commitment
-fn simulate_entry_circuit(
-    user_key: Field,
-    token_address: Field,
-    chain_id: Field
-) -> ([Field; 2], Field, [Field; 2]) {
-    let nonce = 0 as Field;
-    let spending_key = Poseidon2::hash([user_key, chain_id, token_address], 3);
-    let nonce_commitment = Poseidon2::hash([spending_key, nonce, token_address], 3);
-    
-    let unlocks_at = 0 as Field;
-    let balance_commitment = pedersen_commitment_5(0, 0, spending_key, unlocks_at, nonce_commitment);
-    
-    let nonce_discovery_entry = pedersen_commitment(1, nonce_commitment);
-    
-    (
-        [balance_commitment.x, balance_commitment.y],
-        nonce_commitment,
-        [nonce_discovery_entry.x, nonce_discovery_entry.y]
-    )
-}
-
-/// Simulate lean IMT insertion
-fn simulate_lean_imt_insert(
-    leaf: Field,
-    current_size: Field,
-    current_depth: Field,
-    current_side_nodes: [Field; 32]
-) -> (Field, Field, [Field; 32]) {
-    let mut side_nodes = current_side_nodes;
-    let index = current_size;
-    
-    let current_depth_u32 = current_depth as u32;
-    let index_u32 = index as u32;
-    let new_size_u32 = index_u32 + 1;
-    
-    let mut power_of_2: u32 = 1;
-    for i in 0..32 {
-        if i < current_depth_u32 {
-            power_of_2 = power_of_2 * 2;
-        }
-    }
-    
-    let mut tree_depth_u32 = current_depth_u32;
-    if power_of_2 < new_size_u32 {
-        tree_depth_u32 = tree_depth_u32 + 1;
-    }
-    
-    let tree_depth = tree_depth_u32 as Field;
-    let mut node = leaf;
-    
-    for level in 0..MAX_TREE_DEPTH {
-        let level_u32 = level as u32;
-        let is_active = level_u32 < tree_depth_u32;
-        
-        if is_active {
-            let mut temp_index = index_u32;
-            let mut shift = level_u32;
-            for _ in 0..32 {
-                if shift > 0 {
-                    temp_index = temp_index / 2;
-                    shift = shift - 1;
-                }
-            }
-            let bit = temp_index % 2;
-            
-            if bit == 1 {
-                let sibling = side_nodes[level];
-                node = Poseidon2::hash([sibling, node], 2);
-            } else {
-                side_nodes[level] = node;
-            }
-        }
-    }
-    
-    let depth_idx = tree_depth_u32;
-    if depth_idx < MAX_TREE_DEPTH {
-        side_nodes[depth_idx] = node;
-    }
-    
-    (node, tree_depth, side_nodes)
-}
-
-/// Generate merkle proof for a leaf at given index
-fn generate_merkle_proof(
-    leaf: Field,
-    index: Field,
-    tree_depth: Field,
-    all_leaves: [Field; 256],
-    tree_size: Field
-) -> [Field; 32] {
-    let mut proof: [Field; 32] = [0; 32];
-    let depth_u32 = tree_depth as u32;
-    let index_u32 = index as u32;
-    let tree_size_u32 = tree_size as u32;
-    
-    let mut current_level: [Field; 256] = all_leaves;
-    let mut current_level_size = tree_size_u32;
-    
-    for level in 0..MAX_TREE_DEPTH {
-        let level_u32 = level as u32;
-        let is_active = level_u32 < depth_u32;
-        
-        if is_active {
-            let mut temp_idx = index_u32;
-            let mut shifts_remaining = level_u32;
-            for _ in 0..32 {
-                if shifts_remaining > 0 {
-                    temp_idx = temp_idx / 2;
-                    shifts_remaining = shifts_remaining - 1;
-                }
-            }
-            let node_index = temp_idx;
-            let bit = node_index % 2;
-            
-            if bit == 1 {
-                let sibling_index = node_index - 1;
-                if sibling_index < current_level_size {
-                    proof[level] = current_level[sibling_index];
-                } else {
-                    proof[level] = 0;
-                }
-            } else {
-                let sibling_index = node_index + 1;
-                if sibling_index < current_level_size {
-                    proof[level] = current_level[sibling_index];
-                } else {
-                    proof[level] = 0;
-                }
-            }
-            
-            let next_level_size = ((current_level_size - 1) / 2) + 1;
-            let mut next_level: [Field; 256] = [0; 256];
-            
-            for i in 0..128 {
-                let should_compute = i < next_level_size;
-                if should_compute {
-                    let left_idx = i * 2;
-                    let right_idx = left_idx + 1;
-                    
-                    if right_idx < current_level_size {
-                        next_level[i] = Poseidon2::hash([current_level[left_idx], current_level[right_idx]], 2);
-                    } else if left_idx < current_level_size {
-                        next_level[i] = current_level[left_idx];
-                    }
-                }
-            }
-            
-            current_level = next_level;
-            current_level_size = next_level_size;
-        }
-    }
-    
-    let _ = leaf;
-    proof
-}
 
 /// Alice performs Diffie-Hellman key exchange
 fn alice_perform_dh_key_exchange(alice_private_key: Field, sender_public_key: [Field; 2]) -> (Field, [Field; 2]) {
@@ -280,7 +130,7 @@ fn print_prover_toml_format(
     
     std::print("merkle_proof = [");
     let mut first = true;
-    for i in 0..MAX_TREE_DEPTH {
+    for i in 0..32 {
         if !first {
             std::print(", ");
         }

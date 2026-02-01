@@ -1,45 +1,39 @@
 #!/bin/bash
 
-# Script to generate Noir test file from merkle_tree_data.json
-# Can be run from circuits/lib/ or circuits/lib/lean-imt-verify/
-
+# Script to generate Noir test files from both merkle_tree_data.json and merkle_tree_data_real.json
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CURRENT_DIR="$(pwd)"
 
-# Determine paths based on current working directory
-if [ -d "lean-imt-verify" ]; then
-    # Running from circuits/lib/ directory
-    JSON_FILE="../../contracts/test/merkle_tree_data.json"
-    OUTPUT_FILE="lean-imt-verify/src/test_merkle_data.nr"
-    JSON_PATH="../../contracts/test/merkle_tree_data.json"
-    OUTPUT_PATH="lean-imt-verify/src/test_merkle_data.nr"
-else
-    # Running from lean-imt-verify directory or script's directory
-    JSON_FILE="../../contracts/test/merkle_tree_data.json"
-    OUTPUT_FILE="src/test_merkle_data.nr"
-    JSON_PATH="../../contracts/test/merkle_tree_data.json"
-    OUTPUT_PATH="src/test_merkle_data.nr"
-fi
-
-if [ ! -f "$JSON_FILE" ]; then
-    echo "Error: $JSON_FILE not found"
-    echo "Current directory: $CURRENT_DIR"
-    echo "Looking for: $JSON_FILE"
-    exit 1
-fi
-
-# Use Python to parse JSON and generate Noir test
-python3 << PYTHON_SCRIPT
+# Process both JSON files
+for JSON_FILE_NAME in "merkle_tree_data.json" "merkle_tree_data_real.json"; do
+    JSON_FILE="$SCRIPT_DIR/../../../contracts/test/$JSON_FILE_NAME"
+    
+    # Determine output file based on input file
+    if [ "$JSON_FILE_NAME" = "merkle_tree_data_real.json" ]; then
+        OUTPUT_FILE="$SCRIPT_DIR/src/test_merkle_data_real.nr"
+    else
+        OUTPUT_FILE="$SCRIPT_DIR/src/test_merkle_data.nr"
+    fi
+    
+    if [ ! -f "$JSON_FILE" ]; then
+        echo "Warning: $JSON_FILE not found, skipping..."
+        continue
+    fi
+    
+    echo "Processing $JSON_FILE_NAME..."
+    
+    # Use Python to parse JSON and generate Noir test
+    OUTPUT_FILE="$OUTPUT_FILE" JSON_FILE="$JSON_FILE" python3 << 'PYTHON_SCRIPT'
 import json
 import sys
 import os
 
-# Read JSON file
-json_path = "$JSON_PATH"
-output_path = "$OUTPUT_PATH"
+# Get paths from environment
+output_file = os.environ.get('OUTPUT_FILE')
+json_file = os.environ.get('JSON_FILE')
 
-with open(json_path, 'r') as f:
+# Read JSON file
+with open(json_file, 'r') as f:
     data = json.load(f)
 
 tree = data['tree']
@@ -50,7 +44,9 @@ output = []
 output.append("use dep::std;")
 output.append("use crate::lean_imt_verify::verify_merkle_proof;")
 output.append("")
-output.append("// Test data from contracts/test/merkle_tree_data.json")
+# Get the JSON file name for the comment
+json_file_name = os.path.basename(json_file)
+output.append(f"// Test data from contracts/test/{json_file_name}")
 output.append(f"// Tree root: {tree['root']}")
 output.append(f"// Depth: {tree['depth']}")
 output.append(f"// Size: {tree['size']}")
@@ -61,7 +57,7 @@ output.append("")
 output.append("#[test]")
 output.append("fn test_all_proofs_from_json() {")
 output.append("    std::println(\"==============================================================\");")
-output.append("    std::println(\"      Testing All Merkle Proofs from merkle_tree_data.json    \");")
+output.append(f"    std::println(\"      Testing All Merkle Proofs from {json_file_name}    \");")
 output.append("    std::println(\"==============================================================\");")
 output.append("    std::println(\"\");")
 output.append("")
@@ -105,14 +101,17 @@ output.append("    std::println(\"==============================================
 output.append("}")
 
 # Write to file
-with open(output_path, 'w') as f:
+with open(output_file, 'w') as f:
     f.write('\n'.join(output))
 
-print(f"Generated {output_path} with {len(leaves)} test cases")
+print(f"Generated {output_file} with {len(leaves)} test cases")
 PYTHON_SCRIPT
+    
+    echo "Test file generated: $OUTPUT_FILE"
+    echo ""
+done
 
-echo "Test file generated: $OUTPUT_FILE"
-echo "JSON file used: $JSON_FILE"
+echo "All test files generated successfully!"
 
 
 

@@ -813,5 +813,53 @@ contract Arkana is AccessControl {
 
     //function absorbAndWithdraw(bytes calldata proof, bytes32[] calldata publicInputs) public {}
     //function absorbAndSend(btes calldata proof, bytes32[] calldata publicInputs) public {}
-    function send(bytes calldata proof, bytes32[] calldata publicInputs) public {}
+    function send(bytes calldata proof, bytes32[] calldata publicInputs) public {
+        //require(IVerifier(verifiersByIndex[2]).verify(proof, publicInputs), "Invalid proof");
+
+        uint256 publicInputsLength = publicInputs.length;
+
+        if (publicInputsLength < 16) {
+            revert InvalidPublicInputs();
+        }
+
+        // Parse public inputs (first 6 elements) - access indices 0-5
+        address tokenAddress = address(uint160(uint256(publicInputs[0]))); // token_address
+        uint256 chainId = uint256(publicInputs[1]); // chain_id
+        uint256 expectedRoot = uint256(publicInputs[2]); // expected_root
+        uint256 receiverPublicKeyX = uint256(publicInputs[3]); // receiver_public_key[0]
+        uint256 receiverPublicKeyY = uint256(publicInputs[4]); // receiver_public_key[1]
+        uint256 relayerFeeAmount = uint256(publicInputs[5]); // relayer_fee_amount
+
+        // Parse public outputs (next 11 elements) - access indices 6-16
+        // We've already verified length >= 17, so accessing index 16 is safe
+        uint256 newCommitmentLeaf = uint256(publicInputs[6]); // new_commitment_leaf
+        uint256 newNonceCommitment = uint256(publicInputs[7]); // new_nonce_commitment
+        uint256 encryptedAmount = uint256(publicInputs[8]); // encrypted_note[0] (amount for receiver)
+        bytes32 encryptedBalance = bytes32(publicInputs[9]); // encrypted_note[1] (balance for sender)
+        bytes32 encryptedNullifier = bytes32(publicInputs[10]); // encrypted_note[2] (nullifier for sender)
+        uint256 senderPubKeyX = uint256(publicInputs[11]); // sender_pub_key[0]
+        uint256 senderPubKeyY = uint256(publicInputs[12]); // sender_pub_key[1]
+        uint256 nonceDiscoveryEntryX = uint256(publicInputs[13]); // nonce_discovery_entry[0]
+        uint256 nonceDiscoveryEntryY = uint256(publicInputs[14]); // nonce_discovery_entry[1]
+        uint256 note_p_commitment_x = uint256(publicInputs[15]); // note_commitment[0]
+        uint256 note_p_commitment_y = uint256(publicInputs[16]); // note_commitment[1]
+
+        if (chainId != block.chainid) {
+            revert InvalidChainId();
+        }
+
+        if (!isHistoricalRoot(tokenAddress, expectedRoot)) {
+            revert InvalidRoot();
+        }
+
+        if (usedCommitments[bytes32(newNonceCommitment)]) {
+            revert CommitmentAlreadyUsed();
+        }
+
+        usedCommitments[bytes32(newNonceCommitment)] = true;
+
+        encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(encryptedBalance, encryptedNullifier);
+
+        //TODO: this dosent need vault interaction
+    }
 }
