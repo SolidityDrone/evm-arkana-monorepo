@@ -52,7 +52,6 @@ output.append(f"// Depth: {tree['depth']}")
 output.append(f"// Size: {tree['size']}")
 output.append("")
 output.append(f"global EXPECTED_ROOT: Field = {tree['root']} as Field;")
-output.append(f"global TREE_DEPTH: Field = {tree['depth']};")
 output.append("")
 output.append("#[test]")
 output.append("fn test_all_proofs_from_json() {")
@@ -69,10 +68,24 @@ for i, leaf_data in enumerate(leaves):
     root = leaf_data['root']
     proof = leaf_data['proof']
     
+    # Calculate the tree size at the time this proof was generated
+    # For index i, the tree size at that point is i + 1
+    tree_size_at_proof = index + 1
+    
+    # Calculate the depth at the time this proof was generated
+    # With MIN_TREE_DEPTH = 8, the depth is always at least 8
+    # But we need to calculate the actual depth needed for the tree size
+    # Depth is the minimum depth needed to hold tree_size_at_proof leaves
+    # Formula: depth = max(ceil(log2(tree_size_at_proof)), MIN_TREE_DEPTH)
+    # Since MIN_TREE_DEPTH = 8, and we're using proof length as indicator:
+    # The proof length tells us the depth used during generation
+    proof_length = len(proof)
+    depth_at_proof = proof_length  # The proof length equals the tree depth at generation time
+    
     # Pad proof to 32 elements
     proof_padded = proof + ['0x0'] * (32 - len(proof))
     
-    output.append(f"    // Test case {i}: index {index}")
+    output.append(f"    // Test case {i}: index {index} (tree size at proof: {tree_size_at_proof}, depth: {depth_at_proof})")
     output.append(f"    let leaf_{i}: Field = {leaf} as Field;")
     output.append(f"    let index_{i}: Field = {index};")
     output.append(f"    let proof_{i}: [Field; 32] = [")
@@ -87,10 +100,13 @@ for i, leaf_data in enumerate(leaves):
     output.append("\n".join(proof_lines))
     
     output.append("    ];")
-    output.append(f"    let expected_root_{i}: Field = {root} as Field;")
+    # Use the final tree root for verification (proofs are generated from full tree)
+    # The individual leaf 'root' is just for reference (root at insertion time)
+    output.append(f"    let expected_root_{i}: Field = EXPECTED_ROOT;")
+    output.append(f"    let tree_depth_{i}: Field = {depth_at_proof};")
     output.append("")
-    output.append(f"    std::println(\"Testing proof {i} (index {index})...\");")
-    output.append(f"    verify_merkle_proof(leaf_{i}, index_{i}, TREE_DEPTH, expected_root_{i}, proof_{i});")
+    output.append(f"    std::println(\"Testing proof {i} (index {index}, depth {depth_at_proof})...\");")
+    output.append(f"    verify_merkle_proof(leaf_{i}, index_{i}, tree_depth_{i}, expected_root_{i}, proof_{i});")
     output.append(f"    std::println(\"  Proof {i} verified\");")
     output.append("")
 

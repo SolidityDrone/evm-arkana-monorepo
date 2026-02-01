@@ -7,6 +7,7 @@ use dep::pedersen_commitments::pedersen_commitments::{
     pedersen_commitment,
     pedersen_commitment_5
 };
+use dep::std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar, multi_scalar_mul};
 use dep::lean_imt_verify::{
     simulate_entry_circuit,
     simulate_lean_imt_insert,
@@ -36,6 +37,20 @@ fn test_relayer_fee_amount() -> Field { 0x01 as Field }
 fn alice_private_key() -> Field { 0xfedcba0987654321 as Field }
 
 fn test_previous_nonce() -> Field { 0x00 as Field }
+
+/// Helper function to convert Field to EmbeddedCurveScalar
+/// Replicates the logic from pedersen_commitments library
+fn from_field_scalar(scalar: Field) -> EmbeddedCurveScalar {
+    // TWO_POW_128 = 2^128
+    let TWO_POW_128 = 340282366920938463463374607431768211456 as Field; // 2^128
+    
+    // Decompose field into 128-bit limbs
+    // Cast to u128 truncates to lower 128 bits
+    let low = (scalar as u128) as Field;
+    let high = (scalar - low) / TWO_POW_128;
+    
+    EmbeddedCurveScalar { lo: low, hi: high }
+}
 
 /// Derive Alice's public key from her private key
 fn derive_alice_public_key() -> [Field; 2] {
@@ -453,6 +468,342 @@ fn test_send_exact_shares() {
 fn test_send_placeholder() {
     // Placeholder test - is_anonymity_provider functionality has been removed
     std::println("✅ Placeholder test passed - is_anonymity_provider removed");
+}
+
+/// Full integration test: Entry + Send
+/// This test simulates a complete flow: 1 entry followed by 1 send
+/// All outputs are printed in a format suitable for testing the Solidity contract
+#[test]
+fn test_entry_then_send_integration() {
+    std::println("╔══════════════════════════════════════════════════════════════╗");
+    std::println("║      INTEGRATION TEST: Entry + Send                         ║");
+    std::println("╚══════════════════════════════════════════════════════════════╝");
+    std::println("");
+    
+    // === SETUP ===
+    let user_key = test_user_key();
+    let token_address = test_token_address();
+    let chain_id = 11155111 as Field;
+    let nullifier = 0 as Field; // Entry uses nullifier = 0
+    let alice_derived_pub_key = derive_alice_public_key();
+    let relayer_fee_amount = test_relayer_fee_amount();
+    
+    // Entry parameters
+    let entry_amount = 100 as Field; // 100 shares (will be added by contract)
+    
+    // Send parameters
+    let send_amount = 50 as Field; // Send 50 shares
+    let previous_shares = entry_amount; // After entry, we have entry_amount shares
+    
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("STEP 1: EXECUTE ENTRY CIRCUIT");
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("");
+    
+    // Simulate entry circuit (same as calling the actual entry circuit)
+    let (entry_commitment_point, entry_nonce_commitment, entry_nonce_discovery) = simulate_entry_circuit(
+        user_key,
+        token_address,
+        chain_id
+    );
+    
+    std::println("Entry circuit outputs:");
+    std::print("  Commitment point: [");
+    std::print(entry_commitment_point[0] as Field);
+    std::print(", ");
+    std::print(entry_commitment_point[1] as Field);
+    std::println("]");
+    std::print("  Nonce commitment: ");
+    std::println(entry_nonce_commitment as Field);
+    std::print("  Nonce discovery entry: [");
+    std::print(entry_nonce_discovery[0] as Field);
+    std::print(", ");
+    std::print(entry_nonce_discovery[1] as Field);
+    std::println("]");
+    std::println("");
+    
+    // Contract will add shares*G and unlocks_at*K to the commitment
+    // For testing, we simulate what the contract does:
+    // 1. Contract adds shares*G (entry_amount shares)
+    // 2. Contract adds unlocks_at*K (0 in this case)
+    // 3. Contract hashes the final commitment to get the leaf
+    
+    // Derive generators using the same method as pedersen_commitment_5
+    let generators: [EmbeddedCurvePoint; 5] =
+        std::hash::derive_generators("PEDERSEN_COMMITMENT_5".as_bytes(), 0);
+    let G = generators[0];  // Generator for shares
+    let K = generators[3];   // Generator for unlocks_at
+    
+    // Convert entry commitment point to EmbeddedCurvePoint
+    let entry_commitment_embedded = EmbeddedCurvePoint {
+        x: entry_commitment_point[0],
+        y: entry_commitment_point[1],
+        is_infinite: false
+    };
+    
+    // Calculate shares*G
+    let shares_scalar = from_field_scalar(entry_amount);
+    let shares_commitment = multi_scalar_mul([G], [shares_scalar]);
+    
+    // Calculate unlocks_at*K (0 in this case)
+    let unlocks_at = 0 as Field;
+    let unlocks_at_scalar = from_field_scalar(unlocks_at);
+    let unlocks_at_commitment = multi_scalar_mul([K], [unlocks_at_scalar]);
+    
+    // Add: entry_commitment + shares*G + unlocks_at*K
+    let final_entry_commitment = entry_commitment_embedded + shares_commitment + unlocks_at_commitment;
+    
+    // Hash to get the leaf (as contract does)
+    let entry_commitment_leaf = Poseidon2::hash([final_entry_commitment.x, final_entry_commitment.y], 2);
+    
+    std::println("After contract adds shares and unlocks_at:");
+    std::print("  Final commitment point: [");
+    std::print(final_entry_commitment.x);
+    std::print(", ");
+    std::print(final_entry_commitment.y);
+    std::println("]");
+    std::print("  Entry commitment leaf: ");
+    std::println(entry_commitment_leaf);
+    std::println("");
+    
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("STEP 2: BUILD MERKLE TREE WITH ENTRY");
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("");
+    
+    // Build merkle tree with entry
+    let mut tree_size = 0 as Field;
+    let mut tree_depth = 1 as Field;
+    let mut side_nodes: [Field; 32] = [0; 32];
+    let mut all_leaves: [Field; 256] = [0; 256];
+    
+    let (root_after_entry, depth_after_entry, side_nodes_after_entry) = simulate_lean_imt_insert(
+        entry_commitment_leaf,
+        tree_size,
+        tree_depth,
+        side_nodes
+    );
+    all_leaves[0] = entry_commitment_leaf;
+    tree_size = 1;
+    tree_depth = depth_after_entry;
+    side_nodes = side_nodes_after_entry;
+    
+    std::println("Tree after entry:");
+    std::print("  Root: ");
+    std::println(root_after_entry);
+    std::print("  Depth: ");
+    std::println(tree_depth);
+    std::print("  Size: ");
+    std::println(tree_size);
+    std::println("");
+    
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("STEP 3: GENERATE MERKLE PROOF FOR ENTRY");
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("");
+    
+    // Generate merkle proof for entry (index 0)
+    let commitment_index = 0 as Field;
+    let merkle_proof = generate_merkle_proof(
+        entry_commitment_leaf,
+        commitment_index,
+        tree_depth,
+        all_leaves,
+        tree_size
+    );
+    
+    std::println("Merkle proof generated for entry (index 0)");
+    std::println("");
+    
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("STEP 4: EXECUTE SEND CIRCUIT");
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("");
+    
+    // For send, we need to reconstruct the previous commitment
+    // The previous commitment should match what was in the tree (entry with shares)
+    // But the circuit expects: previous_shares, nullifier, spending_key, previous_unlocks_at, previous_nonce_commitment
+    let previous_nonce = 0 as Field; // Entry uses nonce 0
+    let previous_unlocks_at = 0 as Field; // Entry has no lock
+    
+    // Recalculate spending_key and previous_nonce_commitment
+    let spending_key = Poseidon2::hash([user_key, chain_id, token_address], 3);
+    let previous_nonce_commitment = Poseidon2::hash([spending_key, previous_nonce, token_address], 3);
+    
+    // Verify this matches entry_nonce_commitment
+    assert(previous_nonce_commitment == entry_nonce_commitment, "Nonce commitment mismatch");
+    
+    // Reconstruct previous commitment (should match entry_commitment_leaf)
+    // The circuit uses pedersen_commitment_5 with previous_shares=0, then contract adds shares*G
+    // So we need to: pedersen_commitment_5(0, nullifier, spending_key, previous_unlocks_at, previous_nonce_commitment) + shares*G + unlocks_at*K
+    let base_commitment = pedersen_commitment_5(
+        0, // Circuit uses 0 for shares, contract adds shares*G separately
+        nullifier,
+        spending_key,
+        previous_unlocks_at,
+        previous_nonce_commitment
+    );
+    
+    // Add shares*G (contract does this)
+    let previous_shares_scalar = from_field_scalar(previous_shares);
+    let previous_shares_commitment = multi_scalar_mul([G], [previous_shares_scalar]);
+    
+    // Add unlocks_at*K (0 in this case)
+    let previous_unlocks_at_scalar = from_field_scalar(previous_unlocks_at);
+    let previous_unlocks_at_commitment = multi_scalar_mul([K], [previous_unlocks_at_scalar]);
+    
+    // Combine: base + shares*G + unlocks_at*K
+    let previous_final_commitment = base_commitment + previous_shares_commitment + previous_unlocks_at_commitment;
+    
+    // Hash to get leaf
+    let previous_commitment_leaf = Poseidon2::hash([previous_final_commitment.x, previous_final_commitment.y], 2);
+    
+    // Verify it matches entry_commitment_leaf
+    assert(previous_commitment_leaf == entry_commitment_leaf, "Previous commitment leaf mismatch");
+    
+    std::println("Send parameters:");
+    std::print("  Previous shares: ");
+    std::println(previous_shares);
+    std::print("  Send amount: ");
+    std::println(send_amount);
+    std::print("  Relayer fee: ");
+    std::println(relayer_fee_amount);
+    std::print("  Previous commitment leaf: ");
+    std::println(previous_commitment_leaf);
+    std::println("");
+    
+    // Execute send circuit
+    let send_result: (Field, Field, [Field; 3], [Field; 2], [Field; 2], [Field; 2]) = main(
+        user_key,
+        token_address,
+        send_amount,
+        chain_id,
+        previous_nonce,
+        previous_shares,
+        nullifier,
+        previous_unlocks_at,
+        previous_commitment_leaf,
+        commitment_index,
+        tree_depth,
+        root_after_entry,
+        merkle_proof,
+        alice_derived_pub_key,
+        relayer_fee_amount
+    );
+    
+    std::println("Send circuit outputs:");
+    std::print("  New commitment leaf: ");
+    std::println(send_result.0);
+    std::print("  New nonce commitment: ");
+    std::println(send_result.1);
+    std::print("  Encrypted note: [");
+    std::print(send_result.2[0]);
+    std::print(", ");
+    std::print(send_result.2[1]);
+    std::print(", ");
+    std::print(send_result.2[2]);
+    std::println("]");
+    std::print("  Sender public key: [");
+    std::print(send_result.3[0]);
+    std::print(", ");
+    std::print(send_result.3[1]);
+    std::println("]");
+    std::print("  Nonce discovery entry: [");
+    std::print(send_result.4[0]);
+    std::print(", ");
+    std::print(send_result.4[1]);
+    std::println("]");
+    std::print("  Note commitment: [");
+    std::print(send_result.5[0]);
+    std::print(", ");
+    std::print(send_result.5[1]);
+    std::println("]");
+    std::println("");
+    
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("STEP 5: FORMAT OUTPUT FOR SOLIDITY TEST");
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("");
+    
+    std::println("=== PUBLIC INPUTS FOR initialize() FUNCTION (ENTRY) ===");
+    std::println("publicInputs array (7 elements):");
+    std::println("");
+    std::println("// Public inputs (2 elements):");
+    std::print("publicInputs[0] = bytes32(uint256(uint160(tokenAddress))); // token_address = ");
+    std::println(token_address);
+    std::print("publicInputs[1] = bytes32(chainId); // chain_id = ");
+    std::println(chain_id);
+    std::println("");
+    std::println("// Public outputs (5 elements):");
+    std::print("publicInputs[2] = bytes32(balanceCommitmentX); // balance_commitment.x = ");
+    std::println(entry_commitment_point[0]);
+    std::print("publicInputs[3] = bytes32(balanceCommitmentY); // balance_commitment.y = ");
+    std::println(entry_commitment_point[1]);
+    std::print("publicInputs[4] = bytes32(newNonceCommitment); // new_nonce_commitment = ");
+    std::println(entry_nonce_commitment);
+    std::print("publicInputs[5] = bytes32(nonceDiscoveryEntryX); // nonce_discovery_entry.x = ");
+    std::println(entry_nonce_discovery[0]);
+    std::print("publicInputs[6] = bytes32(nonceDiscoveryEntryY); // nonce_discovery_entry.y = ");
+    std::println(entry_nonce_discovery[1]);
+    std::println("");
+    std::println("// Additional parameters for initialize():");
+    std::print("amountIn = ");
+    std::println(entry_amount);
+    std::print("lockDuration = ");
+    std::println(0 as Field);
+    std::println("");
+    std::println("// Note: Contract will add shares*G and unlocks_at*K to balanceCommitment");
+    std::println("//       The final leaf will be: hash(balanceCommitment + shares*G + unlocks_at*K)");
+    std::print("//       Final entry commitment leaf (after contract adds shares) = ");
+    std::println(entry_commitment_leaf);
+    std::println("");
+    std::println("═══════════════════════════════════════════════════════════════");
+    std::println("");
+    
+    std::println("=== PUBLIC INPUTS FOR send() FUNCTION ===");
+    std::println("publicInputs array (17 elements):");
+    std::println("");
+    std::println("// Public inputs (6 elements):");
+    std::print("publicInputs[0] = bytes32(uint256(uint160(tokenAddress))); // token_address = ");
+    std::println(token_address);
+    std::print("publicInputs[1] = bytes32(chainId); // chain_id = ");
+    std::println(chain_id);
+    std::print("publicInputs[2] = bytes32(expectedRoot); // expected_root = ");
+    std::println(root_after_entry);
+    std::print("publicInputs[3] = bytes32(receiverPublicKeyX); // receiver_public_key[0] = ");
+    std::println(alice_derived_pub_key[0]);
+    std::print("publicInputs[4] = bytes32(receiverPublicKeyY); // receiver_public_key[1] = ");
+    std::println(alice_derived_pub_key[1]);
+    std::print("publicInputs[5] = bytes32(relayerFeeAmount); // relayer_fee_amount = ");
+    std::println(relayer_fee_amount);
+    std::println("");
+    std::println("// Public outputs (11 elements):");
+    std::print("publicInputs[6] = bytes32(newCommitmentLeaf); // new_commitment_leaf = ");
+    std::println(send_result.0);
+    std::print("publicInputs[7] = bytes32(newNonceCommitment); // new_nonce_commitment = ");
+    std::println(send_result.1);
+    std::print("publicInputs[8] = bytes32(encryptedAmount); // encrypted_note[0] = ");
+    std::println(send_result.2[0]);
+    std::print("publicInputs[9] = bytes32(encryptedBalance); // encrypted_note[1] = ");
+    std::println(send_result.2[1]);
+    std::print("publicInputs[10] = bytes32(encryptedNullifier); // encrypted_note[2] = ");
+    std::println(send_result.2[2]);
+    std::print("publicInputs[11] = bytes32(senderPubKeyX); // sender_pub_key[0] = ");
+    std::println(send_result.3[0]);
+    std::print("publicInputs[12] = bytes32(senderPubKeyY); // sender_pub_key[1] = ");
+    std::println(send_result.3[1]);
+    std::print("publicInputs[13] = bytes32(nonceDiscoveryEntryX); // nonce_discovery_entry[0] = ");
+    std::println(send_result.4[0]);
+    std::print("publicInputs[14] = bytes32(nonceDiscoveryEntryY); // nonce_discovery_entry[1] = ");
+    std::println(send_result.4[1]);
+    std::print("publicInputs[15] = bytes32(noteCommitmentX); // note_commitment[0] = ");
+    std::println(send_result.5[0]);
+    std::print("publicInputs[16] = bytes32(noteCommitmentY); // note_commitment[1] = ");
+    std::println(send_result.5[1]);
+    std::println("");
+    
+    std::println("✅ Integration test completed successfully!");
+    std::println("   Use the publicInputs values above to test the Solidity send() function");
 }
 
 /// Test that send fails when previous_unlocks_at is not zero (funds are locked)

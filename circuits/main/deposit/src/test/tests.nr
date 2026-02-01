@@ -778,24 +778,35 @@ fn test_deposit_fails_when_locked() {
     let nullifier = 0 as Field;
     let previous_unlocks_at = 1000 as Field; // Non-zero value (funds are locked)
     
-    // Create dummy merkle proof (for testing)
-    let mut merkle_proof = [0 as Field; 32];
-    let commitment_index = 0 as Field;
-    let tree_depth = 1 as Field;
-    let expected_root = entry_commitment_leaf;
-    
     std::println("Testing deposit with locked funds (previous_unlocks_at != 0)...");
     std::println("  previous_unlocks_at: ");
     std::println(previous_unlocks_at);
     std::println("  This should fail with 'Deposit is disabled when funds are locked (previous_unlocks_at != 0)'");
     
-    // This will fail with assertion error (funds are locked)
-    // Note: We need to create a commitment that matches the locked state
+    // Create a commitment that matches the locked state
     let spending_key = Poseidon2::hash([user_key, chain_id, token_address], 3);
     let previous_nonce_commitment_locked = Poseidon2::hash([spending_key, previous_nonce, token_address], 3);
     let previous_commitment_point_locked = pedersen_commitment_5(previous_shares, nullifier, spending_key, previous_unlocks_at, previous_nonce_commitment_locked);
     let previous_commitment_leaf_locked = Poseidon2::hash([previous_commitment_point_locked.x, previous_commitment_point_locked.y], 2);
     
+    // Build a merkle tree with the locked commitment so the proof verification passes
+    // This allows us to test the previous_unlocks_at check
+    let mut tree_size = 0 as Field;
+    let mut tree_depth = 1 as Field;
+    let mut side_nodes: [Field; 32] = [0; 32];
+    
+    let (expected_root_locked, depth_locked, _side_nodes_locked) = simulate_lean_imt_insert(
+        previous_commitment_leaf_locked,
+        tree_size,
+        tree_depth,
+        side_nodes
+    );
+    
+    // Create dummy merkle proof (for single leaf tree, proof is all zeros)
+    let mut merkle_proof = [0 as Field; 32];
+    let commitment_index = 0 as Field;
+    
+    // This will fail with assertion error at the previous_unlocks_at check (line 66 in main.nr)
     let _result = main(
         user_key,
         token_address,
@@ -807,8 +818,8 @@ fn test_deposit_fails_when_locked() {
         previous_unlocks_at,
         previous_commitment_leaf_locked,
         commitment_index,
-        tree_depth,
-        expected_root,
+        depth_locked,
+        expected_root_locked,
         merkle_proof
     );
 }
