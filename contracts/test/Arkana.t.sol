@@ -35,6 +35,7 @@ contract ArkanaTest is Test {
     function setUp() public {
         // Fork SEPOLIA
         uint256 SEPOLIAFork = vm.createFork(vm.envString("SEPOLIA_ETHEREUM_RPC"));
+
         vm.selectFork(SEPOLIAFork);
 
         // Load addresses from environment
@@ -573,6 +574,123 @@ contract ArkanaTest is Test {
 
         console.log("Merkle proof verification successful!");
         console.log("   The proof from Prover.toml correctly verifies against the Solidity tree!");
+    }
+
+    /// @notice Test entry -> send flow using values from Noir integration test
+    /// @dev This test uses exact values from circuits/main/send/src/test/tests.nr::test_entry_then_send_integration
+    //       nargo test test_entry_then_send_integration --show-output to get em
+    function test_EntryThenSend_Integration() public {
+        console.log("========================================================================");
+        console.log("      TEST: Entry -> Send Integration (from Noir test)");
+        console.log("========================================================================");
+        console.log("");
+
+        // === STEP 1: INITIALIZE (ENTRY) ===
+        console.log("STEP 1: Calling initialize() with entry data...");
+
+        // Prepare publicInputs for initialize (7 elements)
+        bytes32[] memory entryPublicInputs = new bytes32[](7);
+        entryPublicInputs[0] = bytes32(uint256(uint160(0x02))); // token_address = 0x02
+        entryPublicInputs[1] = bytes32(uint256(0xaa36a7)); // chain_id = 11155111 (Sepolia)
+        entryPublicInputs[2] = bytes32(uint256(0x291bd501bd133e85a7a436df5164038f274c7968eaf12570a24c4fcc5c9ec22c)); // balance_commitment.x
+        entryPublicInputs[3] = bytes32(uint256(0x11ff2de21bea598078db54ed51e8707316bca12a7061e8b343df301de85291b6)); // balance_commitment.y
+        entryPublicInputs[4] = bytes32(uint256(0x0198061b7dc80ae3864fbb29d263f17fe2137dd405e574e4c78cab975d21d749)); // new_nonce_commitment
+        entryPublicInputs[5] = bytes32(uint256(0x12f155985f22de0f8a72b431af78efb524e1343e12f1c8e8726e7cfc8bde68b2)); // nonce_discovery_entry.x
+        entryPublicInputs[6] = bytes32(uint256(0x270ff1190893a516579299b47c19f039f6e8e770478a150026d308f6aac02e5f)); // nonce_discovery_entry.y
+
+        uint256 amountIn = 0x64; // 100
+        uint256 lockDuration = 0x00; // 0
+
+        // Note: We need to use a token address that exists in our setup
+        // The Noir test uses 0x02, but we need to use testTokenAddress (WETH)
+        // So we'll update the token address in publicInputs
+        entryPublicInputs[0] = bytes32(uint256(uint160(testTokenAddress)));
+
+        // Deal tokens to this contract for the initialize call
+        // Note: amountIn is 100, but testToken (WETH) has 6 decimals, so we need 100e6
+        deal(testTokenAddress, address(this), 100e6);
+
+        // Approve arkana to spend tokens
+        IERC20(testTokenAddress).approve(address(arkana), 100e6);
+
+        // Call initialize
+        bytes memory emptyProof;
+        uint256 rootAfterEntry = arkana.initialize(emptyProof, entryPublicInputs, 100e6, lockDuration);
+
+        console.log("  Root after entry:", rootAfterEntry);
+        console.log("  Tree depth:", arkana.getDepth(testTokenAddress));
+        console.log("  Tree size:", arkana.getSize(testTokenAddress));
+        console.log("");
+
+        // Verify tree state (root will differ from Noir test due to different token address)
+        assertTrue(rootAfterEntry != 0, "Root after entry should not be zero");
+        assertEq(arkana.getSize(testTokenAddress), 1, "Tree should have 1 leaf after entry");
+        console.log("  Entry completed successfully");
+        console.log("");
+
+        // === STEP 2: SEND ===
+        console.log("STEP 2: Calling send() with send data...");
+
+        // Prepare publicInputs for send (17 elements)
+        bytes32[] memory sendPublicInputs = new bytes32[](17);
+
+        // Public inputs (6 elements)
+        sendPublicInputs[0] = bytes32(uint256(uint160(testTokenAddress))); // token_address
+        sendPublicInputs[1] = bytes32(uint256(0xaa36a7)); // chain_id = 11155111 (Sepolia)
+        sendPublicInputs[2] = bytes32(rootAfterEntry); // expected_root (use actual root from entry)
+        sendPublicInputs[3] = bytes32(uint256(0x0bd0e01a563a7b2bbd4b14702542d1e09ee93b4bd996f8c2d1502d05e7ac9941)); // receiver_public_key[0]
+        sendPublicInputs[4] = bytes32(uint256(0x146a1e792e301e0c53e2422f11b3e09c9c4b58f849fc3aa1c34ea13cb8e02254)); // receiver_public_key[1]
+        sendPublicInputs[5] = bytes32(uint256(0x01)); // relayer_fee_amount = 0x01
+
+        // Public outputs (11 elements)
+        sendPublicInputs[6] = bytes32(uint256(0x0abe846299efecba06ca6509553a8dfcfabe525f0764798f689142a9c5c5a9bc)); // new_commitment_leaf
+        sendPublicInputs[7] = bytes32(uint256(0x303f2787bdebee98f1a4f81f78f7bafb74031fc1fb4c877843f4aa7a70d0fcfb)); // new_nonce_commitment
+        sendPublicInputs[8] = bytes32(uint256(0x2d680ef1fdae000e1581b355a753fd0ffb5bc95383c1e15f41aa55f555297364)); // encrypted_note[0]
+        sendPublicInputs[9] = bytes32(uint256(0x1c722c1a80b94b21236a6c29465eba58a7fffa1e4905bfa3753ed81f774fb15b)); // encrypted_note[1]
+        sendPublicInputs[10] = bytes32(uint256(0x0964e4610d7a39d60fa32cf16962afd4958f7e3c52a6010fb6b9c664fb4da36c)); // encrypted_note[2]
+        sendPublicInputs[11] = bytes32(uint256(0x1895e9f5db896210ae41caed720e9a7a758dec36719f501fc20c0426a8fb763f)); // sender_pub_key[0]
+        sendPublicInputs[12] = bytes32(uint256(0x07ca0daf7b78e6ba76c9c00098ca2ed11ed108549c8bc02ce0765184a00bf489)); // sender_pub_key[1]
+        sendPublicInputs[13] = bytes32(uint256(0x1c84d6bd6008fba542ea29d9639a5087cc0361cf3950d8171645e117a2726938)); // nonce_discovery_entry[0]
+        sendPublicInputs[14] = bytes32(uint256(0x16fe4ad20aa4dbe26015c54c4f97c75db365d7c578ee96073119365c36fce247)); // nonce_discovery_entry[1]
+        sendPublicInputs[15] = bytes32(uint256(0x2676d50589076191e15c80ad5302153bc2c33f84ed974e8de931e71b625318c4)); // note_commitment[0]
+        sendPublicInputs[16] = bytes32(uint256(0x065a4e19af454e8c605a7a30a6e26e2ef75dae8fa51b83a50c58b2181f92b4a1)); // note_commitment[1]
+
+        // Call send
+        uint256 rootAfterSend = arkana.send(emptyProof, sendPublicInputs);
+
+        console.log("  Root after send:", rootAfterSend);
+        console.log("  Tree depth:", arkana.getDepth(testTokenAddress));
+        console.log("  Tree size:", arkana.getSize(testTokenAddress));
+        console.log("");
+
+        // Verify tree state
+        assertTrue(rootAfterSend != 0, "Root after send should not be zero");
+        assertTrue(rootAfterSend != rootAfterEntry, "Root should change after send");
+        assertEq(
+            arkana.getSize(testTokenAddress), 3, "Tree should have 3 leaves (entry + send commitment + note stack)"
+        );
+        console.log("Send completed successfully");
+        console.log("");
+
+        // Verify the new commitment leaf was added
+        uint256 newCommitmentLeaf = uint256(sendPublicInputs[6]);
+        assertTrue(arkana.hasLeaf(testTokenAddress, newCommitmentLeaf), "New commitment leaf should exist in tree");
+        console.log("New commitment leaf verified in tree");
+        console.log("");
+
+        // Verify the note stack leaf was also added (send adds 2 leaves: commitment + note stack)
+        // The note stack leaf is the second leaf added by send
+        Field.Type noteCommitmentXField = Field.toField(uint256(sendPublicInputs[15]));
+        Field.Type noteCommitmentYField = Field.toField(uint256(sendPublicInputs[16]));
+        Field.Type noteStackLeafField = hasher.hash_2(noteCommitmentXField, noteCommitmentYField);
+        uint256 noteStackLeaf = Field.toUint256(noteStackLeafField);
+        assertTrue(arkana.hasLeaf(testTokenAddress, noteStackLeaf), "Note stack leaf should exist in tree");
+        console.log("Note stack leaf verified in tree");
+        console.log("");
+
+        console.log("========================================================================");
+        console.log("    Entry -> Send Integration Test PASSED");
+        console.log("========================================================================");
     }
 }
 

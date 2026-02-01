@@ -318,6 +318,9 @@ contract ArkanaVault is ERC4626 {
 
         // Approve Aave Pool to spend underlying tokens
         IERC20(vaultToken).approve(address(aavePool), amount);
+        //TODO: IMPORTANT this should be a try catch to avoid supplyCap error from Aave (might be a blocker to access)
+        //      if we do so, we either make explicit that you can only deposit when aave is not full capacity or share the yield,
+        //      thus making this less incentivizing than aave for some market in given periods
 
         // Supply to Aave - vault receives aTokens
         aavePool.supply(vaultToken, amount, address(this), 0);

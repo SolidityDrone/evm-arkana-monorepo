@@ -13,15 +13,17 @@ import {Field} from "../lib/poseidon2-evm/src/Field.sol";
 import {Grumpkin} from "./crypto-utils/Grumpkin.sol";
 import {Generators} from "./crypto-utils/Generators.sol";
 
-// MIN_TREE_DEPTH constant (must match LeanIMTPoseidon2.sol)
-uint256 constant MIN_TREE_DEPTH = 8;
+// Noir Verifier interface
+interface IVerifier {
+    function verify(bytes calldata _proof, bytes32[] calldata _publicInputs) external view returns (bool);
+}
 
 contract Arkana is AccessControl {
     using SafeERC20 for IERC20;
     /// @notice Role for initializing vaults
     bytes32 public constant VAULT_INITIALIZER_ROLE = keccak256("ARKANA");
     /// @notice Mapping from verifier index to verifier address
-    /// @dev Index 0 = Entry, 1 = Deposit, 2 = Send, 3 = Withdraw, 4 = Absorb
+    /// @dev Index 0 = Entry, 1 = Deposit, 2 = Send, 3 = Withdraw, 4 = Absorb+Send, 5 = Asborb+Withdraw?
     mapping(uint256 => address) public verifiersByIndex;
 
     /// @notice Mapping from token address to its Merkle tree data
@@ -56,6 +58,11 @@ contract Arkana is AccessControl {
     uint256 public discount_window;
 
     uint256 public TIME_TOLERANCE = 30 minutes;
+
+    /// @notice Minimum tree depth constant (must match LeanIMTPoseidon2.sol)
+    /// @dev Ensures all proofs are at least 8 levels deep for consistent verification
+    uint256 public constant MIN_TREE_DEPTH = 8;
+
     /// @notice Mapping from token address to its ERC4626 vault address
     /// @dev Each token can have one vault for standard ERC4626 interface
     /// @dev The vault tracks all shares and handles ERC4626 conversions
@@ -66,18 +73,42 @@ contract Arkana is AccessControl {
     /// @dev The vault's asset is the aToken, not the underlying token
     mapping(address token => address aToken) public tokenToAToken;
 
+    /// @notice Mapping from token address to nonce discovery point
+    mapping(address => CurvePoint) public tokenNonceDiscoveryPoint;
+
+    /// @notice Mapping from token address to nonce discovery M
+    mapping(address => uint256) public tokenNonceDiscoveryM;
+
+    /// @notice Mapping from token address to nonce discovery R
+    mapping(address => uint256) public tokenNonceDiscoveryR;
+
     /// @notice Global mappings (domain-separated by nonce commitment which includes token address)
     mapping(bytes32 => bool) public usedCommitments;
+    mapping(bytes32 nonceCommitment => EncryptedStateDetails) public encryptedStateDetails;
+    mapping(bytes32 nonceCommitment => OperationInfo) public operationInfo;
+    /// @notice Mapping from nonce commitment to receiver public key (for send operations)
+    /// @dev Only set for send operations, allows frontend to reconstruct receiver address
+    mapping(bytes32 nonceCommitment => CurvePoint) public nonceCommitmentToReceiver;
 
-    /// @notice Mapping from nonce commitment to encrypted state details
-    mapping(bytes32 => EncryptedStateDetails) public encryptedStateDetails;
+    /// @notice Per-token mappings
+    mapping(address => mapping(bytes32 => bool)) public tokenHistoricalNoteCommitments;
+    mapping(address => mapping(bytes32 publicKeyHash => EncryptedNote[])) public tokenUserEncryptedNotes;
+    /// @notice Cumulative note_stack point for each user (tokenAddress => pubkeyHash => CurvePoint)
+    /// @dev This stores the cumulative sum of all note commitments for a user, updated on each send
+    mapping(address => mapping(bytes32 => CurvePoint)) public tokenUserNoteStack;
 
-    /// @notice Mapping from nonce commitment to operation info
-    mapping(bytes32 => OperationInfo) public operationInfo;
+    /// @notice Historical state snapshot
+    struct HistoricalState {
+        uint256 root;
+        uint256 depth;
+        uint256 size; // Number of leaves
+    }
 
-    /// @notice Mapping from token address to nonce discovery entries
-    /// @dev Stores nonce discovery entries for each token
-    mapping(address => NonceDiscoveryEntry[]) public tokenNonceDiscoveryEntries;
+    /// @notice Commitment point structure
+    struct CurvePoint {
+        uint256 x;
+        uint256 y;
+    }
 
     /// @notice Encrypted state details struct
     struct EncryptedStateDetails {
@@ -89,14 +120,21 @@ contract Arkana is AccessControl {
     enum OperationType {
         Initialize,
         Deposit,
-        Withdraw
+        Send,
+        Withdraw,
+        Absorb
     }
 
-    /// @notice Operation info struct
+    /// @notice Operation metadata stored for each nonceCommitment
     struct OperationInfo {
         OperationType operationType;
-        uint256 sharesMinted;
-        address tokenAddress;
+        uint256 sharesMinted; // Shares minted for this operation (only for Initialize/Deposit, 0 otherwise)
+        address tokenAddress; // Token address for this operation
+    }
+
+    struct EncryptedNote {
+        uint256 encryptedAmountForReceiver;
+        CurvePoint senderPublicKey;
     }
 
     /// @notice Nonce discovery entry struct
@@ -104,13 +142,6 @@ contract Arkana is AccessControl {
         uint256 x;
         uint256 y;
         uint256 nonceCommitment;
-    }
-
-    /// @notice Historical state snapshot
-    struct HistoricalState {
-        uint256 root;
-        uint256 depth;
-        uint256 size; // Number of leaves
     }
 
     /// @notice Event emitted when a new leaf is added
@@ -136,20 +167,21 @@ contract Arkana is AccessControl {
     error InvalidTimeReference();
     error VaultNotInitialized(address token);
     error InsufficientShares(uint256 available, uint256 required);
+    error NoteAlreadyUsed();
 
     /// @notice Constructor initializes verifiers, protocol fee, and Aave Pool
     /// @param _verifiers Array of verifier addresses: [Entry, Deposit, Send, Withdraw, Absorb+Withdraw, Absorb+Send]
     /// @param _protocolFeeBps Protocol fee in basis points (100 = 1%, 500 = 5%)
     /// @param _aavePool Address of the Aave v3 Pool contract
-    /// @param _protocol_fee Protocol fee in basis points (10000 = 100%, 100 = 1%, 5 = 0.05%)
-    /// @param _discount_window Discount window in seconds (e.g., 2592000 = 30 days)
+    /// @param _protocolFee Protocol fee in basis points (10000 = 100%, 100 = 1%, 5 = 0.05%)
+    /// @param _discountWindow Discount window in seconds (e.g., 2592000 = 30 days)
     /// @param _poseidon2Huff Address of the deployed Huff Poseidon2 contract (deploy separately using HuffDeployer in tests/scripts)
     constructor(
         address[] memory _verifiers,
         uint256 _protocolFeeBps,
         address _aavePool,
-        uint256 _protocol_fee,
-        uint256 _discount_window,
+        uint256 _protocolFee,
+        uint256 _discountWindow,
         address _poseidon2Huff
     ) {
         // Initialize AccessControl - grant DEFAULT_ADMIN_ROLE to deployer
@@ -165,10 +197,10 @@ contract Arkana is AccessControl {
         protocolFeeBps = _protocolFeeBps;
 
         // Initialize protocol fee (per-mille)
-        protocol_fee = _protocol_fee;
+        protocol_fee = _protocolFee;
 
         // Initialize discount window
-        discount_window = _discount_window;
+        discount_window = _discountWindow;
 
         // Initialize Aave Pool
         aavePool = IPool(_aavePool);
@@ -782,15 +814,36 @@ contract Arkana is AccessControl {
     // HELPER FUNCTIONS
     // ============================================
 
-    /// @notice Internal function to add a nonce discovery entry
+    /// @notice Add a nonce discovery entry to a token's stack
     /// @param tokenAddress The token address
-    /// @param x The x coordinate of the nonce discovery entry
-    /// @param y The y coordinate of the nonce discovery entry
-    /// @param nonceCommitment The nonce commitment
+    /// @param x The x coordinate of the nonce discovery entry point
+    /// @param y The y coordinate of the nonce discovery entry point
+    /// @param nonceCommitment The nonce commitment scalar (r value) for this entry
+    /// @dev This aggregates the nonce discovery entry into the token's nonceDiscoveryPoint using Grumpkin curve addition
+    /// @dev Also tracks aggregated scalars: m += 1, r += nonceCommitment
     function _addNonceDiscoveryEntry(address tokenAddress, uint256 x, uint256 y, uint256 nonceCommitment) internal {
-        tokenNonceDiscoveryEntries[tokenAddress].push(
-            NonceDiscoveryEntry({x: x, y: y, nonceCommitment: nonceCommitment})
-        );
+        CurvePoint storage tokenPoint = tokenNonceDiscoveryPoint[tokenAddress];
+        Grumpkin.G1Point memory entry = Grumpkin.G1Point(x, y);
+
+        // Initialize if needed (first entry for this token)
+        if (tokenNonceDiscoveryM[tokenAddress] == 0 && tokenPoint.x == 0 && tokenPoint.y == 0) {
+            // Point at infinity, just set the entry
+            tokenPoint.x = x;
+            tokenPoint.y = y;
+            tokenNonceDiscoveryM[tokenAddress] = 1;
+            tokenNonceDiscoveryR[tokenAddress] = nonceCommitment;
+        } else {
+            // Add the entry to the current nonce discovery point
+            Grumpkin.G1Point memory newPoint = Grumpkin.add(Grumpkin.G1Point(tokenPoint.x, tokenPoint.y), entry);
+            tokenPoint.x = newPoint.x;
+            tokenPoint.y = newPoint.y;
+
+            // Aggregate scalars: each entry has m=1, r=nonceCommitment
+            // Use field reduction to ensure values stay within BN254 field modulus
+            uint256 fieldModulus = Field.PRIME;
+            tokenNonceDiscoveryM[tokenAddress] = (tokenNonceDiscoveryM[tokenAddress] + 1) % fieldModulus;
+            tokenNonceDiscoveryR[tokenAddress] = (tokenNonceDiscoveryR[tokenAddress] + nonceCommitment) % fieldModulus;
+        }
     }
 
     /// @notice Calculate discounted protocol fee based on lock duration
@@ -811,14 +864,13 @@ contract Arkana is AccessControl {
         effective_fee_bps = (protocol_fee * (discount_window - lockDuration)) / discount_window;
     }
 
-    //function absorbAndWithdraw(bytes calldata proof, bytes32[] calldata publicInputs) public {}
-    //function absorbAndSend(btes calldata proof, bytes32[] calldata publicInputs) public {}
-    function send(bytes calldata proof, bytes32[] calldata publicInputs) public {
+    function send(bytes calldata proof, bytes32[] calldata publicInputs) public returns (uint256) {
+        // NOTE: once verifier are implementd we can uncomment this
         //require(IVerifier(verifiersByIndex[2]).verify(proof, publicInputs), "Invalid proof");
 
+        // Validate publicInputs array length (requires exactly 17 elements: 6 public inputs + 11 public outputs)
         uint256 publicInputsLength = publicInputs.length;
-
-        if (publicInputsLength < 16) {
+        if (publicInputsLength < 17) {
             revert InvalidPublicInputs();
         }
 
@@ -831,7 +883,6 @@ contract Arkana is AccessControl {
         uint256 relayerFeeAmount = uint256(publicInputs[5]); // relayer_fee_amount
 
         // Parse public outputs (next 11 elements) - access indices 6-16
-        // We've already verified length >= 17, so accessing index 16 is safe
         uint256 newCommitmentLeaf = uint256(publicInputs[6]); // new_commitment_leaf
         uint256 newNonceCommitment = uint256(publicInputs[7]); // new_nonce_commitment
         uint256 encryptedAmount = uint256(publicInputs[8]); // encrypted_note[0] (amount for receiver)
@@ -855,11 +906,60 @@ contract Arkana is AccessControl {
         if (usedCommitments[bytes32(newNonceCommitment)]) {
             revert CommitmentAlreadyUsed();
         }
-
         usedCommitments[bytes32(newNonceCommitment)] = true;
+        usedCommitments[bytes32(newCommitmentLeaf)] = true;
 
+        // Add the new commitment leaf to the token's merkle tree (circuit already hashed it)
+        _addLeaf(tokenAddress, newCommitmentLeaf);
+
+        // Add the nonce discovery entry to the token's stack
+        _addNonceDiscoveryEntry(tokenAddress, nonceDiscoveryEntryX, nonceDiscoveryEntryY, newNonceCommitment);
+
+        bytes32 pubkey_reference_hash = keccak256(abi.encodePacked(receiverPublicKeyX, receiverPublicKeyY));
+        bytes32 note_digest = keccak256(abi.encodePacked(note_p_commitment_x, note_p_commitment_y));
+        if (tokenHistoricalNoteCommitments[tokenAddress][note_digest]) {
+            revert NoteAlreadyUsed();
+        }
         encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(encryptedBalance, encryptedNullifier);
 
-        //TODO: this dosent need vault interaction
+        // Store operation info for nonceCommitment (send doesn't mint shares)
+        operationInfo[bytes32(newNonceCommitment)] =
+            OperationInfo({operationType: OperationType.Send, sharesMinted: 0, tokenAddress: tokenAddress});
+
+        // Store receiver public key for this nonce commitment (for frontend history reconstruction)
+        nonceCommitmentToReceiver[bytes32(newNonceCommitment)] = CurvePoint(receiverPublicKeyX, receiverPublicKeyY);
+
+        tokenHistoricalNoteCommitments[tokenAddress][note_digest] = true;
+
+        tokenUserEncryptedNotes[tokenAddress][pubkey_reference_hash].push(
+            EncryptedNote(encryptedAmount, CurvePoint(senderPubKeyX, senderPubKeyY))
+        );
+
+        // Get or initialize the cumulative note_stack point for this user
+        CurvePoint storage currentNoteStack = tokenUserNoteStack[tokenAddress][pubkey_reference_hash];
+        Grumpkin.G1Point memory newNoteCommitment = Grumpkin.G1Point(note_p_commitment_x, note_p_commitment_y);
+
+        Grumpkin.G1Point memory updatedNoteStack;
+        if (currentNoteStack.x == 0 && currentNoteStack.y == 0) {
+            // First note for this user: use the note commitment as the starting point, cause 0,0 is an invalid point on curve
+            updatedNoteStack = newNoteCommitment;
+        } else {
+            // Add the new note commitment to the existing cumulative note_stack
+            updatedNoteStack = Grumpkin.add(Grumpkin.G1Point(currentNoteStack.x, currentNoteStack.y), newNoteCommitment);
+        }
+
+        // Update the stored cumulative note_stack point for next send
+        currentNoteStack.x = updatedNoteStack.x;
+        currentNoteStack.y = updatedNoteStack.y;
+
+        // Hash the updated cumulative note_stack point to get the leaf
+        Field.Type noteStackLeaf =
+            poseidon2Hasher.hash_2(Field.toField(updatedNoteStack.x), Field.toField(updatedNoteStack.y));
+        uint256 rootAfterNoteLeaf = _addLeaf(tokenAddress, Field.toUint256(noteStackLeaf));
+
+        return rootAfterNoteLeaf;
     }
+
+    //function absorbAndWithdraw(bytes calldata proof, bytes32[] calldata publicInputs) public {}
+    //function absorbAndSend(btes calldata proof, bytes32[] calldata publicInputs) public {}
 }
