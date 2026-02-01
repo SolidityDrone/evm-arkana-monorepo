@@ -695,6 +695,7 @@ contract ArkanaTest is Test {
 
       /// @notice Test entry -> withdraw flow using values from Noir integration test
       /// @dev This test uses exact values from circuits/main/withdraw/src/test/tests.nr::test_entry_then_withdraw_integration
+      /// nargo test nargo test test_entry_then_withdraw_integration --show-output to run it
       /// @dev Note: The Noir test uses token_address = 0x7775e4b6f4d40be537b55b6c47e09ada0157bd, but we use testTokenAddress (WETH) for vault operations
       /// @dev The commitments in the Noir test were computed with token_address = 0x7775e4b6f4d40be537b55b6c47e09ada0157bd, so they won't match exactly
       /// @dev This test verifies the contract logic works, but the root values will differ due to different token addresses

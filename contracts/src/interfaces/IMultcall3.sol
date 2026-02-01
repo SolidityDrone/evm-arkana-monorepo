@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
 // Multicall3 interface
 interface IMulticall3 {
     struct Call3 {
