@@ -530,3 +530,134 @@ fn test_send_with_merkle_tracking() {
     
     std::println("✅ Send test completed successfully!");
 }
+
+
+/// Test that send succeeds when shares are exactly enough (boundary case)
+#[test]
+fn test_send_exact_shares() {
+    let user_key = test_user_key();
+    let token_address = test_token_address();
+    let chain_id = 1 as Field;
+    let send_amount = 40 as Field; // In shares
+    let relayer_fee_amount = 10 as Field; // In shares
+    let total_needed = send_amount + relayer_fee_amount; // 50
+    let previous_shares = total_needed; // Exactly 50, should pass since gt(50, 50-1) = gt(50, 49) = true
+    
+    let previous_nonce = test_previous_nonce();
+    let nullifier = test_nullifier();
+    
+    // Create previous commitment using Pedersen commitment
+    let spending_key = Poseidon2::hash([user_key, chain_id, token_address], 3);
+    let previous_nonce_commitment = Poseidon2::hash([spending_key, previous_nonce, token_address], 3);
+    let unlocks_at = 0 as Field;
+    let previous_commitment_point = pedersen_commitment_5(previous_shares, nullifier, spending_key, unlocks_at, previous_nonce_commitment);
+    let previous_commitment_leaf = Poseidon2::hash([previous_commitment_point.x, previous_commitment_point.y], 2);
+    
+    // Setup tree
+    let mut side_nodes = [0 as Field; 32];
+    let tree_size = 1 as Field;
+    let tree_depth = 0 as Field;
+    let commitment_index = 0 as Field;
+    let expected_root = previous_commitment_leaf;
+    let merkle_proof = [0 as Field; 32];
+    
+    // Get receiver public key
+    let receiver_public_key = derive_alice_public_key();
+    
+    std::println("Testing send with exact shares (boundary case)...");
+    std::println("  Previous shares: 50");
+    std::println("  Send amount (in shares): 40");
+    std::println("  Relayer fee (in shares): 10");
+    std::println("  Total needed: 50");
+    std::println("  This should pass since gt(50, 50-1) = gt(50, 49) = true");
+    
+    // This should pass - boundary case where shares exactly equal total needed
+    let previous_unlocks_at = 0 as Field;
+    let result = main(
+        user_key,
+        token_address,
+        send_amount,
+        chain_id,
+        previous_nonce,
+        previous_shares,
+        nullifier,
+        previous_unlocks_at,
+        previous_commitment_leaf,
+        commitment_index,
+        tree_depth,
+        expected_root,
+        merkle_proof,
+        receiver_public_key,
+        relayer_fee_amount
+    );
+    
+    // Verify new commitment leaf is returned
+    let new_commitment_leaf = result.0;
+    assert(new_commitment_leaf != 0, "New commitment leaf should not be zero");
+    
+    std::println("✅ Send with exact balance test passed!");
+}
+
+/// Test removed: is_anonymity_provider functionality removed
+#[test]
+fn test_send_placeholder() {
+    // Placeholder test - is_anonymity_provider functionality has been removed
+    std::println("✅ Placeholder test passed - is_anonymity_provider removed");
+}
+
+/// Test that send fails when previous_unlocks_at is not zero (funds are locked)
+#[test(should_fail)]
+fn test_send_fails_when_locked() {
+    let user_key = test_user_key();
+    let token_address = test_token_address();
+    let chain_id = 1 as Field;
+    let send_amount = 10 as Field;
+    let relayer_fee_amount = 1 as Field;
+    
+    let previous_nonce = test_previous_nonce();
+    let previous_shares = 100 as Field;
+    let nullifier = test_nullifier();
+    let previous_unlocks_at = 1000 as Field; // Non-zero value (funds are locked)
+    
+    // Create previous commitment using Pedersen commitment
+    let spending_key = Poseidon2::hash([user_key, chain_id, token_address], 3);
+    let previous_nonce_commitment = Poseidon2::hash([spending_key, previous_nonce, token_address], 3);
+    let previous_commitment_point = pedersen_commitment_5(previous_shares, nullifier, spending_key, previous_unlocks_at, previous_nonce_commitment);
+    let previous_commitment_leaf = Poseidon2::hash([previous_commitment_point.x, previous_commitment_point.y], 2);
+    
+    // Setup tree
+    let mut side_nodes = [0 as Field; 32];
+    let tree_size = 1 as Field;
+    let tree_depth = 0 as Field;
+    let commitment_index = 0 as Field;
+    let expected_root = previous_commitment_leaf;
+    let merkle_proof = [0 as Field; 32];
+    
+    // Get receiver public key
+    let receiver_public_key = derive_alice_public_key();
+    
+    std::println("Testing send with locked funds (previous_unlocks_at != 0)...");
+    std::println("  previous_unlocks_at: ");
+    std::println(previous_unlocks_at);
+    std::println("  This should fail");
+    
+    // This will fail with assertion error (funds are locked)
+    let _result = main(
+        user_key,
+        token_address,
+        send_amount,
+        chain_id,
+        previous_nonce,
+        previous_shares,
+        nullifier,
+        previous_unlocks_at,
+        previous_commitment_leaf,
+        commitment_index,
+        tree_depth,
+        expected_root,
+        merkle_proof,
+        receiver_public_key,
+        relayer_fee_amount
+    );
+}
+
