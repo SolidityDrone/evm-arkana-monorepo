@@ -1,0 +1,14 @@
+amount = ""
+chain_id = ""
+commitment_index = ""
+expected_root = ""
+merkle_proof = ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
+nullifier = ""
+previous_commitment_leaf = ""
+previous_nonce = ""
+previous_shares = ""
+previous_unlocks_at = ""
+receiver_public_key = ["", ""]
+token_address = ""
+tree_depth = ""
+user_key = ""

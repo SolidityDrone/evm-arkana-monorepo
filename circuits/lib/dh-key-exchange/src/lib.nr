@@ -1,6 +1,5 @@
 pub mod dh_key_exchange;
 
-#[cfg(test)]
 mod test;
 
 // Export the main function
