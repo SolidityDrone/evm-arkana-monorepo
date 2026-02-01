@@ -12,13 +12,14 @@ import "./ArkanaVault.sol";
 import {Field} from "../lib/poseidon2-evm/src/Field.sol";
 import {Grumpkin} from "./crypto-utils/Grumpkin.sol";
 import {Generators} from "./crypto-utils/Generators.sol";
+import {ReentrancyGuard} from "@oz/contracts/utils/ReentrancyGuard.sol";
 
 // Noir Verifier interface
 interface IVerifier {
     function verify(bytes calldata _proof, bytes32[] calldata _publicInputs) external view returns (bool);
 }
 
-contract Arkana is AccessControl {
+contract Arkana is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
     /// @notice Role for initializing vaults
     bytes32 public constant VAULT_INITIALIZER_ROLE = keccak256("ARKANA");
@@ -168,6 +169,8 @@ contract Arkana is AccessControl {
     error VaultNotInitialized(address token);
     error InsufficientShares(uint256 available, uint256 required);
     error NoteAlreadyUsed();
+    error InvalidCalldataHash();
+    error Multicall3Failed(bytes returnData);
 
     /// @notice Constructor initializes verifiers, protocol fee, and Aave Pool
     /// @param _verifiers Array of verifier addresses: [Entry, Deposit, Send, Withdraw, Absorb+Withdraw, Absorb+Send]
@@ -182,7 +185,8 @@ contract Arkana is AccessControl {
         address _aavePool,
         uint256 _protocolFee,
         uint256 _discountWindow,
-        address _poseidon2Huff
+        address _poseidon2Huff,
+        address _multicall3
     ) {
         // Initialize AccessControl - grant DEFAULT_ADMIN_ROLE to deployer
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -571,14 +575,7 @@ contract Arkana is AccessControl {
     ///      Public outputs (7): [pedersen_commitment[2], new_nonce_commitment, encrypted_state_details[2], nonce_discovery_entry[2]]
     ///      Total: 11 elements
     /// @return The new root after adding the commitment
-    function deposit(
-        bytes calldata,
-        /* proof */
-        bytes32[] calldata publicInputs
-    )
-        public
-        returns (uint256)
-    {
+    function deposit(bytes calldata proof, bytes32[] calldata publicInputs) public nonReentrant returns (uint256) {
         // Verify proof using Deposit verifier (index 1)
         //require(IVerifier(verifiersByIndex[1]).verify(proof, publicInputs), "Invalid proof");
 
@@ -682,13 +679,9 @@ contract Arkana is AccessControl {
     /// @param publicInputs The public inputs for verification (contains pub params + pub outputs)
     /// @return newRoot The new root after adding the commitment
     /// @dev publicInputs structure: [token_address, amount (in shares), chain_id, declared_time_reference, expected_root, arbitrary_calldata_hash, receiver_address, relayer_fee_amount (in shares), pedersen_commitment[2], new_nonce_commitment, encrypted_state_details[2], nonce_discovery_entry[2]]
-    function withdraw(
-        bytes calldata,
-        /* proof */
-        bytes32[] calldata publicInputs,
-        bytes calldata /* call */
-    )
+    function withdraw(bytes calldata proof, bytes32[] calldata publicInputs, bytes calldata call)
         public
+        nonReentrant
         returns (uint256 newRoot)
     {
         // Verify proof using Withdraw verifier (index 3)
@@ -705,7 +698,7 @@ contract Arkana is AccessControl {
         uint256 chainId = uint256(publicInputs[2]); // chain_id
         uint256 declaredTimeReference = uint256(publicInputs[3]); // declared_time_reference
         uint256 expectedRoot = uint256(publicInputs[4]); // expected_root
-        // bytes32 arbitraryCalldataHash = publicInputs[5]; // arbitrary_calldata_hash (not used, SimpleSA removed)
+        bytes32 arbitraryCalldataHash = publicInputs[5]; // arbitrary_calldata_hash (for Multicall3)
         address receiverAddress = address(uint160(uint256(publicInputs[6]))); // receiver_address
         uint256 relayerFeeShares = uint256(publicInputs[7]); // relayer_fee_amount (in shares)
 
@@ -803,9 +796,22 @@ contract Arkana is AccessControl {
         operationInfo[bytes32(newNonceCommitment)] =
             OperationInfo({operationType: OperationType.Withdraw, sharesMinted: 0, tokenAddress: tokenAddress});
 
-        // If call.length > 0, we would execute the call, but SimpleSA is removed
-        // For now, just transfer tokens directly to receiverAddress
+        // Transfer withdrawal assets to receiver
         IERC20(tokenAddress).safeTransfer(receiverAddress, withdrawalAssetsAfterFee);
+
+        // Execute Multicall3 call if calldata is provided
+        if (call.length > 0) {
+            // Verify the calldata hash matches the public input
+            bytes32 computedHash = keccak256(call);
+            if (computedHash != arbitraryCalldataHash) {
+                revert InvalidCalldataHash();
+            }
+            // Execute the Multicall3 call
+            (bool success, bytes memory returnData) = multicall3Address.call(call);
+            if (!success) {
+                revert Multicall3Failed(returnData);
+            }
+        }
 
         return newRoot;
     }
@@ -864,7 +870,7 @@ contract Arkana is AccessControl {
         effective_fee_bps = (protocol_fee * (discount_window - lockDuration)) / discount_window;
     }
 
-    function send(bytes calldata proof, bytes32[] calldata publicInputs) public returns (uint256) {
+    function send(bytes calldata proof, bytes32[] calldata publicInputs) public nonReentrant returns (uint256) {
         // NOTE: once verifier are implementd we can uncomment this
         //require(IVerifier(verifiersByIndex[2]).verify(proof, publicInputs), "Invalid proof");
 
@@ -908,6 +914,7 @@ contract Arkana is AccessControl {
         }
         usedCommitments[bytes32(newNonceCommitment)] = true;
         usedCommitments[bytes32(newCommitmentLeaf)] = true;
+        encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(encryptedBalance, encryptedNullifier);
 
         // Add the new commitment leaf to the token's merkle tree (circuit already hashed it)
         _addLeaf(tokenAddress, newCommitmentLeaf);
@@ -920,7 +927,6 @@ contract Arkana is AccessControl {
         if (tokenHistoricalNoteCommitments[tokenAddress][note_digest]) {
             revert NoteAlreadyUsed();
         }
-        encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(encryptedBalance, encryptedNullifier);
 
         // Store operation info for nonceCommitment (send doesn't mint shares)
         operationInfo[bytes32(newNonceCommitment)] =
