@@ -140,7 +140,7 @@ fn main(
     // 
     // The plaintext is a hash of user_key with TRAIL_STRING, creating a unique identifier
     // that can only be derived by someone who knows the user_key
-    let timelock_plaintext = Poseidon2::hash([user_key, TRAIL_STRING], 2);
+    let timelock_plaintext = Poseidon2::hash([spending_key, 0 as Field, token_address], 3);
     
     // Derive encryption key K from pairing_result using Poseidon2 KDF
     // K = KDF(pairing_result) where pairing_result = hash(e(V, drand_pubkey))

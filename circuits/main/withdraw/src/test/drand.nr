@@ -54,12 +54,12 @@ fn test_drand_timelock_encryption() {
     // === INPUTS (from TypeScript timelock-prep.js output with Poseidon2) ===
     // [AUTO-GENERATED VALUES] - DO NOT EDIT MANUALLY
     // Private inputs (witness)
-    let plaintext = 42 as Field;
+    let plaintext = 16755066124579796489779142544997880720616605116971674738892996717172627801155 as Field;
     let pairing_result = 7454982161247114942090419709036621238296894275792563520607667729655177239595 as Field;  // Private: hash(e(V, drand_pubkey))
     
     // Public inputs (from offchain computation)
     let target_round = 14161727 as Field;
-    let expected_ciphertext = 18691358195348525365444204984148224031355373457348998934574405312519615474038 as Field;
+    let expected_ciphertext = 13558181448089046632976941783888829663423614173904639329769197843116434779534 as Field;
     
     // H = hash_to_curve(round) on G1 - needed for on-chain pairing verification
     let H_x = 17110099886125304497835776545713209504691977157583709568477924270886121681512 as Field;

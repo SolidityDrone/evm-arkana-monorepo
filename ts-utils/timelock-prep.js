@@ -306,19 +306,34 @@ export async function decryptCiphertext(publicInputs) {
 
 // Example usage
 async function example() {
-    const plaintext = 42n;
+    // Test values (matching tests.nr and drand.nr)
+    const userKey = BigInt('0x19e573f3801c7b2e4619998342e8e305e1692184cbacd220c04198a04c36b7d2');
+    const chainId = 1n; // Mainnet chain ID
+    const tokenAddress = BigInt('0x7775e4b6f4d40be537b55b6c47e09ada0157bd');
+
+    // Calculate spending_key (same as in main.nr: Poseidon2::hash([user_key, chain_id, token_address], 3))
+    const spendingKey = await poseidon2Hash([userKey, chainId, tokenAddress]);
+
+    // Calculate plaintext (same as in main.nr: Poseidon2::hash([spending_key, 0, token_address], 3))
+    const plaintext = await poseidon2Hash([spendingKey, 0n, tokenAddress]);
+    const plaintextBigInt = plaintext.toBigInt();
+
     const targetRound = 14161727; // Example round from test
 
     // Use specific randomness for reproducibility (from test)
     const randomness = '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
 
     console.log('=== DRAND TIMELOCK ENCRYPTION PREPARATION ===\n');
-    console.log('Plaintext:', plaintext.toString());
+    console.log('User Key:', userKey.toString());
+    console.log('Chain ID:', chainId.toString());
+    console.log('Token Address:', tokenAddress.toString());
+    console.log('Spending Key:', spendingKey.toBigInt().toString());
+    console.log('Plaintext:', plaintextBigInt.toString());
     console.log('Target Round:', targetRound);
     console.log('');
 
     // Prepare circuit inputs (now async due to Poseidon2)
-    const inputs = await prepareCircuitInputs(plaintext, targetRound, randomness);
+    const inputs = await prepareCircuitInputs(plaintextBigInt, targetRound, randomness);
 
     console.log('=== PRIVATE INPUTS (for circuit witness) ===');
     console.log('plaintext:', inputs.private.plaintext);

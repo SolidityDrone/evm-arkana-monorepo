@@ -781,7 +781,7 @@ contract ArkanaTest is Test {
         withdrawPublicInputs[21] = bytes32(uint256(0x271deab6946acc6af9027774c2a962872f718cd8e490c9f25436c9c591c5cd8b)); // encrypted_state_details[1]
         withdrawPublicInputs[22] = bytes32(uint256(0x0279080a755f1b05f80d45e96f47ef34c1d753e45697183f0fe25dd913727e9a)); // nonce_discovery_entry.x
         withdrawPublicInputs[23] = bytes32(uint256(0x2a60db6e19f46c673f3a687202e3d9bbd84c00717e795f71f63f789a7e12e6)); // nonce_discovery_entry.y
-        withdrawPublicInputs[24] = bytes32(uint256(0x2952ef0fd431cd2deb9e257e6f856635a56a9576c04e911e0ee83eeda6aae976)); // timelock_ciphertext (public output)
+        withdrawPublicInputs[24] = bytes32(uint256(0x1df9a8a431a21b846301d849074474e1838b5466421b4aa13cdfb0aa725ded8e)); // timelock_ciphertext (public output)
 
         // Call withdraw (with empty calldata for Multicall3)
         bytes memory emptyCall;

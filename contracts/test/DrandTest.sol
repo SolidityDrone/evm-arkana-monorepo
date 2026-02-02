@@ -134,7 +134,7 @@ contract DrandTest is Test {
             C1_y0: 0x1f86545bd5d6b6cd70010f39e89725793cfb578a9aa37d88c64a039b40e4f1a,
             C1_y1: 0x5ddbacaa77db26735b8554c800cbf0f159a85a2e5ec71dffbaffbffaf4574f7,
             pairingResult: 0x107b5ed0db8d82f8e13cd635f33dc1ba12d85cb4baa964af52bf429114f15c2b,
-            ciphertext: 0x2952ef0fd431cd2deb9e257e6f856635a56a9576c04e911e0ee83eeda6aae976
+            ciphertext: 0x1df9a8a431a21b846301d849074474e1838b5466421b4aa13cdfb0aa725ded8e
         });
         
         // Verify before round: proves V = r*H and C1 = r*G2

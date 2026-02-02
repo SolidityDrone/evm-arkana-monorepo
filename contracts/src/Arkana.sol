@@ -192,6 +192,11 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @param index The index in the historical states array
     event RootSaved(address indexed token, uint256 indexed root, uint256 depth, uint256 size, uint256 index);
 
+    /// @notice Event emitted when a new drand timelock is created
+    /// @param targetRound The target round for the drand timelock
+    /// @param timelockCiphertext The ciphertext of the drand timelock
+    event DrandTlock(uint256 targetRound, uint256 timelockCiphertext);
+
     error InvalidChainId();
     error InvalidRoot();
     error CommitmentAlreadyUsed();
