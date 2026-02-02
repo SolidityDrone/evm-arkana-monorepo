@@ -83,6 +83,22 @@ contract DrandTest is Test {
     }
 
     /**
+     * @notice Encrypt for future round using only: round + pubkey + genesis_seed
+     * @dev This is the actual timelock encryption - can be done before the round is published
+     * @param plaintext The value to encrypt
+     * @param round The future drand round number
+     * @return ciphertext The encrypted value
+     */
+    function encryptForFutureRound(bytes32 plaintext, uint256 round) public view returns (bytes32 ciphertext) {
+        // Compute randomness using only: round + pubkey + genesis_seed
+        // This matches what the Noir circuit does for timelock encryption
+        bytes32 randomness = computeFutureRandomness(round);
+
+        // Encrypt using XOR
+        return bytes32(uint256(plaintext) ^ uint256(randomness));
+    }
+
+    /**
      * @notice Encrypt using signature (for testing decryption)
      * @param plaintext The value to encrypt
      * @param signature_x The x coordinate of the signature (G1 point)
@@ -100,6 +116,28 @@ contract DrandTest is Test {
 
         // Encrypt using XOR
         return bytes32(uint256(plaintext) ^ uint256(randomness));
+    }
+
+    /**
+     * @notice Compute randomness for future round using only: round + pubkey + genesis_seed
+     * @dev This is used for encryption BEFORE the round is published
+     *      Uses Poseidon2 to match Noir circuit's calculation
+     * @param round The future drand round number
+     * @return randomness The randomness value for encryption
+     */
+    function computeFutureRandomness(uint256 round) public view returns (bytes32 randomness) {
+        // Hash public key to get a Field value
+        uint256 pubkeyHash = hashPubkey(PUBLIC_KEY_HEX);
+
+        // Reduce pubkey hash modulo BN254 field before passing to Poseidon2
+        uint256 pubkeyHash_mod = pubkeyHash % BN254_MOD;
+
+        // Calculate randomness using: Poseidon2(round, pubkey_hash, genesis_seed)
+        // This matches what the Noir circuit does for timelock encryption
+        Field.Type randomnessField = poseidon2Hasher.hash_3(
+            Field.toField(round), Field.toField(pubkeyHash_mod), Field.toField(uint256(GENESIS_SEED) % BN254_MOD)
+        );
+        return bytes32(Field.toUint256(randomnessField));
     }
 
     /**
