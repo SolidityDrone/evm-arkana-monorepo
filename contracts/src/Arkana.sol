@@ -701,8 +701,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
         // Verify proof using Withdraw verifier (index 3)
         //require(IVerifier(verifiersByIndex[3]).verify(proof, publicInputs), "Invalid proof");
 
-        // Validate publicInputs array length (requires 15 elements: 8 public inputs + 7 public outputs)
-        if (publicInputs.length < 15) {
+        // Validate publicInputs array length (requires 20 elements: 12 public inputs + 8 public outputs)
+        if (publicInputs.length < 20) {
             revert InvalidPublicInputs();
         }
 
@@ -716,14 +716,23 @@ contract Arkana is AccessControl, ReentrancyGuard {
         address receiverAddress = address(uint160(uint256(publicInputs[6]))); // receiver_address
         uint256 relayerFeeShares = uint256(publicInputs[7]); // relayer_fee_amount (in shares)
 
+        // Timelock public inputs (new - not used in contract logic yet)
+        // Will be used later for pairing verification: e(V, G2_gen) * e(-H, C1) == 1
+        // Note: H_x, H_y, C1_x0, C1_x1, C1_y0, C1_y1 are not yet in publicInputs array
+        uint256 targetRound = uint256(publicInputs[8]); // target_round (drand)
+        uint256 V_x = uint256(publicInputs[9]); // V_x (G1 point)
+        uint256 V_y = uint256(publicInputs[10]); // V_y (G1 point)
+        uint256 pairingResult = uint256(publicInputs[11]); // pairing_result
+
         // Parse public outputs
-        uint256 pedersenCommitmentX = uint256(publicInputs[8]); // pedersen_commitment.x
-        uint256 pedersenCommitmentY = uint256(publicInputs[9]); // pedersen_commitment.y
-        uint256 newNonceCommitment = uint256(publicInputs[10]); // new_nonce_commitment
-        bytes32 encryptedBalance = bytes32(publicInputs[11]); // encrypted_state_details[0]
-        bytes32 encryptedNullifier = bytes32(publicInputs[12]); // encrypted_state_details[1]
-        uint256 nonceDiscoveryEntryX = uint256(publicInputs[13]); // nonce_discovery_entry.x
-        uint256 nonceDiscoveryEntryY = uint256(publicInputs[14]); // nonce_discovery_entry.y
+        uint256 pedersenCommitmentX = uint256(publicInputs[12]); // pedersen_commitment.x
+        uint256 pedersenCommitmentY = uint256(publicInputs[13]); // pedersen_commitment.y
+        uint256 newNonceCommitment = uint256(publicInputs[14]); // new_nonce_commitment
+        bytes32 encryptedBalance = bytes32(publicInputs[15]); // encrypted_state_details[0]
+        bytes32 encryptedNullifier = bytes32(publicInputs[16]); // encrypted_state_details[1]
+        uint256 nonceDiscoveryEntryX = uint256(publicInputs[17]); // nonce_discovery_entry.x
+        uint256 nonceDiscoveryEntryY = uint256(publicInputs[18]); // nonce_discovery_entry.y
+        uint256 timelockCiphertext = uint256(publicInputs[19]); // timelock_ciphertext (new - not used yet)
 
         if (
             uint256(
