@@ -1,19 +1,37 @@
-chain_id = ""
-commitment_index = ""
-current_balance = ""
-expected_root = ""
-merkle_proof = ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
-note_stack_commitment_index = ""
-note_stack_m = ""
-note_stack_merkle_proof = ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""]
-note_stack_r = ""
-note_stack_x = ""
-note_stack_y = ""
-nullifier = ""
-previous_commitment = ""
-previous_nonce = ""
-previous_unlocks_at = ""
-relayer_fee_amount = ""
-token_address = ""
-tree_depth = ""
-user_key = ""
+user_key = "0x2222222222222222"
+
+previous_nonce = "0x00"
+
+current_balance = "0x64"
+
+nullifier = "0x00"
+
+previous_unlocks_at = "0x00"
+
+previous_commitment = "0x2baf3c83d4b2c39e34330c6be52a3ef84aad2664a73a54ec78741a3938e4518b"
+
+commitment_index = "0x01"
+
+tree_depth = "0x02"
+
+expected_root = "0x2fcd0b552824900b6030e0fe8a4b5001dd08f9a4aa19df188fecf146d2720b75"
+
+merkle_proof = ["0x243c6b3f68f81338b1772bab72218e367beb5b189677dd54411f9c533d30b2cd", "0x1ba9d71a5e940a55ba0ee0615abf88a56d32f2bc73a5f7709eb62a8a4a51fc77", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00"]
+
+note_stack_x = "0x18fb0d666d483c540ac7ba54f0f18d2db58ffdb320e8151c0ce976fed34bf025"
+
+note_stack_y = "0x2ec12d33ed476de659dc316115dfc1dfa4f01ef8e4f53a9e4ad73e7b4b6ab320"
+
+note_stack_m = "0x32"
+
+note_stack_r = "0xabcdef1234567890"
+
+note_stack_commitment_index = "0x03"
+
+note_stack_merkle_proof = ["0x1d8e2d901b0026b5e1bec23fc97ff9ce29c4cc4e3a94ca2aad8ac1967aba7ba9", "0x15accdbfb72dced7f145e83f9394b2e7ab3d3eecbdce9216ad31b92b55eaa3b7", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00"]
+
+token_address = "0x02"
+
+chain_id = "0xaa36a7"
+
+relayer_fee_amount = "0x05"
