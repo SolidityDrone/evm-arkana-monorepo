@@ -1,1 +1,7 @@
 circuits/target/
+node_modules/
+*.wasm
+*.wasm.gz
+.yarn/
+.yarnrc.yml
+yarn.lock

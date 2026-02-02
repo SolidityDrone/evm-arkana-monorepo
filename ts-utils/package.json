@@ -1,0 +1,12 @@
+{
+  "name": "ts-utils",
+  "version": "1.0.0",
+  "type": "module",
+  "packageManager": "yarn@4.4.1",
+  "dependencies": {
+    "@aztec/foundation": "1.2.1",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
+    "tlock-js": "^0.9.0"
+  }
+}
