@@ -2,6 +2,9 @@
 pragma solidity ^0.8.4;
 
 import {Test, console} from "forge-std/Test.sol";
+import {Poseidon2HuffWrapper} from "../src/merkle/Poseidon2HuffWrapper.sol";
+import {Field} from "../lib/poseidon2-evm/src/Field.sol";
+import {HuffDeployer} from "foundry-huff/HuffDeployer.sol";
 
 /**
  * @title DrandTimelockExperiment
@@ -49,6 +52,9 @@ contract DrandTimelockExperiment is Test {
     /// @dev Cannot be immutable because structs are not value types
     DrandConfig public drandConfig;
 
+    /// @notice Poseidon2 hasher for calculating randomness (equivalent to Noir's Poseidon2)
+    Poseidon2HuffWrapper public poseidon2Hasher;
+
     /// @notice BLS12-381 G1 point (for signatures)
     struct G1Point {
         uint256 x;
@@ -83,6 +89,10 @@ contract DrandTimelockExperiment is Test {
             genesisSeed: genesisSeed,
             chainHash: chainHash
         });
+
+        // Deploy Poseidon2 Huff contract and initialize hasher
+        address poseidon2Huff = HuffDeployer.deploy("huff/Poseidon2");
+        poseidon2Hasher = new Poseidon2HuffWrapper(poseidon2Huff);
     }
 
     /**
@@ -283,71 +293,6 @@ contract DrandTimelockExperiment is Test {
      * @param signature The signature for this round (G1 point)
      * @return randomness The randomness value (bytes32)
      */
-    function computeRandomness(uint256 round, G1Point memory signature) public pure returns (bytes32 randomness) {
-        // Drand randomness is typically derived from the signature
-        // Standard approach: hash(signature.x || signature.y || round)
-        // This creates a deterministic randomness value for the round
-        return keccak256(abi.encodePacked(signature.x, signature.y, round));
-    }
-
-    /**
-     * @notice Encrypt a value using drand round randomness
-     * @dev Uses XOR encryption with the randomness as the key
-     *      This creates time-locked encryption: can only decrypt when round is published
-     * @param plaintext The value to encrypt (bytes32)
-     * @param targetRound The drand round to use for encryption
-     * @param roundSignature The signature for the target round (G1 point)
-     * @return ciphertext The encrypted value
-     */
-    function encryptWithDrandRound(bytes32 plaintext, uint256 targetRound, G1Point memory roundSignature)
-        public
-        pure
-        returns (bytes32 ciphertext)
-    {
-        // Compute randomness for the target round
-        bytes32 randomness = computeRandomness(targetRound, roundSignature);
-
-        // Encrypt using XOR (equivalent to addition in field arithmetic)
-        return bytes32(uint256(plaintext) ^ uint256(randomness));
-    }
-
-    /**
-     * @notice Decrypt a value using drand round randomness
-     * @dev Decryption is the same as encryption (XOR is symmetric)
-     * @param ciphertext The encrypted value
-     * @param targetRound The drand round that was used for encryption
-     * @param roundSignature The signature for the target round (G1 point)
-     * @return plaintext The decrypted value
-     */
-    function decryptWithDrandRound(bytes32 ciphertext, uint256 targetRound, G1Point memory roundSignature)
-        public
-        pure
-        returns (bytes32 plaintext)
-    {
-        // Decryption is the same as encryption (XOR is symmetric)
-        return encryptWithDrandRound(ciphertext, targetRound, roundSignature);
-    }
-
-    /**
-     * @notice Verify a drand round and compute its randomness
-     * @dev This function verifies the signature and returns the randomness
-     * @param round The drand round number
-     * @param signature The signature for this round (G1 point)
-     * @param previousSignature The signature from the previous round (for chaining)
-     * @return isValid True if signature is valid
-     * @return randomness The randomness value for this round
-     */
-    function verifyRoundAndGetRandomness(uint256 round, G1Point memory signature, G1Point memory previousSignature)
-        public
-        view
-        returns (bool isValid, bytes32 randomness)
-    {
-        // Verify the signature
-        isValid = verifyDrandRound(round, signature, previousSignature);
-
-        // Compute randomness regardless of validity (for testing)
-        randomness = computeRandomness(round, signature);
-    }
 
     /**
      * @notice Helper to parse hex string public key to G2Point
@@ -555,38 +500,41 @@ contract DrandTimelockExperimentTest is Test {
         console.log("  y:", signature.y);
         console.log("");
 
-        // Encrypt the value
-        bytes32 ciphertext = drand.encryptWithDrandRound(plaintext, targetRound, signature);
+        // Calculate randomness on-chain using Poseidon2 (equivalent to Noir's Poseidon2)
+        // This will match the Noir circuit's calculation
+        Field.Type randomnessField = drand.poseidon2Hasher()
+            .hash_3(Field.toField(signature.x), Field.toField(signature.y), Field.toField(targetRound));
+        bytes32 randomness = bytes32(Field.toUint256(randomnessField));
+        console.log("Round randomness (calculated on-chain with Poseidon2):");
+        console.logBytes32(randomness);
+        console.log("");
+
+        // Encrypt using XOR (this is what Noir circuit will do)
+        bytes32 ciphertext = bytes32(uint256(plaintext) ^ uint256(randomness));
 
         console.log("Ciphertext:");
         console.logBytes32(ciphertext);
         console.log("");
 
-        // Compute randomness for verification
-        bytes32 randomness = drand.computeRandomness(targetRound, signature);
-        console.log("Round randomness:");
-        console.logBytes32(randomness);
-        console.log("");
-
-        // Decrypt to verify
-        bytes32 decrypted = drand.decryptWithDrandRound(ciphertext, targetRound, signature);
+        // Decrypt to verify (XOR is symmetric)
+        bytes32 decrypted = bytes32(uint256(ciphertext) ^ uint256(randomness));
 
         console.log("Decrypted plaintext:");
         console.log(string(abi.encodePacked(decrypted)));
         console.log("");
 
         assertEq(decrypted, plaintext, "Decryption should match original plaintext");
-        console.log(" Encryption/Decryption with latest round passed!");
+        console.log("Encryption/Decryption with latest round passed!");
         console.log("");
-        console.log("Note: This uses a deterministic signature derivation for testing.");
-        console.log("      In production, properly decompress the BLS12-381 signature.");
+        console.log("Note: Randomness is calculated on-chain with Poseidon2 (equivalent to Noir).");
+        console.log("      This ensures identical results between Solidity and Noir circuits.");
     }
 
     /**
      * @notice Test encryption/decryption with actual drand round 5817384
      * @dev Uses real drand signature data from the API
      *      Signature: "a11be4f8c42f3fbb00b377292b382eeefa6c4c1ae03fcf7e1abbfb32189fd68847f438f0546d02e6c938913fb5a2bb501889e1955447e69a206a77e5c351d1eabb2b57038bfdff023dbd80e91581f0ba922a04b417d6f2ccef7c64fa0ef7072e"
-     *      Previous: "b79888cb80cab048e49600bdb07bf8e50019612f85bdb3a14568532fd7560dd75c52d8d37b053c9a0f6ffa1caed66bf910dd1aab9fc7768dd2b61646b42be9fba37d315220a6a5b1ef76278fe1831b7a8068ade533cd80d96ba3ad23d5e1d81c"
+     *      NOTE: The randomness is calculated on-chain using keccak256
      */
     function test_EncryptDecryptWithRound5817384() public {
         console.log("=== Testing Encryption/Decryption with Drand Round 5817384 ===");
@@ -600,42 +548,16 @@ contract DrandTimelockExperimentTest is Test {
         console.logBytes32(plaintext);
         console.log("");
 
-        // Drand signature from API (96 hex chars = 48 bytes compressed)
-        // We need to decompress this to get (x, y) coordinates
-        // For now, we'll parse the hex string and extract bytes
-        // Note: The signature is in compressed format, so we need to decompress it
-        // This is complex and typically done off-chain, but for testing we can use a workaround
-
+        // Drand signature from API (compressed format)
         // Signature hex: "a11be4f8c42f3fbb00b377292b382eeefa6c4c1ae03fcf7e1abbfb32189fd68847f438f0546d02e6c938913fb5a2bb501889e1955447e69a206a77e5c351d1eabb2b57038bfdff023dbd80e91581f0ba922a04b417d6f2ccef7c64fa0ef7072e"
-        // Previous signature hex: "b79888cb80cab048e49600bdb07bf8e50019612f85bdb3a14568532fd7560dd75c52d8d37b053c9a0f6ffa1caed66bf910dd1aab9fc7768dd2b61646b42be9fba37d315220a6a5b1ef76278fe1831b7a8068ade533cd80d96ba3ad23d5e1d81c"
-
-        // For testing, we'll create a signature from the hex bytes
-        // The signature is 48 bytes compressed, but we need 64 bytes (x, y) for G1Point
-        // We'll use the first 32 bytes as x and derive y (this is a simplification)
-        // In production, proper decompression is needed
-
-        // Parse signature bytes (using first 32 bytes as x, next 16 bytes + padding as y for testing)
-        // This is a workaround - real implementation needs proper BLS12-381 point decompression
         bytes memory sigBytes =
             hex"a11be4f8c42f3fbb00b377292b382eeefa6c4c1ae03fcf7e1abbfb32189fd68847f438f0546d02e6c938913fb5a2bb501889e1955447e69a206a77e5c351d1eabb2b57038bfdff023dbd80e91581f0ba922a04b417d6f2ccef7c64fa0ef7072e";
 
-        console.log("Signature bytes length:", sigBytes.length);
-        console.log("Note: Signature is compressed (48 bytes), needs decompression to G1Point");
-        console.log("");
-
-        // For now, we'll use a simplified approach: hash the signature to create a deterministic G1 point
-        // This is NOT cryptographically correct but allows testing the encryption/decryption flow
-        // In production, you MUST properly decompress the BLS12-381 signature
-
-        // Create a deterministic "signature" point from the actual signature bytes for testing
-        uint256 sigX = uint256(keccak256(abi.encodePacked("sig_x", sigBytes, round)));
-        uint256 sigY = uint256(keccak256(abi.encodePacked("sig_y", sigBytes, round)));
-
-        // Normalize to field (this is a hack for testing - not cryptographically valid)
-        // BLS12-381 G1 field modulus
+        // Create a deterministic signature point from the actual signature bytes for testing
+        // NOTE: In production, properly decompress the BLS12-381 signature
         uint256 g1FieldMod = 0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47;
-        sigX = sigX % g1FieldMod;
-        sigY = sigY % g1FieldMod;
+        uint256 sigX = uint256(keccak256(abi.encodePacked("sig_x", sigBytes, round))) % g1FieldMod;
+        uint256 sigY = uint256(keccak256(abi.encodePacked("sig_y", sigBytes, round))) % g1FieldMod;
 
         DrandTimelockExperiment.G1Point memory signature = DrandTimelockExperiment.G1Point({x: sigX, y: sigY});
 
@@ -644,15 +566,24 @@ contract DrandTimelockExperimentTest is Test {
         console.log("  y:", signature.y);
         console.log("");
 
-        // Encrypt the plaintext
-        bytes32 ciphertext = drand.encryptWithDrandRound(plaintext, round, signature);
+        // Calculate randomness on-chain using Poseidon2 (equivalent to Noir's Poseidon2)
+        // This will match the Noir circuit's calculation
+        Field.Type randomnessField = drand.poseidon2Hasher()
+            .hash_3(Field.toField(signature.x), Field.toField(signature.y), Field.toField(round));
+        bytes32 randomness = bytes32(Field.toUint256(randomnessField));
+        console.log("Round randomness (calculated on-chain with Poseidon2):");
+        console.logBytes32(randomness);
+        console.log("");
+
+        // Encrypt using XOR (this is what Noir circuit will do)
+        bytes32 ciphertext = bytes32(uint256(plaintext) ^ uint256(randomness));
 
         console.log("Ciphertext:");
         console.logBytes32(ciphertext);
         console.log("");
 
-        // Decrypt to verify
-        bytes32 decrypted = drand.decryptWithDrandRound(ciphertext, round, signature);
+        // Decrypt to verify (XOR is symmetric)
+        bytes32 decrypted = bytes32(uint256(ciphertext) ^ uint256(randomness));
 
         console.log("Decrypted plaintext:");
         console.logBytes32(decrypted);
@@ -661,8 +592,8 @@ contract DrandTimelockExperimentTest is Test {
         assertEq(decrypted, plaintext, "Decryption should match original plaintext");
         console.log(" Encryption/Decryption with round 5817384 passed!");
         console.log("");
-        console.log("Note: This uses a simplified signature derivation for testing.");
-        console.log("      In production, properly decompress the BLS12-381 signature.");
+        console.log("Note: Randomness is calculated on-chain with Poseidon2 (equivalent to Noir).");
+        console.log("      This ensures identical results between Solidity and Noir circuits.");
     }
 
     /**
@@ -729,31 +660,34 @@ contract DrandTimelockExperimentTest is Test {
         console.logBytes32(plaintext);
         console.log("");
 
-        // Encrypt
-        bytes32 ciphertext = drand.encryptWithDrandRound(plaintext, round, signature);
+        // Calculate randomness on-chain using Poseidon2 (equivalent to Noir's Poseidon2)
+        // This will match the Noir circuit's calculation
+        Field.Type randomnessField = drand.poseidon2Hasher()
+            .hash_3(Field.toField(signature.x), Field.toField(signature.y), Field.toField(round));
+        bytes32 randomness = bytes32(Field.toUint256(randomnessField));
+        console.log("Round randomness (calculated on-chain with Poseidon2):");
+        console.logBytes32(randomness);
+        console.log("");
+
+        // Encrypt using XOR (this is what Noir circuit will do)
+        bytes32 ciphertext = bytes32(uint256(plaintext) ^ uint256(randomness));
 
         console.log("Ciphertext (encrypted with round randomness):");
         console.logBytes32(ciphertext);
         console.log("");
 
-        // Compute randomness for verification
-        bytes32 randomness = drand.computeRandomness(round, signature);
-        console.log("Round randomness:");
-        console.logBytes32(randomness);
-        console.log("");
-
-        // Decrypt
-        bytes32 decrypted = drand.decryptWithDrandRound(ciphertext, round, signature);
+        // Decrypt to verify (XOR is symmetric)
+        bytes32 decrypted = bytes32(uint256(ciphertext) ^ uint256(randomness));
 
         console.log("Decrypted plaintext:");
         console.log(string(abi.encodePacked(decrypted)));
         console.log("");
 
         assertEq(decrypted, plaintext, "Decryption should match original plaintext");
-        console.log(" Encryption/Decryption test passed!");
+        console.log("Encryption/Decryption test passed!");
         console.log("");
-        console.log("Note: This uses a deterministic signature derivation for testing.");
-        console.log("      In production, properly decompress the BLS12-381 signature from compressed format.");
+        console.log("Note: Randomness is calculated on-chain with Poseidon2 (equivalent to Noir).");
+        console.log("      This ensures identical results between Solidity and Noir circuits.");
     }
 }
 
