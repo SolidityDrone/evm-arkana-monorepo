@@ -27,6 +27,7 @@ CIRCUITS_DIR="$ROOT_DIR/circuits/main/withdraw"
 NOIR_TEST_FILE="$CIRCUITS_DIR/src/test/drand.nr"
 NOIR_TESTS_FILE="$CIRCUITS_DIR/src/test/tests.nr"
 SOLIDITY_TEST_FILE="$ROOT_DIR/contracts/test/DrandTest.sol"
+ARKANA_TEST_FILE="$ROOT_DIR/contracts/test/Arkana.t.sol"
 
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║           drand Timelock Encryption Sync Script             ║${NC}"
@@ -117,9 +118,10 @@ use dep::std;
 //
 // Circuit verifies:
 //   1. ciphertext = plaintext + K where K = KDF(pairing_result)
+//      Note: pairing_result is a private input (witness) in the circuit
 //
 // Contract verifies:
-//   1. pairing_result == hash(e(V, drand_pubkey)) using BN254 precompile
+//   1. e(V, G2_gen) * e(-H, C1) == 1 (proves V = r*H, C1 = r*G2)
 //   2. drand_pubkey matches hardcoded evmnet value
 //
 // Security: If someone provides a fake V, the pairing check will fail on-chain.
@@ -163,12 +165,12 @@ NOIR_HEADER
 
 # Append the dynamic values
 cat >> "$NOIR_TEST_FILE" << NOIR_VALUES
-    // Private input (witness)
+    // Private inputs (witness)
     let plaintext = $PLAINTEXT as Field;
+    let pairing_result = $PAIRING_RESULT as Field;  // Private: hash(e(V, drand_pubkey))
     
     // Public inputs (from offchain computation)
     let target_round = $TARGET_ROUND as Field;
-    let pairing_result = $PAIRING_RESULT as Field;
     let expected_ciphertext = $CIPHERTEXT as Field;
     
     // H = hash_to_curve(round) on G1 - needed for on-chain pairing verification
@@ -303,9 +305,6 @@ cat >> "$NOIR_TEST_FILE" << 'NOIR_FOOTER'
     std::print("  C1_y1 (pub): ");
     std::println(C1_y1);
     std::println("");
-    std::print("pairing_result (pub): ");
-    std::println(pairing_result);
-    std::println("");
     std::print("ciphertext (pub): ");
     std::println(computed_ciphertext);
     std::println("");
@@ -396,8 +395,11 @@ cat >> "$NOIR_TEST_FILE" << 'NOIR_FOOTER'
     std::println("  - H_x, H_y: Field (G1 point)");
     std::println("  - V_x, V_y: Field (G1 point)");
     std::println("  - C1_x0, C1_x1, C1_y0, C1_y1: Field (G2 point)");
-    std::println("  - pairing_result: Field");
-    std::println("  - ciphertext: Field");
+    std::println("  - ciphertext: Field (public output)");
+    std::println("");
+    std::println("Private Inputs:");
+    std::println("  - plaintext: Field");
+    std::println("  - pairing_result: Field (hash(e(V, drand_pubkey)))");
     std::println("");
     std::println("All tests passed!");
 }
@@ -441,6 +443,7 @@ sed -i "s/fn test_timelock_C1_x0() -> Field { [0-9]* as Field }/fn test_timelock
 sed -i "s/fn test_timelock_C1_x1() -> Field { [0-9]* as Field }/fn test_timelock_C1_x1() -> Field { $C1_X1 as Field }/" "$NOIR_TESTS_FILE"
 sed -i "s/fn test_timelock_C1_y0() -> Field { [0-9]* as Field }/fn test_timelock_C1_y0() -> Field { $C1_Y0 as Field }/" "$NOIR_TESTS_FILE"
 sed -i "s/fn test_timelock_C1_y1() -> Field { [0-9]* as Field }/fn test_timelock_C1_y1() -> Field { $C1_Y1 as Field }/" "$NOIR_TESTS_FILE"
+# Note: pairing_result is now a private input, but still needed as a parameter in main() calls
 sed -i "s/fn test_timelock_pairing_result() -> Field { [0-9]* as Field }/fn test_timelock_pairing_result() -> Field { $PAIRING_RESULT as Field }/" "$NOIR_TESTS_FILE"
 
 echo -e "${GREEN}✓ Noir tests.nr updated with real timelock values${NC}"
@@ -852,6 +855,39 @@ echo -e "${GREEN}✓ Decrypt script updated${NC}"
 echo ""
 
 # =============================================================================
+# Step 8: Update Arkana.t.sol with timelock values
+# =============================================================================
+echo -e "${BLUE}[8/8] Updating Arkana.t.sol with timelock values...${NC}"
+
+# Convert decimal values to hex for Solidity (using node for big numbers)
+TARGET_ROUND_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$TARGET_ROUND').toString(16))")
+H_X_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$H_X').toString(16))")
+H_Y_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$H_Y').toString(16))")
+V_X_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$V_X').toString(16))")
+V_Y_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$V_Y').toString(16))")
+C1_X0_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$C1_X0').toString(16))")
+C1_X1_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$C1_X1').toString(16))")
+C1_Y0_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$C1_Y0').toString(16))")
+C1_Y1_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$C1_Y1').toString(16))")
+CIPHERTEXT_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$CIPHERTEXT').toString(16))")
+
+# Update timelock values in Arkana.t.sol using sed
+# Note: We match the line with the index and comment to ensure we update the right value
+sed -i "s|withdrawPublicInputs\[8\] = bytes32(uint256(0x[0-9a-fA-F]*)); // target_round|withdrawPublicInputs[8] = bytes32(uint256($TARGET_ROUND_HEX_ARKANA)); // target_round|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[9\] = bytes32(uint256(0x[0-9a-fA-F]*)); // H_x.*|withdrawPublicInputs[9] = bytes32(uint256($H_X_HEX_ARKANA)); // H_x (G1 point) - hash_to_curve(round)|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[10\] = bytes32(uint256(0x[0-9a-fA-F]*)); // H_y.*|withdrawPublicInputs[10] = bytes32(uint256($H_Y_HEX_ARKANA)); // H_y (G1 point)|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[11\] = bytes32(uint256(0x[0-9a-fA-F]*)); // V_x.*|withdrawPublicInputs[11] = bytes32(uint256($V_X_HEX_ARKANA)); // V_x (G1 point) - r * H|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[12\] = bytes32(uint256(0x[0-9a-fA-F]*)); // V_y.*|withdrawPublicInputs[12] = bytes32(uint256($V_Y_HEX_ARKANA)); // V_y (G1 point)|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[13\] = bytes32(uint256(0x[0-9a-fA-F]*)); // C1_x0.*|withdrawPublicInputs[13] = bytes32(uint256($C1_X0_HEX_ARKANA)); // C1_x0 (G2 point) - r * G2_gen (real) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[14\] = bytes32(uint256(0x[0-9a-fA-F]*)); // C1_x1.*|withdrawPublicInputs[14] = bytes32(uint256($C1_X1_HEX_ARKANA)); // C1_x1 (G2 point) - r * G2_gen (imag) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[15\] = bytes32(uint256(0x[0-9a-fA-F]*)); // C1_y0.*|withdrawPublicInputs[15] = bytes32(uint256($C1_Y0_HEX_ARKANA)); // C1_y0 (G2 point) - r * G2_gen (real) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[16\] = bytes32(uint256(0x[0-9a-fA-F]*)); // C1_y1.*|withdrawPublicInputs[16] = bytes32(uint256($C1_Y1_HEX_ARKANA)); // C1_y1 (G2 point) - r * G2_gen (imag) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[24\] = bytes32(uint256(0x[0-9a-fA-F]*)); // timelock_ciphertext.*|withdrawPublicInputs[24] = bytes32(uint256($CIPHERTEXT_HEX_ARKANA)); // timelock_ciphertext (public output)|" "$ARKANA_TEST_FILE"
+
+echo -e "${GREEN}✓ Arkana.t.sol updated with timelock values${NC}"
+echo ""
+
+# =============================================================================
 # Summary
 # =============================================================================
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -862,6 +898,7 @@ echo -e "Updated files:"
 echo -e "  ${GREEN}✓${NC} $NOIR_TEST_FILE"
 echo -e "  ${GREEN}✓${NC} $NOIR_TESTS_FILE"
 echo -e "  ${GREEN}✓${NC} $SOLIDITY_TEST_FILE"
+echo -e "  ${GREEN}✓${NC} $ARKANA_TEST_FILE"
 echo -e "  ${GREEN}✓${NC} $DECRYPT_FILE"
 echo ""
 echo -e "Values synced:"
@@ -873,7 +910,8 @@ echo -e "  Ciphertext: ${YELLOW}${CIPHERTEXT:0:20}...${NC}"
 echo ""
 echo -e "Next steps:"
 echo -e "  1. Run Solidity test: ${BLUE}cd contracts && forge test --match-contract DrandTest -vv --via-ir --ffi${NC}"
-echo -e "  2. Test decryption: ${BLUE}cd ts-utils && node timelock-decrypt.js${NC}"
-echo -e "  3. Commit changes: ${BLUE}git add . && git commit -m 'chore: sync drand values'${NC}"
+echo -e "  2. Run integration test: ${BLUE}cd contracts && forge test --match-test test_EntryThenWithdraw_Integration -vv --via-ir --ffi${NC}"
+echo -e "  3. Test decryption: ${BLUE}cd ts-utils && node timelock-decrypt.js${NC}"
+echo -e "  4. Commit changes: ${BLUE}git add . && git commit -m 'chore: sync drand values'${NC}"
 echo ""
 

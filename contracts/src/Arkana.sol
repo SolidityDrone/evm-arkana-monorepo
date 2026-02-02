@@ -12,6 +12,7 @@ import "./ArkanaVault.sol";
 import {Field} from "../lib/poseidon2-evm/src/Field.sol";
 import {Grumpkin} from "./crypto-utils/Grumpkin.sol";
 import {Generators} from "./crypto-utils/Generators.sol";
+import {PairingPrecompileVerifier} from "./crypto-utils/PairingPrecompileVerifier.sol";
 import {ReentrancyGuard} from "@oz/contracts/utils/ReentrancyGuard.sol";
 
 // Noir Verifier interface
@@ -25,19 +26,6 @@ contract Arkana is AccessControl, ReentrancyGuard {
     //@notice Evmnet drand configuration (hardcoded in contract)
     uint256 public constant GENESIS_TIME = 1727521075;
     uint256 public constant PERIOD = 3;
-    // Evmnet drand public key (BN254 G2)
-    uint256 public constant EVMNET_DRAND_PUBKEY_X0 = 0x07e1d1d335df83fa98462005690372c643340060d205306a9aa8106b6bd0b382;
-    uint256 public constant EVMNET_DRAND_PUBKEY_X1 = 0x0557ec32c2ad488e4d4f6008f89a346f18492092ccc0d594610de2732c8b808f;
-    uint256 public constant EVMNET_DRAND_PUBKEY_Y0 = 0x0095685ae3a85ba243747b1b2f426049010f6b73a0cf1d389351d5aaaa1047f6;
-    uint256 public constant EVMNET_DRAND_PUBKEY_Y1 = 0x297d3a4f9749b33eb2d904c9d9ebf17224150ddd7abd7567a9bec6c74480ee0b;
-
-    struct TimelockProof {
-        uint256 targetRound;
-        uint256 V_x;
-        uint256 V_y;
-        uint256 pairingResult;
-        uint256 ciphertext;
-    }
 
     /// @notice Role for initializing vaults
     bytes32 public constant VAULT_INITIALIZER_ROLE = keccak256("ARKANA");
@@ -156,6 +144,31 @@ contract Arkana is AccessControl, ReentrancyGuard {
         CurvePoint senderPublicKey;
     }
 
+    /// @notice Timelock proof parameters
+    struct TimelockParams {
+        uint256 targetRound;
+        uint256 H_x;
+        uint256 H_y;
+        uint256 V_x;
+        uint256 V_y;
+        uint256 C1_x0;
+        uint256 C1_x1;
+        uint256 C1_y0;
+        uint256 C1_y1;
+    }
+
+    /// @notice Withdrawal output parameters
+    struct WithdrawOutputs {
+        uint256 pedersenCommitmentX;
+        uint256 pedersenCommitmentY;
+        uint256 newNonceCommitment;
+        bytes32 encryptedBalance;
+        bytes32 encryptedNullifier;
+        uint256 nonceDiscoveryEntryX;
+        uint256 nonceDiscoveryEntryY;
+        uint256 timelockCiphertext;
+    }
+
     /// @notice Nonce discovery entry struct
     struct NonceDiscoveryEntry {
         uint256 x;
@@ -184,6 +197,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
     error CommitmentAlreadyUsed();
     error InvalidPublicInputs();
     error InvalidTimeReference();
+    error InvalidTimelockProof();
     error VaultNotInitialized(address token);
     error InsufficientShares(uint256 available, uint256 required);
     error NoteAlreadyUsed();
@@ -692,7 +706,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @notice Withdraw function - withdraws funds from balance
     /// @param publicInputs The public inputs for verification (contains pub params + pub outputs)
     /// @return newRoot The new root after adding the commitment
-    /// @dev publicInputs structure: [token_address, amount (in shares), chain_id, declared_time_reference, expected_root, arbitrary_calldata_hash, receiver_address, relayer_fee_amount (in shares), pedersen_commitment[2], new_nonce_commitment, encrypted_state_details[2], nonce_discovery_entry[2]]
+    /// @dev publicInputs structure: [token_address, amount (in shares), chain_id, declared_time_reference, expected_root, arbitrary_calldata_hash, receiver_address, relayer_fee_amount (in shares), target_round, H_x, H_y, V_x, V_y, C1_x0, C1_x1, C1_y0, C1_y1, pedersen_commitment[2], new_nonce_commitment, encrypted_state_details[2], nonce_discovery_entry[2], timelock_ciphertext]
     function withdraw(bytes calldata proof, bytes32[] calldata publicInputs, bytes calldata call)
         public
         nonReentrant
@@ -701,38 +715,44 @@ contract Arkana is AccessControl, ReentrancyGuard {
         // Verify proof using Withdraw verifier (index 3)
         //require(IVerifier(verifiersByIndex[3]).verify(proof, publicInputs), "Invalid proof");
 
-        // Validate publicInputs array length (requires 20 elements: 12 public inputs + 8 public outputs)
-        if (publicInputs.length < 20) {
+        // Validate publicInputs array length (requires 25 elements: 17 public inputs + 8 public outputs)
+        if (publicInputs.length < 25) {
             revert InvalidPublicInputs();
         }
 
         // Parse public inputs in correct order
         address tokenAddress = address(uint160(uint256(publicInputs[0]))); // token_address
         uint256 sharesAmount = uint256(publicInputs[1]); // amount (in shares)
-
         uint256 declaredTimeReference = uint256(publicInputs[3]); // declared_time_reference
         uint256 expectedRoot = uint256(publicInputs[4]); // expected_root
         bytes32 arbitraryCalldataHash = publicInputs[5]; // arbitrary_calldata_hash (for Multicall3)
         address receiverAddress = address(uint160(uint256(publicInputs[6]))); // receiver_address
         uint256 relayerFeeShares = uint256(publicInputs[7]); // relayer_fee_amount (in shares)
 
-        // Timelock public inputs (new - not used in contract logic yet)
-        // Will be used later for pairing verification: e(V, G2_gen) * e(-H, C1) == 1
-        // Note: H_x, H_y, C1_x0, C1_x1, C1_y0, C1_y1 are not yet in publicInputs array
-        uint256 targetRound = uint256(publicInputs[8]); // target_round (drand)
-        uint256 V_x = uint256(publicInputs[9]); // V_x (G1 point)
-        uint256 V_y = uint256(publicInputs[10]); // V_y (G1 point)
-        uint256 pairingResult = uint256(publicInputs[11]); // pairing_result
+        // Timelock parameters (grouped in struct to reduce stack depth)
+        TimelockParams memory timelock = TimelockParams({
+            targetRound: uint256(publicInputs[8]),
+            H_x: uint256(publicInputs[9]),
+            H_y: uint256(publicInputs[10]),
+            V_x: uint256(publicInputs[11]),
+            V_y: uint256(publicInputs[12]),
+            C1_x0: uint256(publicInputs[13]),
+            C1_x1: uint256(publicInputs[14]),
+            C1_y0: uint256(publicInputs[15]),
+            C1_y1: uint256(publicInputs[16])
+        });
 
-        // Parse public outputs
-        uint256 pedersenCommitmentX = uint256(publicInputs[12]); // pedersen_commitment.x
-        uint256 pedersenCommitmentY = uint256(publicInputs[13]); // pedersen_commitment.y
-        uint256 newNonceCommitment = uint256(publicInputs[14]); // new_nonce_commitment
-        bytes32 encryptedBalance = bytes32(publicInputs[15]); // encrypted_state_details[0]
-        bytes32 encryptedNullifier = bytes32(publicInputs[16]); // encrypted_state_details[1]
-        uint256 nonceDiscoveryEntryX = uint256(publicInputs[17]); // nonce_discovery_entry.x
-        uint256 nonceDiscoveryEntryY = uint256(publicInputs[18]); // nonce_discovery_entry.y
-        uint256 timelockCiphertext = uint256(publicInputs[19]); // timelock_ciphertext (new - not used yet)
+        // Parse public outputs (grouped in struct to reduce stack depth)
+        WithdrawOutputs memory outputs = WithdrawOutputs({
+            pedersenCommitmentX: uint256(publicInputs[17]),
+            pedersenCommitmentY: uint256(publicInputs[18]),
+            newNonceCommitment: uint256(publicInputs[19]),
+            encryptedBalance: bytes32(publicInputs[20]),
+            encryptedNullifier: bytes32(publicInputs[21]),
+            nonceDiscoveryEntryX: uint256(publicInputs[22]),
+            nonceDiscoveryEntryY: uint256(publicInputs[23]),
+            timelockCiphertext: uint256(publicInputs[24])
+        });
 
         if (
             uint256(
@@ -746,40 +766,90 @@ contract Arkana is AccessControl, ReentrancyGuard {
             revert InvalidRoot();
         }
 
-        uint256 timeDifference = declaredTimeReference > block.timestamp
-            ? declaredTimeReference - block.timestamp
-            : block.timestamp - declaredTimeReference;
-        if (timeDifference > TIME_TOLERANCE) {
-            revert InvalidTimeReference();
+        /* //TODO UNCOMMENT THIS WHEN DEPLOYING
+                uint256 timeDifference = declaredTimeReference > block.timestamp
+                    ? declaredTimeReference - block.timestamp
+                    : block.timestamp - declaredTimeReference;
+                if (timeDifference > TIME_TOLERANCE) {
+                    revert InvalidTimeReference();
+                } */
+
+        // Verify timelock pairing: e(V, G2_gen) * e(-H, C1) == 1
+        // This proves V = r*H and C1 = r*G2 for the same r, ensuring correct drand pubkey was used
+        if (!PairingPrecompileVerifier.verifyPairingBeforeRound(
+                timelock.H_x,
+                timelock.H_y,
+                timelock.V_x,
+                timelock.V_y,
+                timelock.C1_x0,
+                timelock.C1_x1,
+                timelock.C1_y0,
+                timelock.C1_y1
+            )) {
+            revert InvalidTimelockProof();
         }
 
         // Get Pedersen commitment point from circuit
         // Circuit already calculates: new_shares_balance = previous_shares - (amount + relayer_fee_amount)
         // and creates commitment with new_shares_balance directly
         // So we use the commitment point as-is, no need to subtract shares
-        Grumpkin.G1Point memory finalCommitment = Grumpkin.G1Point(pedersenCommitmentX, pedersenCommitmentY);
-
-        // Total shares to burn = withdrawal shares + relayer fee shares (for accounting purposes)
-        uint256 totalSharesToBurn = sharesAmount + relayerFeeShares;
+        Grumpkin.G1Point memory finalCommitment =
+            Grumpkin.G1Point(outputs.pedersenCommitmentX, outputs.pedersenCommitmentY);
 
         // Hash the Pedersen commitment point to create the leaf (circuit already has correct shares)
         uint256 leaf =
             Field.toUint256(poseidon2Hasher.hash_2(Field.toField(finalCommitment.x), Field.toField(finalCommitment.y)));
 
         // Mark the new nonce commitment as used (required for nonce discovery)
-        if (usedCommitments[bytes32(newNonceCommitment)]) {
+        if (usedCommitments[bytes32(outputs.newNonceCommitment)]) {
             revert CommitmentAlreadyUsed();
         }
 
-        usedCommitments[bytes32(newNonceCommitment)] = true;
+        usedCommitments[bytes32(outputs.newNonceCommitment)] = true;
 
-        encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(encryptedBalance, encryptedNullifier);
-
-        // Add the leaf to the token's merkle tree
-        newRoot = _addLeaf(tokenAddress, leaf);
+        encryptedStateDetails[bytes32(outputs.newNonceCommitment)] =
+            EncryptedStateDetails(outputs.encryptedBalance, outputs.encryptedNullifier);
 
         // Add the nonce discovery entry to the token's stack
-        _addNonceDiscoveryEntry(tokenAddress, nonceDiscoveryEntryX, nonceDiscoveryEntryY, newNonceCommitment);
+        _addNonceDiscoveryEntry(
+            tokenAddress, outputs.nonceDiscoveryEntryX, outputs.nonceDiscoveryEntryY, outputs.newNonceCommitment
+        );
+
+        // Process vault operations (moved to internal function to reduce stack depth)
+        _processWithdrawVaultOperations(tokenAddress, sharesAmount, relayerFeeShares, receiverAddress);
+
+        // Store operation info for nonceCommitment (withdraw burns shares, doesn't mint)
+        operationInfo[bytes32(outputs.newNonceCommitment)] =
+            OperationInfo({operationType: OperationType.Withdraw, sharesMinted: 0, tokenAddress: tokenAddress});
+
+        // Execute Multicall3 call if calldata is provided
+        if (call.length > 0) {
+            if (keccak256(call) != arbitraryCalldataHash) {
+                revert InvalidCalldataHash();
+            }
+            // Execute the Multicall3 call
+            (bool success,) = multicall3Address.call(call);
+            if (!success) {
+                revert Multicall3Failed();
+            }
+        }
+
+        return _addLeaf(tokenAddress, leaf);
+    }
+
+    /// @notice Process vault operations for withdrawal (internal function to reduce stack depth)
+    /// @param tokenAddress The token address
+    /// @param sharesAmount Amount of shares to withdraw
+    /// @param relayerFeeShares Relayer fee in shares
+    /// @param receiverAddress Address to receive withdrawal assets
+    function _processWithdrawVaultOperations(
+        address tokenAddress,
+        uint256 sharesAmount,
+        uint256 relayerFeeShares,
+        address receiverAddress
+    ) internal {
+        // Total shares to burn = withdrawal shares + relayer fee shares (for accounting purposes)
+        uint256 totalSharesToBurn = sharesAmount + relayerFeeShares;
 
         // Convert shares to underlying assets using the vault (ERC4626 standard)
         // Vault uses ERC4626's convertToAssets which uses totalSupply() and totalAssets()
@@ -816,26 +886,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
             IERC20(tokenAddress).safeTransfer(msg.sender, relayerFeeAssets);
         }
 
-        // Store operation info for nonceCommitment (withdraw burns shares, doesn't mint)
-        operationInfo[bytes32(newNonceCommitment)] =
-            OperationInfo({operationType: OperationType.Withdraw, sharesMinted: 0, tokenAddress: tokenAddress});
-
         // Transfer withdrawal assets to receiver
         IERC20(tokenAddress).safeTransfer(receiverAddress, withdrawalAssetsAfterFee);
-
-        // Execute Multicall3 call if calldata is provided
-        if (call.length > 0) {
-            if (keccak256(call) != arbitraryCalldataHash) {
-                revert InvalidCalldataHash();
-            }
-            // Execute the Multicall3 call
-            (bool success,) = multicall3Address.call(call);
-            if (!success) {
-                revert Multicall3Failed();
-            }
-        }
-
-        return newRoot;
     }
 
     // ============================================

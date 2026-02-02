@@ -61,8 +61,8 @@ fn main(
     C1_x1: pub Field,                  // C1 = r * G2_gen on G2 (x.c1 coordinate)
     C1_y0: pub Field,                  // C1 = r * G2_gen on G2 (y.c0 coordinate)
     C1_y1: pub Field,                  // C1 = r * G2_gen on G2 (y.c1 coordinate)
-    pairing_result: pub Field,         // hash(e(V, drand_pubkey)) computed offchain
-
+    pairing_result: Field              // hash(e(V, drand_pubkey)) computed offchain (private input)
+    
 ) -> pub ([Field; 2], Field, [Field; 2], [Field; 2], Field) {
     
     // === SETUP ===
@@ -149,7 +149,8 @@ fn main(
     // Compute ciphertext: ciphertext = plaintext + K
     // Contract will verify pairing_result matches e(V, drand_pubkey) using BN254 precompile
     let timelock_ciphertext = timelock_plaintext + timelock_K;
-    
+
+
     // Ensure all public inputs are used
     let _ = arbitrary_calldata_hash;
     let _ = receiver_address;

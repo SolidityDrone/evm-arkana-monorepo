@@ -15,10 +15,10 @@ import {Test, console} from "forge-std/Test.sol";
 contract DrandTest is Test {
     // BN254 field modulus
     uint256 public constant BN254_FIELD_MODULUS = 0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47;
-
+    
     // BN254 pairing precompile address
     address public constant BN254_PAIRING_PRECOMPILE = address(0x08);
-
+    
     // BN254 G2 generator (standard values)
     // Format: x = x_c0 + x_c1*i, y = y_c0 + y_c1*i
     // Precompile expects: (x_c1, x_c0, y_c1, y_c0)
@@ -26,7 +26,7 @@ contract DrandTest is Test {
     uint256 public constant G2_X_C0 = 0x1800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed; // real
     uint256 public constant G2_Y_C1 = 0x090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b; // imaginary
     uint256 public constant G2_Y_C0 = 0x12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa; // real
-
+    
     // Evmnet drand public key (BN254 G2)
     // From drand JSON pubkey hex, format is: (x_c1, x_c0, y_c1, y_c0)
     // Precompile expects same order: (x_c1, x_c0, y_c1, y_c0)
@@ -37,14 +37,14 @@ contract DrandTest is Test {
 
     struct TimelockProof {
         uint256 targetRound;
-        uint256 H_x; // G1 point: hash_to_curve(round)
+        uint256 H_x;       // G1 point: hash_to_curve(round)
         uint256 H_y;
-        uint256 V_x; // G1 point: r * H
+        uint256 V_x;       // G1 point: r * H
         uint256 V_y;
-        uint256 C1_x0; // G2 point: r * G2_gen (real part)
-        uint256 C1_x1; // (imaginary part)
-        uint256 C1_y0; // (real part)
-        uint256 C1_y1; // (imaginary part)
+        uint256 C1_x0;     // G2 point: r * G2_gen (real part)
+        uint256 C1_x1;     // (imaginary part)
+        uint256 C1_y0;     // (real part)
+        uint256 C1_y1;     // (imaginary part)
         uint256 pairingResult;
         uint256 ciphertext;
     }
@@ -56,72 +56,64 @@ contract DrandTest is Test {
     function verifyPairingBeforeRound(TimelockProof memory proof) public view returns (bool) {
         // Negate H (negate y coordinate in Fp)
         uint256 neg_H_y = BN254_FIELD_MODULUS - (proof.H_y % BN254_FIELD_MODULUS);
-
+        
         // Build pairing input: e(V, G2_gen) * e(-H, C1)
         // Format per EIP-197: (G1_x, G1_y, G2_x_c1, G2_x_c0, G2_y_c1, G2_y_c0)
         bytes memory input = abi.encodePacked(
             // Pair 1: (V, G2_gen)
             proof.V_x,
             proof.V_y,
-            G2_X_C1,
-            G2_X_C0, // x_c1 (imag), x_c0 (real)
-            G2_Y_C1,
-            G2_Y_C0, // y_c1 (imag), y_c0 (real)
+            G2_X_C1, G2_X_C0,  // x_c1 (imag), x_c0 (real)
+            G2_Y_C1, G2_Y_C0,  // y_c1 (imag), y_c0 (real)
             // Pair 2: (-H, C1)
             proof.H_x,
             neg_H_y,
-            proof.C1_x1,
-            proof.C1_x0, // C1_x1 is c1 (imag), C1_x0 is c0 (real)
-            proof.C1_y1,
-            proof.C1_y0 // C1_y1 is c1 (imag), C1_y0 is c0 (real)
+            proof.C1_x1, proof.C1_x0,  // C1_x1 is c1 (imag), C1_x0 is c0 (real)
+            proof.C1_y1, proof.C1_y0   // C1_y1 is c1 (imag), C1_y0 is c0 (real)
         );
-
+        
         (bool success, bytes memory result) = BN254_PAIRING_PRECOMPILE.staticcall(input);
-
+        
         if (!success || result.length != 32) {
             return false;
         }
-
+        
         return abi.decode(result, (uint256)) == 1;
     }
-
+    
     /**
      * @notice Verify AFTER round: e(sigma, C1) * e(-V, drand_pubkey) == 1
      * @dev This proves the encryption used the correct drand pubkey
      */
-    function verifyPairingAfterRound(TimelockProof memory proof, uint256 sigma_x, uint256 sigma_y)
-        public
-        view
-        returns (bool)
-    {
+    function verifyPairingAfterRound(
+        TimelockProof memory proof,
+        uint256 sigma_x,
+        uint256 sigma_y
+    ) public view returns (bool) {
         // Negate V (negate y coordinate in Fp)
         uint256 neg_V_y = BN254_FIELD_MODULUS - (proof.V_y % BN254_FIELD_MODULUS);
-
+        
         // Build pairing input: e(sigma, C1) * e(-V, drand_pubkey)
         // Format per EIP-197: (G1_x, G1_y, G2_x_c1, G2_x_c0, G2_y_c1, G2_y_c0)
         bytes memory input = abi.encodePacked(
             // Pair 1: (sigma, C1)
             sigma_x,
             sigma_y,
-            proof.C1_x1,
-            proof.C1_x0, // C1_x1 is c1 (imag), C1_x0 is c0 (real)
-            proof.C1_y1,
-            proof.C1_y0, // C1_y1 is c1 (imag), C1_y0 is c0 (real)
+            proof.C1_x1, proof.C1_x0,  // C1_x1 is c1 (imag), C1_x0 is c0 (real)
+            proof.C1_y1, proof.C1_y0,  // C1_y1 is c1 (imag), C1_y0 is c0 (real)
             // Pair 2: (-V, drand_pubkey)
             proof.V_x,
             neg_V_y,
-            EVMNET_PK_X_C1,
-            EVMNET_PK_X_C0, // x_c1 (imag), x_c0 (real)
-            EVMNET_PK_Y_C1,
-            EVMNET_PK_Y_C0 // y_c1 (imag), y_c0 (real)
+            EVMNET_PK_X_C1, EVMNET_PK_X_C0,  // x_c1 (imag), x_c0 (real)
+            EVMNET_PK_Y_C1, EVMNET_PK_Y_C0   // y_c1 (imag), y_c0 (real)
         );
-
+        
         (bool success, bytes memory result) = BN254_PAIRING_PRECOMPILE.staticcall(input);
-
+        
         if (!success || result.length != 32) {
             return false;
         }
-
+        
         return abi.decode(result, (uint256)) == 1;
     }
 
@@ -144,11 +136,11 @@ contract DrandTest is Test {
             pairingResult: 0x107b5ed0db8d82f8e13cd635f33dc1ba12d85cb4baa964af52bf429114f15c2b,
             ciphertext: 0x2952ef0fd431cd2deb9e257e6f856635a56a9576c04e911e0ee83eeda6aae976
         });
-
+        
         // Verify before round: proves V = r*H and C1 = r*G2
         bool valid = verifyPairingBeforeRound(proof);
         assertTrue(valid, "BEFORE round pairing check failed: e(V, G2_gen) * e(-H, C1) != 1");
-
+        
         console.log("BEFORE round verification PASSED!");
         console.log("Proven: V = r*H and C1 = r*G2 for same r");
     }

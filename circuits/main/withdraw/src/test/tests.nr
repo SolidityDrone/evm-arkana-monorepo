@@ -105,7 +105,16 @@ fn print_prover_toml_format(
     merkle_proof: [Field; 32],
     arbitrary_calldata_hash: Field,
     receiver_address: Field,
-    relayer_fee_amount: Field
+    relayer_fee_amount: Field,
+    target_round: Field,
+    H_x: Field,
+    H_y: Field,
+    V_x: Field,
+    V_y: Field,
+    C1_x0: Field,
+    C1_x1: Field,
+    C1_y0: Field,
+    C1_y1: Field
 ) {
     std::println("========================================");
     std::println("COPY THIS TO withdraw/Prover.toml");
@@ -203,6 +212,52 @@ fn print_prover_toml_format(
     
     std::print("relayer_fee_amount = \"");
     std::print(relayer_fee_amount);
+    std::println("\"");
+    std::println("");
+    
+    // Timelock encryption parameters
+    std::print("target_round = \"");
+    std::print(target_round);
+    std::println("\"");
+    std::println("");
+    
+    std::print("H_x = \"");
+    std::print(H_x);
+    std::println("\"");
+    std::println("");
+    
+    std::print("H_y = \"");
+    std::print(H_y);
+    std::println("\"");
+    std::println("");
+    
+    std::print("V_x = \"");
+    std::print(V_x);
+    std::println("\"");
+    std::println("");
+    
+    std::print("V_y = \"");
+    std::print(V_y);
+    std::println("\"");
+    std::println("");
+    
+    std::print("C1_x0 = \"");
+    std::print(C1_x0);
+    std::println("\"");
+    std::println("");
+    
+    std::print("C1_x1 = \"");
+    std::print(C1_x1);
+    std::println("\"");
+    std::println("");
+    
+    std::print("C1_y0 = \"");
+    std::print(C1_y0);
+    std::println("\"");
+    std::println("");
+    
+    std::print("C1_y1 = \"");
+    std::print(C1_y1);
     std::println("\"");
     std::println("");
 }
@@ -478,7 +533,16 @@ fn test_withdraw_flow() {
         withdraw1_proof,
         0x1234567890abcdef as Field,
         test_receiver_address(),
-        test_relayer_fee_amount()
+        test_relayer_fee_amount(),
+        test_timelock_target_round(),
+        test_timelock_H_x(),
+        test_timelock_H_y(),
+        test_timelock_V_x(),
+        test_timelock_V_y(),
+        test_timelock_C1_x0(),
+        test_timelock_C1_x1(),
+        test_timelock_C1_y0(),
+        test_timelock_C1_y1()
     );
     let _ = withdraw1_result; // Use variable
 }
@@ -913,9 +977,9 @@ fn test_entry_then_withdraw_integration() {
     std::println("");
     
     std::println("=== PUBLIC INPUTS FOR withdraw() FUNCTION ===");
-    std::println("publicInputs array (26 elements):");
+    std::println("publicInputs array (25 elements):");
     std::println("");
-    std::println("// Public inputs (18 elements):");
+    std::println("// Public inputs (17 elements):");
     std::print("publicInputs[0] = bytes32(uint256(uint160(tokenAddress))); // token_address = ");
     std::println(token_address);
     std::print("publicInputs[1] = bytes32(sharesAmount); // amount (in shares) = ");
@@ -950,25 +1014,23 @@ fn test_entry_then_withdraw_integration() {
     std::println(test_timelock_C1_y0());
     std::print("publicInputs[16] = bytes32(C1_y1); // C1_y1 (G2 point) = ");
     std::println(test_timelock_C1_y1());
-    std::print("publicInputs[17] = bytes32(pairingResult); // pairing_result = ");
-    std::println(test_timelock_pairing_result());
     std::println("");
     std::println("// Public outputs (8 elements):");
-    std::print("publicInputs[18] = bytes32(pedersenCommitmentX); // pedersen_commitment.x = ");
+    std::print("publicInputs[17] = bytes32(pedersenCommitmentX); // pedersen_commitment.x = ");
     std::println(withdraw_result.0[0]);
-    std::print("publicInputs[19] = bytes32(pedersenCommitmentY); // pedersen_commitment.y = ");
+    std::print("publicInputs[18] = bytes32(pedersenCommitmentY); // pedersen_commitment.y = ");
     std::println(withdraw_result.0[1]);
-    std::print("publicInputs[20] = bytes32(newNonceCommitment); // new_nonce_commitment = ");
+    std::print("publicInputs[19] = bytes32(newNonceCommitment); // new_nonce_commitment = ");
     std::println(withdraw_result.1);
-    std::print("publicInputs[21] = bytes32(encryptedBalance); // encrypted_state_details[0] = ");
+    std::print("publicInputs[20] = bytes32(encryptedBalance); // encrypted_state_details[0] = ");
     std::println(withdraw_result.2[0]);
-    std::print("publicInputs[22] = bytes32(encryptedNullifier); // encrypted_state_details[1] = ");
+    std::print("publicInputs[21] = bytes32(encryptedNullifier); // encrypted_state_details[1] = ");
     std::println(withdraw_result.2[1]);
-    std::print("publicInputs[23] = bytes32(nonceDiscoveryEntryX); // nonce_discovery_entry.x = ");
+    std::print("publicInputs[22] = bytes32(nonceDiscoveryEntryX); // nonce_discovery_entry.x = ");
     std::println(withdraw_result.3[0]);
-    std::print("publicInputs[24] = bytes32(nonceDiscoveryEntryY); // nonce_discovery_entry.y = ");
+    std::print("publicInputs[23] = bytes32(nonceDiscoveryEntryY); // nonce_discovery_entry.y = ");
     std::println(withdraw_result.3[1]);
-    std::print("publicInputs[25] = bytes32(timelockCiphertext); // timelock_ciphertext = ");
+    std::print("publicInputs[24] = bytes32(timelockCiphertext); // timelock_ciphertext = ");
     std::println(withdraw_result.4);
     std::println("");
     std::println("// Additional parameter for withdraw():");

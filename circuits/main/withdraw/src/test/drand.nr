@@ -10,9 +10,10 @@ use dep::std;
 //
 // Circuit verifies:
 //   1. ciphertext = plaintext + K where K = KDF(pairing_result)
+//      Note: pairing_result is a private input (witness) in the circuit
 //
 // Contract verifies:
-//   1. pairing_result == hash(e(V, drand_pubkey)) using BN254 precompile
+//   1. e(V, G2_gen) * e(-H, C1) == 1 (proves V = r*H, C1 = r*G2)
 //   2. drand_pubkey matches hardcoded evmnet value
 //
 // Security: If someone provides a fake V, the pairing check will fail on-chain.
@@ -52,12 +53,12 @@ fn test_drand_timelock_encryption() {
     
     // === INPUTS (from TypeScript timelock-prep.js output with Poseidon2) ===
     // [AUTO-GENERATED VALUES] - DO NOT EDIT MANUALLY
-    // Private input (witness)
+    // Private inputs (witness)
     let plaintext = 42 as Field;
+    let pairing_result = 7454982161247114942090419709036621238296894275792563520607667729655177239595 as Field;  // Private: hash(e(V, drand_pubkey))
     
     // Public inputs (from offchain computation)
     let target_round = 14161727 as Field;
-    let pairing_result = 7454982161247114942090419709036621238296894275792563520607667729655177239595 as Field;
     let expected_ciphertext = 18691358195348525365444204984148224031355373457348998934574405312519615474038 as Field;
     
     // H = hash_to_curve(round) on G1 - needed for on-chain pairing verification
@@ -188,9 +189,6 @@ fn test_drand_timelock_encryption() {
     std::print("  C1_y1 (pub): ");
     std::println(C1_y1);
     std::println("");
-    std::print("pairing_result (pub): ");
-    std::println(pairing_result);
-    std::println("");
     std::print("ciphertext (pub): ");
     std::println(computed_ciphertext);
     std::println("");
@@ -281,8 +279,11 @@ fn test_drand_timelock_encryption() {
     std::println("  - H_x, H_y: Field (G1 point)");
     std::println("  - V_x, V_y: Field (G1 point)");
     std::println("  - C1_x0, C1_x1, C1_y0, C1_y1: Field (G2 point)");
-    std::println("  - pairing_result: Field");
-    std::println("  - ciphertext: Field");
+    std::println("  - ciphertext: Field (public output)");
+    std::println("");
+    std::println("Private Inputs:");
+    std::println("  - plaintext: Field");
+    std::println("  - pairing_result: Field (hash(e(V, drand_pubkey)))");
     std::println("");
     std::println("All tests passed!");
 }

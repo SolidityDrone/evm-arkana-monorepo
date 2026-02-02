@@ -1,17 +1,54 @@
+
 user_key = "0x19e573f3801c7b2e4619998342e8e305e1692184cbacd220c04198a04c36b7d2"
+
 previous_nonce = "0x03"
+
 previous_shares = "0x64"
+
 nullifier = "0x00"
+
 previous_commitment_leaf = "0x2c1b45cba36c96d9049a38f445fba21d58f14de2bfd88b818e0c35cb2dca9e33"
+
 commitment_index = "0x03"
+
 tree_depth = "0x02"
+
 expected_root = "0x176444929ca9e37f64ec3647eac6b28af6c38754f35cbb75249b6f19c3fba4e7"
+
 merkle_proof = ["0x2d9ef1023cef3c2d6c293641045639a3e5b22bbfff248297c2fec63c210aa1c2", "0x1929818f8c0678d133d3785d5d996bb759282170e0c64784cbd6d8252cadb153", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00"]
+
 token_address = "0x7775e4b6f4d40be537b55b6c47e09ada0157bd"
+
 chain_id = "0x01"
+
 amount = "0x32"
+
 previous_unlocks_at = "0x00"
+
 declared_time_reference = "0x0f4240"
+
 arbitrary_calldata_hash = "0x1234567890abcdef"
+
 receiver_address = "0x742d35cc6634c0532925a3b8d4c9db96c4b4d8b6"
+
 relayer_fee_amount = "0x01"
+
+target_round = "0xd8173f"
+
+H_x = "0x25d3f92d5d6b7b15cd6360cd746b5001e3ffd7bb0c6d3949158a0214a8d8b268"
+
+H_y = "0x0b11034b64b10d4cdff425fba3d857e96cd23738789e68df5d64ccca881c8b05"
+
+V_x = "0x0783acf9cadf136444573178ba540c058d95b61a13534e7a502519e2b61f4a82"
+
+V_y = "0x0e33c8f04f0bd7d88455203080b3fc81164f11d9afecf1da64e2a422d0fcb8e3"
+
+C1_x0 = "0x0923e1d4de1ad26d2258943a10f8cee94fc5516be3074fd75b494ae72e8bbb39"
+
+C1_x1 = "0x2fa991f9d9654a6fe03a19c891e3f8298e59e7d579907c23766e8c071a99607d"
+
+C1_y0 = "0x01f86545bd5d6b6cd70010f39e89725793cfb578a9aa37d88c64a039b40e4f1a"
+
+C1_y1 = "0x05ddbacaa77db26735b8554c800cbf0f159a85a2e5ec71dffbaffbffaf4574f7"
+
+pairing_result = "0x107b5ed0db8d82f8e13cd635f33dc1ba12d85cb4baa964af52bf429114f15c2b"
