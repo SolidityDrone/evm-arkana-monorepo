@@ -21,6 +21,24 @@ interface IVerifier {
 
 contract Arkana is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
+
+    //@notice Evmnet drand configuration (hardcoded in contract)
+    uint256 public constant GENESIS_TIME = 1727521075;
+    uint256 public constant PERIOD = 3;
+    // Evmnet drand public key (BN254 G2)
+    uint256 public constant EVMNET_DRAND_PUBKEY_X0 = 0x07e1d1d335df83fa98462005690372c643340060d205306a9aa8106b6bd0b382;
+    uint256 public constant EVMNET_DRAND_PUBKEY_X1 = 0x0557ec32c2ad488e4d4f6008f89a346f18492092ccc0d594610de2732c8b808f;
+    uint256 public constant EVMNET_DRAND_PUBKEY_Y0 = 0x0095685ae3a85ba243747b1b2f426049010f6b73a0cf1d389351d5aaaa1047f6;
+    uint256 public constant EVMNET_DRAND_PUBKEY_Y1 = 0x297d3a4f9749b33eb2d904c9d9ebf17224150ddd7abd7567a9bec6c74480ee0b;
+
+    struct TimelockProof {
+        uint256 targetRound;
+        uint256 V_x;
+        uint256 V_y;
+        uint256 pairingResult;
+        uint256 ciphertext;
+    }
+
     /// @notice Role for initializing vaults
     bytes32 public constant VAULT_INITIALIZER_ROLE = keccak256("ARKANA");
     /// @notice Mapping from verifier index to verifier address

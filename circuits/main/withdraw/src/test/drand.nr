@@ -60,9 +60,20 @@ fn test_drand_timelock_encryption() {
     let pairing_result = 7454982161247114942090419709036621238296894275792563520607667729655177239595 as Field;
     let expected_ciphertext = 18691358195348525365444204984148224031355373457348998934574405312519615474038 as Field;
     
-    // V is computed offchain, passed as public input (for contract verification)
+    // H = hash_to_curve(round) on G1 - needed for on-chain pairing verification
+    let H_x = 17110099886125304497835776545713209504691977157583709568477924270886121681512 as Field;
+    let H_y = 5005500472356267329961646875240392899498427164717219254104199314237179071237 as Field;
+    
+    // V = r * H on G1 - computed offchain, passed as public input
     let expected_V_x = 3398840740332052120597358755822620527412520723655025502452048074494690937474 as Field;
     let expected_V_y = 6423875908450528297073249687018185515808147274469491506877998757626431453411 as Field;
+    
+    // C1 = r * G2_gen on G2 - needed for on-chain pairing verification
+    // Format: Fp2 coordinates (c0=real, c1=imaginary)
+    let C1_x0 = 4134213916343724931760970732975602250786076528375749075160172169169044486969 as Field;
+    let C1_x1 = 21558308526502507855325166439008393966717643700102272257425778227652387758205 as Field;
+    let C1_y0 = 891189877208105314331199145787525421844052589013600536797344575232083382042 as Field;
+    let C1_y1 = 2653326632600946096894137479864389653965751602244102699043300532605270979831 as Field;
     
     // Drand public key (evmnet) - G2 point (hardcoded in contract, NOT in circuit)
     let drand_pubkey_x0 = 3565178688866727608783247307855519961161197286613423629330948765523825963906 as Field;
@@ -147,19 +158,35 @@ fn test_drand_timelock_encryption() {
     
     // === OUTPUTS ===
     std::println("═══════════════════════════════════════════════════════════════");
-    std::println("OUTPUTS (Public Inputs for Circuit)");
+    std::println("OUTPUTS (Public Inputs for Circuit + On-chain Verification)");
     std::println("═══════════════════════════════════════════════════════════════");
     std::println("");
-    std::println("Public inputs that will be verified:");
+    std::println("Public inputs for circuit and on-chain pairing verification:");
     std::println("");
     std::print("target_round (pub): ");
     std::println(target_round);
     std::println("");
-    std::println("V (pub) - G1 point [x, y] (computed offchain):");
+    std::println("H (pub) - G1 point - hash_to_curve(round):");
+    std::print("  H_x (pub): ");
+    std::println(H_x);
+    std::print("  H_y (pub): ");
+    std::println(H_y);
+    std::println("");
+    std::println("V (pub) - G1 point - r * H:");
     std::print("  V_x (pub): ");
     std::println(expected_V_x);
     std::print("  V_y (pub): ");
     std::println(expected_V_y);
+    std::println("");
+    std::println("C1 (pub) - G2 point - r * G2_gen (for on-chain pairing check):");
+    std::print("  C1_x0 (pub): ");
+    std::println(C1_x0);
+    std::print("  C1_x1 (pub): ");
+    std::println(C1_x1);
+    std::print("  C1_y0 (pub): ");
+    std::println(C1_y0);
+    std::print("  C1_y1 (pub): ");
+    std::println(C1_y1);
     std::println("");
     std::print("pairing_result (pub): ");
     std::println(pairing_result);
@@ -167,7 +194,7 @@ fn test_drand_timelock_encryption() {
     std::print("ciphertext (pub): ");
     std::println(computed_ciphertext);
     std::println("");
-    std::println("drand_pubkey (G2) - hardcoded in contract (NOT in circuit):");
+    std::println("drand_pubkey (G2) - hardcoded in contract:");
     std::print("  x0: ");
     std::println(drand_pubkey_x0);
     std::print("  x1: ");
@@ -184,20 +211,24 @@ fn test_drand_timelock_encryption() {
     std::println("═══════════════════════════════════════════════════════════════");
     std::println("");
     
-    std::println("✅ Circuit verification passed:");
+    std::println("Circuit verification passed:");
     std::println("   ciphertext = plaintext + K (where K = KDF(pairing_result))");
     std::println("");
     
-    std::println("📋 Contract will verify (on-chain):");
-    std::println("   1. drand_pubkey matches hardcoded evmnet value");
-    std::println("   2. pairing_result == hash(e(V, drand_pubkey))");
-    std::println("      (using BN254 pairing precompile 0x08)");
+    std::println("Contract verifies BEFORE round (zero-trust on pubkey):");
+    std::println("   e(V, G2_gen) * e(-H, C1) == 1");
+    std::println("   This proves: V = r*H AND C1 = r*G2 for same r");
+    std::println("   Using BN254 pairing precompile 0x08");
     std::println("");
-    std::println("🔒 Security guarantee:");
-    std::println("   - If pairing is correct AND pubkey is evmnet → K is correct");
-    std::println("   - If K is correct → ciphertext is correct");
+    std::println("Contract verifies AFTER round (with drand signature):");
+    std::println("   e(sigma, C1) * e(-V, drand_pubkey) == 1");
+    std::println("   This proves: encryption used correct drand_pubkey");
+    std::println("");
+    std::println("Security guarantee:");
+    std::println("   - Contract verifies V, C1 use same r (before round)");
+    std::println("   - Contract verifies encryption with drand_pubkey (after round)");
     std::println("   - Circuit ensures: ciphertext = plaintext + K");
-    std::println("   - Therefore: plaintext ↔ ciphertext relationship is guaranteed");
+    std::println("   - Therefore: plaintext <-> ciphertext is GUARANTEED correct");
     std::println("");
     
     // Verify we can decrypt (simulate decryption)
@@ -218,32 +249,40 @@ fn test_drand_timelock_encryption() {
     std::println("  - Genesis Time: 1727521075");
     std::println("  - Public Key: G2 point (signatures on G1)");
     std::println("");
-    std::println("Flow:");
-    std::println("  1. OFFCHAIN: V = r * H(round) on BN254 G1");
-    std::println("  2. OFFCHAIN: pairing = e(V, drand_pubkey) on BN254");
-    std::println("  3. OFFCHAIN: pairing_result = hash(pairing)");
-    std::println("  4. OFFCHAIN: K = KDF(pairing_result)");
-    std::println("  5. OFFCHAIN: ciphertext = plaintext + K");
+    std::println("OFFCHAIN Flow:");
+    std::println("  1. H = hash_to_curve(round) on BN254 G1");
+    std::println("  2. V = r * H on BN254 G1");
+    std::println("  3. C1 = r * G2_gen on BN254 G2");
+    std::println("  4. pairing = e(V, drand_pubkey) on BN254");
+    std::println("  5. pairing_result = hash(pairing)");
+    std::println("  6. K = KDF(pairing_result)");
+    std::println("  7. ciphertext = plaintext + K");
     std::println("");
     std::println("Circuit verifies (in-circuit):");
-    std::println("  ✅ ciphertext = plaintext + K");
-    std::println("     where K = KDF(pairing_result)");
+    std::println("   ciphertext = plaintext + K");
+    std::println("   where K = KDF(pairing_result)");
     std::println("");
-    std::println("Contract verifies (on-chain):");
-    std::println("  ✅ drand_pubkey (G2) matches hardcoded evmnet value");
-    std::println("  ✅ pairing_result == hash(e(V, drand_pubkey))");
-    std::println("     using BN254 pairing precompile 0x08");
+    std::println("Contract verifies (on-chain) BEFORE round:");
+    std::println("   e(V, G2_gen) * e(-H, C1) == 1");
+    std::println("   This proves V = r*H, C1 = r*G2 (same r)");
     std::println("");
-    std::println("Security:");
-    std::println("  - Contract ensures K is derived from correct evmnet pubkey");
-    std::println("  - Circuit ensures ciphertext = plaintext + K");
-    std::println("  - Therefore: plaintext ↔ ciphertext is guaranteed");
+    std::println("Contract verifies (on-chain) AFTER round:");
+    std::println("   e(sigma, C1) * e(-V, drand_pubkey) == 1");
+    std::println("   This proves encryption used correct pubkey");
+    std::println("");
+    std::println("Security (ZERO TRUST on pubkey):");
+    std::println("  - Before round: Contract verifies H, V, C1 consistency");
+    std::println("  - After round: Contract verifies drand_pubkey correctness");
+    std::println("  - Circuit ensures: ciphertext = plaintext + K");
+    std::println("  - Therefore: plaintext <-> ciphertext is GUARANTEED");
     std::println("");
     std::println("Public Inputs:");
     std::println("  - target_round: Field");
-    std::println("  - V_x, V_y: Field (G1 point, computed offchain)");
-    std::println("  - pairing_result: Field (hash of GT, computed offchain)");
+    std::println("  - H_x, H_y: Field (G1 point)");
+    std::println("  - V_x, V_y: Field (G1 point)");
+    std::println("  - C1_x0, C1_x1, C1_y0, C1_y1: Field (G2 point)");
+    std::println("  - pairing_result: Field");
     std::println("  - ciphertext: Field");
     std::println("");
-    std::println("✅ All tests passed!");
+    std::println("All tests passed!");
 }

@@ -191,18 +191,21 @@ export async function prepareCircuitInputs(plaintext, targetRound, randomness = 
     const roundBytes = new TextEncoder().encode(targetRound.toString());
     const H = hashToG1(roundBytes);
 
-    // 3. Compute V = r * H
+    // 3. Compute V = r * H (on G1)
     const V = H.multiply(r);
 
-    // 4. Pairing: e(V, drandPubkey)
+    // 4. Compute C1 = r * G2_gen (on G2) - needed for on-chain pairing verification
+    const C1 = G2.Point.BASE.multiply(r);
+
+    // 6. Pairing: e(V, drandPubkey)
     // For BN254: G1 x G2 -> GT
     // V is on G1, drandPubkey is on G2
     const pairingResult = bn254.pairing(V, drandPubkey);
 
-    // 5. Derive key using KDF (Poseidon2, same as Noir)
+    // 8. Derive key using KDF (Poseidon2, same as Noir)
     const K = await kdf(pairingResult);
 
-    // 6. Encrypt (simple field addition)
+    // 9. Encrypt (simple field addition)
     const FIELD_MODULUS = bn254.fields.Fr.ORDER;
     const plaintextBigInt = BigInt(plaintext);
     const ciphertext = (plaintextBigInt + K) % FIELD_MODULUS;
@@ -217,31 +220,50 @@ export async function prepareCircuitInputs(plaintext, targetRound, randomness = 
     const pairingHash = sha256(new TextEncoder().encode(pairingStr));
     const pairingResultField = BigInt('0x' + Buffer.from(pairingHash).toString('hex')) % FIELD_MODULUS;
 
+    // Get C1 affine coordinates (G2 point has Fp2 coordinates)
+    const C1_affine = C1.toAffine();
+    // For G2, x and y are Fp2 elements with c0 (real) and c1 (imaginary) parts
+    const C1_x0 = C1_affine.x.c0.toString();
+    const C1_x1 = C1_affine.x.c1.toString();
+    const C1_y0 = C1_affine.y.c0.toString();
+    const C1_y1 = C1_affine.y.c1.toString();
+
     return {
         // Private witness for circuit
         private: {
             plaintext: plaintext.toString(),
             randomness: r.toString(),
-            H_x: H.x.toString(),
-            H_y: H.y.toString()
         },
-        // Public inputs for circuit
+        // Public inputs for circuit and on-chain verification
         public: {
             targetRound: targetRound,
+            // H = hash_to_curve(round) on G1 - needed for on-chain pairing check
+            H_x: H.x.toString(),
+            H_y: H.y.toString(),
+            // V = r * H on G1
             V_x: V.x.toString(),
             V_y: V.y.toString(),
+            // C1 = r * G2_gen on G2 - needed for on-chain pairing check
+            // Format: Fp2 coordinates (c0=real, c1=imaginary)
+            C1_x0: C1_x0,
+            C1_x1: C1_x1,
+            C1_y0: C1_y0,
+            C1_y1: C1_y1,
+            // Pairing result hash
             pairingResult: pairingResultField.toString(),
-            // G2 pubkey coordinates (Fp2)
+            // G2 pubkey coordinates (Fp2) - hardcoded in contract
             drandPubkey_x0: pubkeyX0.toString(),
             drandPubkey_x1: pubkeyX1.toString(),
             drandPubkey_y0: pubkeyY0.toString(),
             drandPubkey_y1: pubkeyY1.toString(),
+            // Encrypted output
             ciphertext: ciphertext.toString()
         },
         // Additional info for verification
         computed: {
             H: { x: H.x.toString(), y: H.y.toString() },
             V: { x: V.x.toString(), y: V.y.toString() },
+            C1: { x0: C1_x0, x1: C1_x1, y0: C1_y0, y1: C1_y1 },
             K: K.toString(),
             pairingResultGT: pairingResult.toString() // Full GT element
         }
@@ -301,14 +323,19 @@ async function example() {
     console.log('=== PRIVATE INPUTS (for circuit witness) ===');
     console.log('plaintext:', inputs.private.plaintext);
     console.log('randomness:', inputs.private.randomness);
-    console.log('H_x:', inputs.private.H_x);
-    console.log('H_y:', inputs.private.H_y);
     console.log('');
 
-    console.log('=== PUBLIC INPUTS (for circuit) ===');
+    console.log('=== PUBLIC INPUTS (for circuit and on-chain verification) ===');
     console.log('target_round:', inputs.public.targetRound);
+    console.log('H_x:', inputs.public.H_x);
+    console.log('H_y:', inputs.public.H_y);
     console.log('V_x:', inputs.public.V_x);
     console.log('V_y:', inputs.public.V_y);
+    console.log('C1 (G2 point for pairing check):');
+    console.log('  x0:', inputs.public.C1_x0);
+    console.log('  x1:', inputs.public.C1_x1);
+    console.log('  y0:', inputs.public.C1_y0);
+    console.log('  y1:', inputs.public.C1_y1);
     console.log('pairing_result:', inputs.public.pairingResult);
     console.log('drand_pubkey (G2):');
     console.log('  x0:', inputs.public.drandPubkey_x0);
@@ -321,6 +348,7 @@ async function example() {
     console.log('=== COMPUTED VALUES (for verification) ===');
     console.log('H:', inputs.computed.H);
     console.log('V:', inputs.computed.V);
+    console.log('C1:', inputs.computed.C1);
     console.log('K:', inputs.computed.K);
     console.log('');
 

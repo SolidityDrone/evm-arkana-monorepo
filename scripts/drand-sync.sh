@@ -25,6 +25,7 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 TS_UTILS_DIR="$ROOT_DIR/ts-utils"
 CIRCUITS_DIR="$ROOT_DIR/circuits/main/withdraw"
 NOIR_TEST_FILE="$CIRCUITS_DIR/src/test/drand.nr"
+NOIR_TESTS_FILE="$CIRCUITS_DIR/src/test/tests.nr"
 SOLIDITY_TEST_FILE="$ROOT_DIR/contracts/test/DrandTest.sol"
 
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -35,7 +36,7 @@ echo ""
 # =============================================================================
 # Step 1: Run TypeScript timelock-prep.js
 # =============================================================================
-echo -e "${BLUE}[1/4] Running timelock-prep.js...${NC}"
+echo -e "${BLUE}[1/7] Running timelock-prep.js...${NC}"
 
 cd "$TS_UTILS_DIR"
 
@@ -54,15 +55,23 @@ echo ""
 # =============================================================================
 # Step 2: Parse TypeScript output
 # =============================================================================
-echo -e "${BLUE}[2/4] Parsing TypeScript output...${NC}"
+echo -e "${BLUE}[2/7] Parsing TypeScript output...${NC}"
 
 # Extract values using grep and awk
 PLAINTEXT=$(echo "$TS_OUTPUT" | grep "^plaintext:" | awk '{print $2}')
 TARGET_ROUND=$(echo "$TS_OUTPUT" | grep "^target_round:" | awk '{print $2}')
+H_X=$(echo "$TS_OUTPUT" | grep "^H_x:" | awk '{print $2}')
+H_Y=$(echo "$TS_OUTPUT" | grep "^H_y:" | awk '{print $2}')
 V_X=$(echo "$TS_OUTPUT" | grep "^V_x:" | awk '{print $2}')
 V_Y=$(echo "$TS_OUTPUT" | grep "^V_y:" | awk '{print $2}')
 PAIRING_RESULT=$(echo "$TS_OUTPUT" | grep "^pairing_result:" | awk '{print $2}')
 CIPHERTEXT=$(echo "$TS_OUTPUT" | grep "^ciphertext:" | awk '{print $2}')
+
+# Extract C1 G2 coordinates (from "C1 (G2 point for pairing check):" section)
+C1_X0=$(echo "$TS_OUTPUT" | grep -A1 "C1 (G2 point" | grep "x0:" | awk '{print $2}')
+C1_X1=$(echo "$TS_OUTPUT" | grep -A2 "C1 (G2 point" | grep "x1:" | awk '{print $2}')
+C1_Y0=$(echo "$TS_OUTPUT" | grep -A3 "C1 (G2 point" | grep "y0:" | awk '{print $2}')
+C1_Y1=$(echo "$TS_OUTPUT" | grep -A4 "C1 (G2 point" | grep "y1:" | awk '{print $2}')
 
 # Extract drand pubkey G2 coordinates (multi-line)
 DRAND_X0=$(echo "$TS_OUTPUT" | grep -A1 "drand_pubkey (G2):" | grep "x0:" | awk '{print $2}')
@@ -75,8 +84,14 @@ K_VALUE=$(echo "$TS_OUTPUT" | grep "^K:" | awk '{print $2}')
 
 echo "  Plaintext: $PLAINTEXT"
 echo "  Target Round: $TARGET_ROUND"
+echo "  H_x: $H_X"
+echo "  H_y: $H_Y"
 echo "  V_x: $V_X"
 echo "  V_y: $V_Y"
+echo "  C1_x0: $C1_X0"
+echo "  C1_x1: $C1_X1"
+echo "  C1_y0: $C1_Y0"
+echo "  C1_y1: $C1_Y1"
 echo "  Pairing Result: $PAIRING_RESULT"
 echo "  Ciphertext: $CIPHERTEXT"
 echo "  K: $K_VALUE"
@@ -86,7 +101,7 @@ echo ""
 # =============================================================================
 # Step 3: Update Noir test file
 # =============================================================================
-echo -e "${BLUE}[3/4] Updating Noir test file...${NC}"
+echo -e "${BLUE}[3/7] Updating Noir test file...${NC}"
 
 # Create the updated Noir test content
 cat > "$NOIR_TEST_FILE" << 'NOIR_HEADER'
@@ -156,9 +171,20 @@ cat >> "$NOIR_TEST_FILE" << NOIR_VALUES
     let pairing_result = $PAIRING_RESULT as Field;
     let expected_ciphertext = $CIPHERTEXT as Field;
     
-    // V is computed offchain, passed as public input (for contract verification)
+    // H = hash_to_curve(round) on G1 - needed for on-chain pairing verification
+    let H_x = $H_X as Field;
+    let H_y = $H_Y as Field;
+    
+    // V = r * H on G1 - computed offchain, passed as public input
     let expected_V_x = $V_X as Field;
     let expected_V_y = $V_Y as Field;
+    
+    // C1 = r * G2_gen on G2 - needed for on-chain pairing verification
+    // Format: Fp2 coordinates (c0=real, c1=imaginary)
+    let C1_x0 = $C1_X0 as Field;
+    let C1_x1 = $C1_X1 as Field;
+    let C1_y0 = $C1_Y0 as Field;
+    let C1_y1 = $C1_Y1 as Field;
     
     // Drand public key (evmnet) - G2 point (hardcoded in contract, NOT in circuit)
     let drand_pubkey_x0 = $DRAND_X0 as Field;
@@ -247,19 +273,35 @@ cat >> "$NOIR_TEST_FILE" << 'NOIR_FOOTER'
     
     // === OUTPUTS ===
     std::println("═══════════════════════════════════════════════════════════════");
-    std::println("OUTPUTS (Public Inputs for Circuit)");
+    std::println("OUTPUTS (Public Inputs for Circuit + On-chain Verification)");
     std::println("═══════════════════════════════════════════════════════════════");
     std::println("");
-    std::println("Public inputs that will be verified:");
+    std::println("Public inputs for circuit and on-chain pairing verification:");
     std::println("");
     std::print("target_round (pub): ");
     std::println(target_round);
     std::println("");
-    std::println("V (pub) - G1 point [x, y] (computed offchain):");
+    std::println("H (pub) - G1 point - hash_to_curve(round):");
+    std::print("  H_x (pub): ");
+    std::println(H_x);
+    std::print("  H_y (pub): ");
+    std::println(H_y);
+    std::println("");
+    std::println("V (pub) - G1 point - r * H:");
     std::print("  V_x (pub): ");
     std::println(expected_V_x);
     std::print("  V_y (pub): ");
     std::println(expected_V_y);
+    std::println("");
+    std::println("C1 (pub) - G2 point - r * G2_gen (for on-chain pairing check):");
+    std::print("  C1_x0 (pub): ");
+    std::println(C1_x0);
+    std::print("  C1_x1 (pub): ");
+    std::println(C1_x1);
+    std::print("  C1_y0 (pub): ");
+    std::println(C1_y0);
+    std::print("  C1_y1 (pub): ");
+    std::println(C1_y1);
     std::println("");
     std::print("pairing_result (pub): ");
     std::println(pairing_result);
@@ -267,7 +309,7 @@ cat >> "$NOIR_TEST_FILE" << 'NOIR_FOOTER'
     std::print("ciphertext (pub): ");
     std::println(computed_ciphertext);
     std::println("");
-    std::println("drand_pubkey (G2) - hardcoded in contract (NOT in circuit):");
+    std::println("drand_pubkey (G2) - hardcoded in contract:");
     std::print("  x0: ");
     std::println(drand_pubkey_x0);
     std::print("  x1: ");
@@ -284,20 +326,24 @@ cat >> "$NOIR_TEST_FILE" << 'NOIR_FOOTER'
     std::println("═══════════════════════════════════════════════════════════════");
     std::println("");
     
-    std::println("✅ Circuit verification passed:");
+    std::println("Circuit verification passed:");
     std::println("   ciphertext = plaintext + K (where K = KDF(pairing_result))");
     std::println("");
     
-    std::println("📋 Contract will verify (on-chain):");
-    std::println("   1. drand_pubkey matches hardcoded evmnet value");
-    std::println("   2. pairing_result == hash(e(V, drand_pubkey))");
-    std::println("      (using BN254 pairing precompile 0x08)");
+    std::println("Contract verifies BEFORE round (zero-trust on pubkey):");
+    std::println("   e(V, G2_gen) * e(-H, C1) == 1");
+    std::println("   This proves: V = r*H AND C1 = r*G2 for same r");
+    std::println("   Using BN254 pairing precompile 0x08");
     std::println("");
-    std::println("🔒 Security guarantee:");
-    std::println("   - If pairing is correct AND pubkey is evmnet → K is correct");
-    std::println("   - If K is correct → ciphertext is correct");
+    std::println("Contract verifies AFTER round (with drand signature):");
+    std::println("   e(sigma, C1) * e(-V, drand_pubkey) == 1");
+    std::println("   This proves: encryption used correct drand_pubkey");
+    std::println("");
+    std::println("Security guarantee:");
+    std::println("   - Contract verifies V, C1 use same r (before round)");
+    std::println("   - Contract verifies encryption with drand_pubkey (after round)");
     std::println("   - Circuit ensures: ciphertext = plaintext + K");
-    std::println("   - Therefore: plaintext ↔ ciphertext relationship is guaranteed");
+    std::println("   - Therefore: plaintext <-> ciphertext is GUARANTEED correct");
     std::println("");
     
     // Verify we can decrypt (simulate decryption)
@@ -318,34 +364,42 @@ cat >> "$NOIR_TEST_FILE" << 'NOIR_FOOTER'
     std::println("  - Genesis Time: 1727521075");
     std::println("  - Public Key: G2 point (signatures on G1)");
     std::println("");
-    std::println("Flow:");
-    std::println("  1. OFFCHAIN: V = r * H(round) on BN254 G1");
-    std::println("  2. OFFCHAIN: pairing = e(V, drand_pubkey) on BN254");
-    std::println("  3. OFFCHAIN: pairing_result = hash(pairing)");
-    std::println("  4. OFFCHAIN: K = KDF(pairing_result)");
-    std::println("  5. OFFCHAIN: ciphertext = plaintext + K");
+    std::println("OFFCHAIN Flow:");
+    std::println("  1. H = hash_to_curve(round) on BN254 G1");
+    std::println("  2. V = r * H on BN254 G1");
+    std::println("  3. C1 = r * G2_gen on BN254 G2");
+    std::println("  4. pairing = e(V, drand_pubkey) on BN254");
+    std::println("  5. pairing_result = hash(pairing)");
+    std::println("  6. K = KDF(pairing_result)");
+    std::println("  7. ciphertext = plaintext + K");
     std::println("");
     std::println("Circuit verifies (in-circuit):");
-    std::println("  ✅ ciphertext = plaintext + K");
-    std::println("     where K = KDF(pairing_result)");
+    std::println("   ciphertext = plaintext + K");
+    std::println("   where K = KDF(pairing_result)");
     std::println("");
-    std::println("Contract verifies (on-chain):");
-    std::println("  ✅ drand_pubkey (G2) matches hardcoded evmnet value");
-    std::println("  ✅ pairing_result == hash(e(V, drand_pubkey))");
-    std::println("     using BN254 pairing precompile 0x08");
+    std::println("Contract verifies (on-chain) BEFORE round:");
+    std::println("   e(V, G2_gen) * e(-H, C1) == 1");
+    std::println("   This proves V = r*H, C1 = r*G2 (same r)");
     std::println("");
-    std::println("Security:");
-    std::println("  - Contract ensures K is derived from correct evmnet pubkey");
-    std::println("  - Circuit ensures ciphertext = plaintext + K");
-    std::println("  - Therefore: plaintext ↔ ciphertext is guaranteed");
+    std::println("Contract verifies (on-chain) AFTER round:");
+    std::println("   e(sigma, C1) * e(-V, drand_pubkey) == 1");
+    std::println("   This proves encryption used correct pubkey");
+    std::println("");
+    std::println("Security (ZERO TRUST on pubkey):");
+    std::println("  - Before round: Contract verifies H, V, C1 consistency");
+    std::println("  - After round: Contract verifies drand_pubkey correctness");
+    std::println("  - Circuit ensures: ciphertext = plaintext + K");
+    std::println("  - Therefore: plaintext <-> ciphertext is GUARANTEED");
     std::println("");
     std::println("Public Inputs:");
     std::println("  - target_round: Field");
-    std::println("  - V_x, V_y: Field (G1 point, computed offchain)");
-    std::println("  - pairing_result: Field (hash of GT, computed offchain)");
+    std::println("  - H_x, H_y: Field (G1 point)");
+    std::println("  - V_x, V_y: Field (G1 point)");
+    std::println("  - C1_x0, C1_x1, C1_y0, C1_y1: Field (G2 point)");
+    std::println("  - pairing_result: Field");
     std::println("  - ciphertext: Field");
     std::println("");
-    std::println("✅ All tests passed!");
+    std::println("All tests passed!");
 }
 NOIR_FOOTER
 
@@ -355,7 +409,7 @@ echo ""
 # =============================================================================
 # Step 4: Run Noir test
 # =============================================================================
-echo -e "${BLUE}[4/4] Running Noir test...${NC}"
+echo -e "${BLUE}[4/7] Running Noir test...${NC}"
 
 cd "$CIRCUITS_DIR"
 NOIR_OUTPUT=$(nargo test --show-output 2>&1) || true
@@ -372,13 +426,40 @@ fi
 echo ""
 
 # =============================================================================
-# Step 5: Update Solidity test file
+# Step 5: Update Noir tests.nr with real timelock values
 # =============================================================================
-echo -e "${BLUE}[5/5] Updating Solidity test file...${NC}"
+echo -e "${BLUE}[5/7] Updating Noir tests.nr with real timelock values...${NC}"
+
+# Update the test helper functions with real values
+# Note: Using regex pattern to match existing values (not just 0)
+sed -i "s/fn test_timelock_target_round() -> Field { [0-9]* as Field }/fn test_timelock_target_round() -> Field { $TARGET_ROUND as Field }/" "$NOIR_TESTS_FILE"
+sed -i "s/fn test_timelock_H_x() -> Field { [0-9]* as Field }/fn test_timelock_H_x() -> Field { $H_X as Field }/" "$NOIR_TESTS_FILE"
+sed -i "s/fn test_timelock_H_y() -> Field { [0-9]* as Field }/fn test_timelock_H_y() -> Field { $H_Y as Field }/" "$NOIR_TESTS_FILE"
+sed -i "s/fn test_timelock_V_x() -> Field { [0-9]* as Field }/fn test_timelock_V_x() -> Field { $V_X as Field }/" "$NOIR_TESTS_FILE"
+sed -i "s/fn test_timelock_V_y() -> Field { [0-9]* as Field }/fn test_timelock_V_y() -> Field { $V_Y as Field }/" "$NOIR_TESTS_FILE"
+sed -i "s/fn test_timelock_C1_x0() -> Field { [0-9]* as Field }/fn test_timelock_C1_x0() -> Field { $C1_X0 as Field }/" "$NOIR_TESTS_FILE"
+sed -i "s/fn test_timelock_C1_x1() -> Field { [0-9]* as Field }/fn test_timelock_C1_x1() -> Field { $C1_X1 as Field }/" "$NOIR_TESTS_FILE"
+sed -i "s/fn test_timelock_C1_y0() -> Field { [0-9]* as Field }/fn test_timelock_C1_y0() -> Field { $C1_Y0 as Field }/" "$NOIR_TESTS_FILE"
+sed -i "s/fn test_timelock_C1_y1() -> Field { [0-9]* as Field }/fn test_timelock_C1_y1() -> Field { $C1_Y1 as Field }/" "$NOIR_TESTS_FILE"
+sed -i "s/fn test_timelock_pairing_result() -> Field { [0-9]* as Field }/fn test_timelock_pairing_result() -> Field { $PAIRING_RESULT as Field }/" "$NOIR_TESTS_FILE"
+
+echo -e "${GREEN}✓ Noir tests.nr updated with real timelock values${NC}"
+echo ""
+
+# =============================================================================
+# Step 6: Update Solidity test file
+# =============================================================================
+echo -e "${BLUE}[6/7] Updating Solidity test file...${NC}"
 
 # Convert decimal values to hex for Solidity (using node for big numbers)
+H_X_HEX=$(node -e "console.log('0x' + BigInt('$H_X').toString(16))")
+H_Y_HEX=$(node -e "console.log('0x' + BigInt('$H_Y').toString(16))")
 V_X_HEX=$(node -e "console.log('0x' + BigInt('$V_X').toString(16))")
 V_Y_HEX=$(node -e "console.log('0x' + BigInt('$V_Y').toString(16))")
+C1_X0_HEX=$(node -e "console.log('0x' + BigInt('$C1_X0').toString(16))")
+C1_X1_HEX=$(node -e "console.log('0x' + BigInt('$C1_X1').toString(16))")
+C1_Y0_HEX=$(node -e "console.log('0x' + BigInt('$C1_Y0').toString(16))")
+C1_Y1_HEX=$(node -e "console.log('0x' + BigInt('$C1_Y1').toString(16))")
 PAIRING_HEX=$(node -e "console.log('0x' + BigInt('$PAIRING_RESULT').toString(16))")
 CIPHERTEXT_HEX=$(node -e "console.log('0x' + BigInt('$CIPHERTEXT').toString(16))")
 TARGET_ROUND_HEX=$(node -e "console.log('0x' + BigInt('$TARGET_ROUND').toString(16))")
@@ -391,71 +472,144 @@ import {Test, console} from "forge-std/Test.sol";
 
 /**
  * @title DrandTest
- * @notice Test to verify drand timelock encryption proof data
- * @dev ⚠️  AUTO-GENERATED by scripts/drand-sync.sh - DO NOT EDIT MANUALLY
+ * @notice Test to verify drand timelock encryption with on-chain pairing verification
+ * @dev AUTO-GENERATED by scripts/drand-sync.sh - DO NOT EDIT MANUALLY
  *
- * Verifies that:
- * 1. The drand pubkey used matches the hardcoded evmnet pubkey
- * 2. The pairing_result, V, and target_round from the proof are correct
- * 3. The encryption was done using the correct evmnet pubkey
+ * ZERO TRUST verification:
+ * BEFORE round: e(V, G2_gen) * e(-H, C1) == 1 (proves V = r*H, C1 = r*G2)
+ * AFTER round:  e(sigma, C1) * e(-V, drand_pubkey) == 1 (proves correct pubkey)
  */
 contract DrandTest is Test {
-    // Evmnet drand configuration (hardcoded in contract)
-    uint256 public constant GENESIS_TIME = 1727521075;
-    uint256 public constant PERIOD = 3;
-
+    // BN254 field modulus
+    uint256 public constant BN254_FIELD_MODULUS = 0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47;
+    
+    // BN254 pairing precompile address
+    address public constant BN254_PAIRING_PRECOMPILE = address(0x08);
+    
+    // BN254 G2 generator (standard values)
+    // Format: x = x_c0 + x_c1*i, y = y_c0 + y_c1*i
+    // Precompile expects: (x_c1, x_c0, y_c1, y_c0)
+    uint256 public constant G2_X_C1 = 0x198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2; // imaginary
+    uint256 public constant G2_X_C0 = 0x1800deef121f1e76426a00665e5c4479674322d4f75edadd46debd5cd992f6ed; // real
+    uint256 public constant G2_Y_C1 = 0x090689d0585ff075ec9e99ad690c3395bc4b313370b38ef355acdadcd122975b; // imaginary
+    uint256 public constant G2_Y_C0 = 0x12c85ea5db8c6deb4aab71808dcb408fe3d1e7690c43d37b4ce6cc0166fa7daa; // real
+    
     // Evmnet drand public key (BN254 G2)
-    // From evmnet drand info JSON
-    uint256 public constant EVMNET_DRAND_PUBKEY_X0 = 0x07e1d1d335df83fa98462005690372c643340060d205306a9aa8106b6bd0b382;
-    uint256 public constant EVMNET_DRAND_PUBKEY_X1 = 0x0557ec32c2ad488e4d4f6008f89a346f18492092ccc0d594610de2732c8b808f;
-    uint256 public constant EVMNET_DRAND_PUBKEY_Y0 = 0x0095685ae3a85ba243747b1b2f426049010f6b73a0cf1d389351d5aaaa1047f6;
-    uint256 public constant EVMNET_DRAND_PUBKEY_Y1 = 0x297d3a4f9749b33eb2d904c9d9ebf17224150ddd7abd7567a9bec6c74480ee0b;
+    // From drand JSON pubkey hex, format is: (x_c1, x_c0, y_c1, y_c0)
+    // Precompile expects same order: (x_c1, x_c0, y_c1, y_c0)
+    uint256 public constant EVMNET_PK_X_C1 = 0x07e1d1d335df83fa98462005690372c643340060d205306a9aa8106b6bd0b382; // imaginary
+    uint256 public constant EVMNET_PK_X_C0 = 0x0557ec32c2ad488e4d4f6008f89a346f18492092ccc0d594610de2732c8b808f; // real
+    uint256 public constant EVMNET_PK_Y_C1 = 0x0095685ae3a85ba243747b1b2f426049010f6b73a0cf1d389351d5aaaa1047f6; // imaginary
+    uint256 public constant EVMNET_PK_Y_C0 = 0x297d3a4f9749b33eb2d904c9d9ebf17224150ddd7abd7567a9bec6c74480ee0b; // real
 
     struct TimelockProof {
         uint256 targetRound;
-        uint256 V_x;
+        uint256 H_x;       // G1 point: hash_to_curve(round)
+        uint256 H_y;
+        uint256 V_x;       // G1 point: r * H
         uint256 V_y;
+        uint256 C1_x0;     // G2 point: r * G2_gen (real part)
+        uint256 C1_x1;     // (imaginary part)
+        uint256 C1_y0;     // (real part)
+        uint256 C1_y1;     // (imaginary part)
         uint256 pairingResult;
         uint256 ciphertext;
     }
 
     /**
-     * @notice Verify that proof data is valid
-     * @param proof The timelock proof data from circuit
+     * @notice Verify BEFORE round: e(V, G2_gen) * e(-H, C1) == 1
+     * @dev This proves V = r*H and C1 = r*G2 for the same r
      */
-    function verifyTimelockProof(TimelockProof memory proof) internal pure {
-        // Verify V is valid (non-zero)
-        require(proof.V_x != 0 || proof.V_y != 0, "V is point at infinity");
-
-        // Verify pairing result is non-zero
-        require(proof.pairingResult != 0, "Pairing result is zero");
-
-        // Verify target round is valid
-        require(proof.targetRound > 0, "Target round must be > 0");
-
-        // TODO: Verify pairing on-chain using BN254 precompile 0x08
-        // This would check: e(V, drand_pubkey) produces the expected pairing_result
+    function verifyPairingBeforeRound(TimelockProof memory proof) public view returns (bool) {
+        // Negate H (negate y coordinate in Fp)
+        uint256 neg_H_y = BN254_FIELD_MODULUS - (proof.H_y % BN254_FIELD_MODULUS);
+        
+        // Build pairing input: e(V, G2_gen) * e(-H, C1)
+        // Format per EIP-197: (G1_x, G1_y, G2_x_c1, G2_x_c0, G2_y_c1, G2_y_c0)
+        bytes memory input = abi.encodePacked(
+            // Pair 1: (V, G2_gen)
+            proof.V_x,
+            proof.V_y,
+            G2_X_C1, G2_X_C0,  // x_c1 (imag), x_c0 (real)
+            G2_Y_C1, G2_Y_C0,  // y_c1 (imag), y_c0 (real)
+            // Pair 2: (-H, C1)
+            proof.H_x,
+            neg_H_y,
+            proof.C1_x1, proof.C1_x0,  // C1_x1 is c1 (imag), C1_x0 is c0 (real)
+            proof.C1_y1, proof.C1_y0   // C1_y1 is c1 (imag), C1_y0 is c0 (real)
+        );
+        
+        (bool success, bytes memory result) = BN254_PAIRING_PRECOMPILE.staticcall(input);
+        
+        if (!success || result.length != 32) {
+            return false;
+        }
+        
+        return abi.decode(result, (uint256)) == 1;
+    }
+    
+    /**
+     * @notice Verify AFTER round: e(sigma, C1) * e(-V, drand_pubkey) == 1
+     * @dev This proves the encryption used the correct drand pubkey
+     */
+    function verifyPairingAfterRound(
+        TimelockProof memory proof,
+        uint256 sigma_x,
+        uint256 sigma_y
+    ) public view returns (bool) {
+        // Negate V (negate y coordinate in Fp)
+        uint256 neg_V_y = BN254_FIELD_MODULUS - (proof.V_y % BN254_FIELD_MODULUS);
+        
+        // Build pairing input: e(sigma, C1) * e(-V, drand_pubkey)
+        // Format per EIP-197: (G1_x, G1_y, G2_x_c1, G2_x_c0, G2_y_c1, G2_y_c0)
+        bytes memory input = abi.encodePacked(
+            // Pair 1: (sigma, C1)
+            sigma_x,
+            sigma_y,
+            proof.C1_x1, proof.C1_x0,  // C1_x1 is c1 (imag), C1_x0 is c0 (real)
+            proof.C1_y1, proof.C1_y0,  // C1_y1 is c1 (imag), C1_y0 is c0 (real)
+            // Pair 2: (-V, drand_pubkey)
+            proof.V_x,
+            neg_V_y,
+            EVMNET_PK_X_C1, EVMNET_PK_X_C0,  // x_c1 (imag), x_c0 (real)
+            EVMNET_PK_Y_C1, EVMNET_PK_Y_C0   // y_c1 (imag), y_c0 (real)
+        );
+        
+        (bool success, bytes memory result) = BN254_PAIRING_PRECOMPILE.staticcall(input);
+        
+        if (!success || result.length != 32) {
+            return false;
+        }
+        
+        return abi.decode(result, (uint256)) == 1;
     }
 
     /**
-     * @notice Test verification of timelock proof data
-     * @dev Uses outputs from TypeScript timelock-prep.js via drand-sync.sh
+     * @notice Test BEFORE round pairing verification
+     * @dev Uses values from TypeScript timelock-prep.js via drand-sync.sh
      */
-    function test_VerifyTimelockProofData() public pure {
-        // ⚠️  AUTO-GENERATED VALUES - DO NOT EDIT MANUALLY
+    function test_VerifyPairingBeforeRound() public {
+        // AUTO-GENERATED VALUES - DO NOT EDIT MANUALLY
         TimelockProof memory proof = TimelockProof({
             targetRound: $TARGET_ROUND_HEX,
+            H_x: $H_X_HEX,
+            H_y: $H_Y_HEX,
             V_x: $V_X_HEX,
             V_y: $V_Y_HEX,
+            C1_x0: $C1_X0_HEX,
+            C1_x1: $C1_X1_HEX,
+            C1_y0: $C1_Y0_HEX,
+            C1_y1: $C1_Y1_HEX,
             pairingResult: $PAIRING_HEX,
             ciphertext: $CIPHERTEXT_HEX
         });
-
-        // Verify proof data
-        verifyTimelockProof(proof);
-
-        // All checks passed - encryption was done with correct evmnet pubkey
-        assert(true);
+        
+        // Verify before round: proves V = r*H and C1 = r*G2
+        bool valid = verifyPairingBeforeRound(proof);
+        assertTrue(valid, "BEFORE round pairing check failed: e(V, G2_gen) * e(-H, C1) != 1");
+        
+        console.log("BEFORE round verification PASSED!");
+        console.log("Proven: V = r*H and C1 = r*G2 for same r");
     }
 }
 SOLIDITY_CONTENT
@@ -464,9 +618,9 @@ echo -e "${GREEN}✓ Solidity test file updated${NC}"
 echo ""
 
 # =============================================================================
-# Step 6: Update decrypt script with hardcoded values
+# Step 7: Update decrypt script with hardcoded values
 # =============================================================================
-echo -e "${BLUE}[6/6] Updating decrypt script...${NC}"
+echo -e "${BLUE}[7/7] Updating decrypt script...${NC}"
 
 DECRYPT_FILE="$TS_UTILS_DIR/timelock-decrypt.js"
 
@@ -706,6 +860,7 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 echo -e "Updated files:"
 echo -e "  ${GREEN}✓${NC} $NOIR_TEST_FILE"
+echo -e "  ${GREEN}✓${NC} $NOIR_TESTS_FILE"
 echo -e "  ${GREEN}✓${NC} $SOLIDITY_TEST_FILE"
 echo -e "  ${GREEN}✓${NC} $DECRYPT_FILE"
 echo ""

@@ -746,27 +746,33 @@ contract ArkanaTest is Test {
           // === STEP 2: WITHDRAW ===
           console.log("STEP 2: Calling withdraw() with withdraw data...");
 
-          // Prepare publicInputs for withdraw (15 elements)
-          bytes32[] memory withdrawPublicInputs = new bytes32[](15);
+          // Prepare publicInputs for withdraw (20 elements: 12 inputs + 8 outputs)
+          bytes32[] memory withdrawPublicInputs = new bytes32[](20);
 
-          // Public inputs (8 elements)
-          withdrawPublicInputs[0] = bytes32(uint256(uint160(testTokenAddress))); // token_address
-          withdrawPublicInputs[1] = bytes32(uint256(0x07a120)); // amount (in shares) = 500,000 - larger amount to avoid Aave conversion underflow
+          // Public inputs (12 elements)
+          withdrawPublicInputs[0] = bytes32(uint256(uint160(testTokenAddress))); // token_address = 0x7775e4b6f4d40be537b55b6c47e09ada0157bd (using testTokenAddress for vault)
+          withdrawPublicInputs[1] = bytes32(uint256(0x07a120)); // amount (in shares) = 500,000
           withdrawPublicInputs[2] = bytes32(uint256(0xaa36a7)); // chain_id = 11155111 (Sepolia)
           withdrawPublicInputs[3] = bytes32(uint256(0x0f4240)); // declared_time_reference = 1000000
-          withdrawPublicInputs[4] = bytes32(rootAfterEntry); // expected_root (use actual root from entry, not Noir's expected)
+          withdrawPublicInputs[4] = bytes32(uint256(0x112490ff41246d19d218de6e3f1f7542d399f2f8aec3fdebff7186eec7146b3e)); // expected_root
           withdrawPublicInputs[5] = bytes32(uint256(0x00)); // arbitrary_calldata_hash = 0
           withdrawPublicInputs[6] = bytes32(uint256(uint160(0x742d35Cc6634C0532925A3B8D4C9dB96C4B4d8B6))); // receiver_address
           withdrawPublicInputs[7] = bytes32(uint256(0x01)); // relayer_fee_amount (in shares) = 1
+          // Timelock public inputs (new - not used in contract logic yet)
+          withdrawPublicInputs[8] = bytes32(uint256(0xd8173f)); // target_round (drand) = 14161727
+          withdrawPublicInputs[9] = bytes32(uint256(0x0783acf9cadf136444573178ba540c058d95b61a13534e7a502519e2b61f4a82)); // V_x (G1 point)
+          withdrawPublicInputs[10] = bytes32(uint256(0x0e33c8f04f0bd7d88455203080b3fc81164f11d9afecf1da64e2a422d0fcb8e3)); // V_y (G1 point)
+          withdrawPublicInputs[11] = bytes32(uint256(0x107b5ed0db8d82f8e13cd635f33dc1ba12d85cb4baa964af52bf429114f15c2b)); // pairing_result
 
-          // Public outputs (7 elements)
-          withdrawPublicInputs[8] = bytes32(uint256(0x069b48c637d50e28559ebba46c38eb6a4d3ab005ff209e063b2e11dffa72a848)); // pedersen_commitment.x
-          withdrawPublicInputs[9] = bytes32(uint256(0x230cc1c2628d2531960b2509d93f732e37d415631fee7483bb6b0f82b5686d58)); // pedersen_commitment.y
-          withdrawPublicInputs[10] = bytes32(uint256(0x2872629850832f7913677519f8b07439325cc057b26830cd27f30609de37dbc2)); // new_nonce_commitment
-          withdrawPublicInputs[11] = bytes32(uint256(0x05855fd7cf8d5fe5d1f51463dc91c18fc82e00ddc4fc42d853fb4311d03c50a1)); // encrypted_state_details[0]
-          withdrawPublicInputs[12] = bytes32(uint256(0x271deab6946acc6af9027774c2a962872f718cd8e490c9f25436c9c591c5cd8b)); // encrypted_state_details[1]
-          withdrawPublicInputs[13] = bytes32(uint256(0x0279080a755f1b05f80d45e96f47ef34c1d753e45697183f0fe25dd913727e9a)); // nonce_discovery_entry.x
-          withdrawPublicInputs[14] = bytes32(uint256(0x2a60db6e19f46c673f3a687202e3d9bbd84c00717e795f71f63f789a7e12e6)); // nonce_discovery_entry.y
+          // Public outputs (8 elements)
+          withdrawPublicInputs[12] = bytes32(uint256(0x069b48c637d50e28559ebba46c38eb6a4d3ab005ff209e063b2e11dffa72a848)); // pedersen_commitment.x
+          withdrawPublicInputs[13] = bytes32(uint256(0x230cc1c2628d2531960b2509d93f732e37d415631fee7483bb6b0f82b5686d58)); // pedersen_commitment.y
+          withdrawPublicInputs[14] = bytes32(uint256(0x2872629850832f7913677519f8b07439325cc057b26830cd27f30609de37dbc2)); // new_nonce_commitment
+          withdrawPublicInputs[15] = bytes32(uint256(0x05855fd7cf8d5fe5d1f51463dc91c18fc82e00ddc4fc42d853fb4311d03c50a1)); // encrypted_state_details[0]
+          withdrawPublicInputs[16] = bytes32(uint256(0x271deab6946acc6af9027774c2a962872f718cd8e490c9f25436c9c591c5cd8b)); // encrypted_state_details[1]
+          withdrawPublicInputs[17] = bytes32(uint256(0x0279080a755f1b05f80d45e96f47ef34c1d753e45697183f0fe25dd913727e9a)); // nonce_discovery_entry.x
+          withdrawPublicInputs[18] = bytes32(uint256(0x2a60db6e19f46c673f3a687202e3d9bbd84c00717e795f71f63f789a7e12e6)); // nonce_discovery_entry.y
+          withdrawPublicInputs[19] = bytes32(uint256(0x1cc58b2a5dcf160d5a448c7f3368b4ec66cf06af24e813e119f80e460744d1ed)); // timelock_ciphertext (new - not used in contract logic yet)
 
           // Call withdraw (with empty calldata for Multicall3)
           bytes memory emptyCall;
@@ -787,8 +793,8 @@ contract ArkanaTest is Test {
 
           // Verify the new commitment leaf was added
           // The withdraw circuit returns pedersen_commitment, which needs to be hashed to get the leaf
-          Field.Type commitmentXField = Field.toField(uint256(withdrawPublicInputs[8]));
-          Field.Type commitmentYField = Field.toField(uint256(withdrawPublicInputs[9]));
+          Field.Type commitmentXField = Field.toField(uint256(withdrawPublicInputs[12]));
+          Field.Type commitmentYField = Field.toField(uint256(withdrawPublicInputs[13]));
           Field.Type newCommitmentLeafField = hasher.hash_2(commitmentXField, commitmentYField);
           uint256 newCommitmentLeaf = Field.toUint256(newCommitmentLeafField);
           assertTrue(arkana.hasLeaf(testTokenAddress, newCommitmentLeaf), "New commitment leaf should exist in tree");

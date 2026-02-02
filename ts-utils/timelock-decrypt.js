@@ -37,15 +37,15 @@ const FIELD_MODULUS = bn254.fields.Fr.ORDER;
 async function fetchDrandSignature(round) {
     const url = `https://api.drand.sh/v2/beacons/evmnet/rounds/${round}`;
     console.log(`Fetching drand signature from: ${url}`);
-
+    
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`Failed to fetch drand round ${round}: ${response.statusText}`);
     }
-
+    
     const data = await response.json();
     console.log(`Drand response:`, data);
-
+    
     return data.signature;
 }
 
@@ -54,15 +54,15 @@ async function fetchDrandSignature(round) {
 // ============================================================================
 function parseG1Signature(signatureHex) {
     const sigBytes = signatureHex.startsWith('0x') ? signatureHex.slice(2) : signatureHex;
-
+    
     if (sigBytes.length !== 128) {
         throw new Error(`Invalid signature length: expected 128 hex chars, got ${sigBytes.length}`);
     }
-
+    
     const pointHex = '04' + sigBytes;
     const G1 = bn254.G1;
     const point = G1.Point.fromHex(pointHex);
-
+    
     return point;
 }
 
@@ -74,13 +74,13 @@ async function kdf(pairingResult) {
         c0: pairingResult.c0.toString(),
         c1: pairingResult.c1.toString()
     });
-
+    
     const pairingHash = sha256(new TextEncoder().encode(pairingStr));
     const pairingFieldRaw = BigInt('0x' + Buffer.from(pairingHash).toString('hex'));
-
+    
     const FR_MODULUS = BigInt('0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001');
     const pairingField = pairingFieldRaw % FR_MODULUS;
-
+    
     const kdfResult = await poseidon2Hash([pairingField]);
     return kdfResult.toBigInt();
 }
@@ -93,9 +93,9 @@ async function decrypt() {
     console.log("║         DRAND TIMELOCK DECRYPTION                            ║");
     console.log("╚══════════════════════════════════════════════════════════════╝");
     console.log("");
-
+    
     const { randomness, target_round, ciphertext, K: expected_K, plaintext: expected_plaintext } = ENCRYPTED_DATA;
-
+    
     console.log("═══════════════════════════════════════════════════════════════");
     console.log("ENCRYPTED DATA");
     console.log("═══════════════════════════════════════════════════════════════");
@@ -103,12 +103,12 @@ async function decrypt() {
     console.log(`Ciphertext: ${ciphertext}`);
     console.log(`Randomness (r): ${randomness.substring(0, 20)}...`);
     console.log("");
-
+    
     // Step 1: Fetch drand signature
     console.log("═══════════════════════════════════════════════════════════════");
     console.log("STEP 1: Fetch drand signature");
     console.log("═══════════════════════════════════════════════════════════════");
-
+    
     let signature;
     try {
         signature = await fetchDrandSignature(target_round);
@@ -123,73 +123,73 @@ async function decrypt() {
         return;
     }
     console.log("");
-
+    
     // Step 2: Parse signature as G1 point
     console.log("═══════════════════════════════════════════════════════════════");
     console.log("STEP 2: Parse signature as G1 point");
     console.log("═══════════════════════════════════════════════════════════════");
-
+    
     const sigmaPoint = parseG1Signature(signature);
     const sigmaAffine = sigmaPoint.toAffine();
     console.log(`sigma (signature) on G1:`);
     console.log(`  x: ${sigmaAffine.x.toString().substring(0, 40)}...`);
     console.log(`  y: ${sigmaAffine.y.toString().substring(0, 40)}...`);
     console.log("");
-
+    
     // Step 3: Compute C1 = r * G2_gen
     console.log("═══════════════════════════════════════════════════════════════");
     console.log("STEP 3: Compute C1 = r * G2_gen");
     console.log("═══════════════════════════════════════════════════════════════");
-
+    
     const G2 = bn254.G2;
     const r = bn254.fields.Fr.create(BigInt(randomness));
     const C1 = G2.Point.BASE.multiply(r);
-
+    
     console.log(`C1 = r * G2_gen (point on G2)`);
     console.log("");
-
+    
     // Step 4: Compute pairing e(sigma, C1)
     console.log("═══════════════════════════════════════════════════════════════");
     console.log("STEP 4: Compute pairing e(sigma, C1)");
     console.log("═══════════════════════════════════════════════════════════════");
-
+    
     const pairingResult = bn254.pairing(sigmaPoint, C1);
     console.log(`Pairing computed: e(sigma, C1) in GT`);
     console.log("");
-
+    
     // Step 5: Derive K using KDF
     console.log("═══════════════════════════════════════════════════════════════");
     console.log("STEP 5: Derive K using Poseidon2 KDF");
     console.log("═══════════════════════════════════════════════════════════════");
-
+    
     const K = await kdf(pairingResult);
     console.log(`K (decryption key): ${K.toString().substring(0, 40)}...`);
     console.log(`Expected K:         ${expected_K.substring(0, 40)}...`);
-
+    
     if (K.toString() === expected_K) {
         console.log("K matches expected value!");
     } else {
         console.log("K does NOT match! Decryption will fail.");
     }
     console.log("");
-
+    
     // Step 6: Decrypt
     console.log("═══════════════════════════════════════════════════════════════");
     console.log("STEP 6: Decrypt (plaintext = ciphertext - K)");
     console.log("═══════════════════════════════════════════════════════════════");
-
+    
     const ciphertextBigInt = BigInt(ciphertext);
     let plaintext = (ciphertextBigInt - K) % FIELD_MODULUS;
     if (plaintext < 0n) {
         plaintext += FIELD_MODULUS;
     }
-
+    
     console.log(`Ciphertext: ${ciphertext}`);
     console.log(`K:          ${K}`);
     console.log(`Plaintext:  ${plaintext}`);
     console.log(`Expected:   ${expected_plaintext}`);
     console.log("");
-
+    
     if (plaintext === expected_plaintext) {
         console.log("╔══════════════════════════════════════════════════════════════╗");
         console.log("║  DECRYPTION SUCCESSFUL!                                      ║");
@@ -201,7 +201,7 @@ async function decrypt() {
         console.log("║  DECRYPTION FAILED                                           ║");
         console.log("╚══════════════════════════════════════════════════════════════╝");
     }
-
+    
     return plaintext;
 }
 

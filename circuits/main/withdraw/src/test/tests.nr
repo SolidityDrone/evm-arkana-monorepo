@@ -34,6 +34,18 @@ fn test_receiver_address() -> Field { 0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6
 /// Get test receiver fee amount
 fn test_relayer_fee_amount() -> Field { 0x01 as Field }
 
+/// Get dummy timelock values for tests (not testing timelock functionality)
+fn test_timelock_target_round() -> Field { 14161727 as Field }
+fn test_timelock_H_x() -> Field { 17110099886125304497835776545713209504691977157583709568477924270886121681512 as Field }
+fn test_timelock_H_y() -> Field { 5005500472356267329961646875240392899498427164717219254104199314237179071237 as Field }
+fn test_timelock_V_x() -> Field { 3398840740332052120597358755822620527412520723655025502452048074494690937474 as Field }
+fn test_timelock_V_y() -> Field { 6423875908450528297073249687018185515808147274469491506877998757626431453411 as Field }
+fn test_timelock_C1_x0() -> Field { 4134213916343724931760970732975602250786076528375749075160172169169044486969 as Field }
+fn test_timelock_C1_x1() -> Field { 21558308526502507855325166439008393966717643700102272257425778227652387758205 as Field }
+fn test_timelock_C1_y0() -> Field { 891189877208105314331199145787525421844052589013600536797344575232083382042 as Field }
+fn test_timelock_C1_y1() -> Field { 2653326632600946096894137479864389653965751602244102699043300532605270979831 as Field }
+fn test_timelock_pairing_result() -> Field { 7454982161247114942090419709036621238296894275792563520607667729655177239595 as Field }
+
 // === TEST HELPER FUNCTIONS ===
 // Note: simulate_entry_circuit, simulate_lean_imt_insert, and generate_merkle_proof
 // are imported from dep::lean_imt_verify
@@ -359,7 +371,7 @@ fn test_withdraw_flow() {
     let chain_id = 1 as Field; // Mainnet chain ID
     let previous_unlocks_at = 0 as Field; // No lock initially
     let declared_time_reference = 1000000 as Field; // Time reference for withdrawal validation
-    let withdraw1_result: ([Field; 2], Field, [Field; 2], [Field; 2]) = main(
+    let withdraw1_result: ([Field; 2], Field, [Field; 2], [Field; 2], Field) = main(
         user_key,
         token_address,
         test_withdrawal_amount(),
@@ -376,7 +388,17 @@ fn test_withdraw_flow() {
         withdraw1_proof,
         0x1234567890abcdef as Field,
         test_receiver_address(),
-        test_relayer_fee_amount()
+        test_relayer_fee_amount(),
+        test_timelock_target_round(),
+        test_timelock_H_x(),
+        test_timelock_H_y(),
+        test_timelock_V_x(),
+        test_timelock_V_y(),
+        test_timelock_C1_x0(),
+        test_timelock_C1_x1(),
+        test_timelock_C1_y0(),
+        test_timelock_C1_y1(),
+        test_timelock_pairing_result()
     );
     
     let withdraw1_pedersen_point: [Field; 2] = withdraw1_result.0;
@@ -503,7 +525,7 @@ fn test_withdraw_exact_balance() {
     // This should pass - tests the circuit structure
     let previous_unlocks_at = 0 as Field; // No lock initially
     let declared_time_reference = 1000000 as Field; // Time reference for withdrawal validation
-    let result: ([Field; 2], Field, [Field; 2], [Field; 2]) = main(
+    let result: ([Field; 2], Field, [Field; 2], [Field; 2], Field) = main(
         user_key,
         token_address,
         withdraw_amount,
@@ -520,7 +542,17 @@ fn test_withdraw_exact_balance() {
         merkle_proof,
         arbitrary_calldata_hash,
         receiver_address,
-        relayer_fee_amount
+        relayer_fee_amount,
+        test_timelock_target_round(),
+        test_timelock_H_x(),
+        test_timelock_H_y(),
+        test_timelock_V_x(),
+        test_timelock_V_y(),
+        test_timelock_C1_x0(),
+        test_timelock_C1_x1(),
+        test_timelock_C1_y0(),
+        test_timelock_C1_y1(),
+        test_timelock_pairing_result()
     );
     
     // Verify new balance is 0
@@ -567,7 +599,7 @@ fn test_withdraw_time_constraint_validation() {
     std::println("  Previous unlocks_at: 0 (no lock)");
     std::println("  Declared time reference: 1000000");
     
-    let result: ([Field; 2], Field, [Field; 2], [Field; 2]) = main(
+    let result: ([Field; 2], Field, [Field; 2], [Field; 2], Field) = main(
         user_key,
         token_address,
         withdraw_amount,
@@ -584,7 +616,17 @@ fn test_withdraw_time_constraint_validation() {
         merkle_proof,
         arbitrary_calldata_hash,
         receiver_address,
-        relayer_fee_amount
+        relayer_fee_amount,
+        test_timelock_target_round(),
+        test_timelock_H_x(),
+        test_timelock_H_y(),
+        test_timelock_V_x(),
+        test_timelock_V_y(),
+        test_timelock_C1_x0(),
+        test_timelock_C1_x1(),
+        test_timelock_C1_y0(),
+        test_timelock_C1_y1(),
+        test_timelock_pairing_result()
     );
     
     // Verify the circuit returns valid outputs
@@ -771,7 +813,7 @@ fn test_entry_then_withdraw_integration() {
     std::print("  Arbitrary calldata hash: "); std::println(arbitrary_calldata_hash);
     std::println("");
     
-    let withdraw_result: ([Field; 2], Field, [Field; 2], [Field; 2]) = main(
+    let withdraw_result: ([Field; 2], Field, [Field; 2], [Field; 2], Field) = main(
         user_key,
         token_address,
         withdraw_amount,
@@ -788,7 +830,17 @@ fn test_entry_then_withdraw_integration() {
         merkle_proof,
         arbitrary_calldata_hash,
         receiver_address,
-        relayer_fee_amount
+        relayer_fee_amount,
+        test_timelock_target_round(),
+        test_timelock_H_x(),
+        test_timelock_H_y(),
+        test_timelock_V_x(),
+        test_timelock_V_y(),
+        test_timelock_C1_x0(),
+        test_timelock_C1_x1(),
+        test_timelock_C1_y0(),
+        test_timelock_C1_y1(),
+        test_timelock_pairing_result()
     );
     
     std::println("Withdraw circuit outputs:");
@@ -809,6 +861,8 @@ fn test_entry_then_withdraw_integration() {
     std::print(", ");
     std::print(withdraw_result.3[1]);
     std::println("]");
+    std::print("  Timelock ciphertext: ");
+    std::println(withdraw_result.4);
     std::println("");
     
     // Hash the new commitment point to get the leaf
@@ -859,9 +913,9 @@ fn test_entry_then_withdraw_integration() {
     std::println("");
     
     std::println("=== PUBLIC INPUTS FOR withdraw() FUNCTION ===");
-    std::println("publicInputs array (15 elements):");
+    std::println("publicInputs array (26 elements):");
     std::println("");
-    std::println("// Public inputs (8 elements):");
+    std::println("// Public inputs (18 elements):");
     std::print("publicInputs[0] = bytes32(uint256(uint160(tokenAddress))); // token_address = ");
     std::println(token_address);
     std::print("publicInputs[1] = bytes32(sharesAmount); // amount (in shares) = ");
@@ -878,22 +932,44 @@ fn test_entry_then_withdraw_integration() {
     std::println(receiver_address);
     std::print("publicInputs[7] = bytes32(relayerFeeShares); // relayer_fee_amount (in shares) = ");
     std::println(relayer_fee_amount);
+    std::print("publicInputs[8] = bytes32(targetRound); // target_round (drand) = ");
+    std::println(test_timelock_target_round());
+    std::print("publicInputs[9] = bytes32(H_x); // H_x (G1 point) = ");
+    std::println(test_timelock_H_x());
+    std::print("publicInputs[10] = bytes32(H_y); // H_y (G1 point) = ");
+    std::println(test_timelock_H_y());
+    std::print("publicInputs[11] = bytes32(V_x); // V_x (G1 point) = ");
+    std::println(test_timelock_V_x());
+    std::print("publicInputs[12] = bytes32(V_y); // V_y (G1 point) = ");
+    std::println(test_timelock_V_y());
+    std::print("publicInputs[13] = bytes32(C1_x0); // C1_x0 (G2 point) = ");
+    std::println(test_timelock_C1_x0());
+    std::print("publicInputs[14] = bytes32(C1_x1); // C1_x1 (G2 point) = ");
+    std::println(test_timelock_C1_x1());
+    std::print("publicInputs[15] = bytes32(C1_y0); // C1_y0 (G2 point) = ");
+    std::println(test_timelock_C1_y0());
+    std::print("publicInputs[16] = bytes32(C1_y1); // C1_y1 (G2 point) = ");
+    std::println(test_timelock_C1_y1());
+    std::print("publicInputs[17] = bytes32(pairingResult); // pairing_result = ");
+    std::println(test_timelock_pairing_result());
     std::println("");
-    std::println("// Public outputs (7 elements):");
-    std::print("publicInputs[8] = bytes32(pedersenCommitmentX); // pedersen_commitment.x = ");
+    std::println("// Public outputs (8 elements):");
+    std::print("publicInputs[18] = bytes32(pedersenCommitmentX); // pedersen_commitment.x = ");
     std::println(withdraw_result.0[0]);
-    std::print("publicInputs[9] = bytes32(pedersenCommitmentY); // pedersen_commitment.y = ");
+    std::print("publicInputs[19] = bytes32(pedersenCommitmentY); // pedersen_commitment.y = ");
     std::println(withdraw_result.0[1]);
-    std::print("publicInputs[10] = bytes32(newNonceCommitment); // new_nonce_commitment = ");
+    std::print("publicInputs[20] = bytes32(newNonceCommitment); // new_nonce_commitment = ");
     std::println(withdraw_result.1);
-    std::print("publicInputs[11] = bytes32(encryptedBalance); // encrypted_state_details[0] = ");
+    std::print("publicInputs[21] = bytes32(encryptedBalance); // encrypted_state_details[0] = ");
     std::println(withdraw_result.2[0]);
-    std::print("publicInputs[12] = bytes32(encryptedNullifier); // encrypted_state_details[1] = ");
+    std::print("publicInputs[22] = bytes32(encryptedNullifier); // encrypted_state_details[1] = ");
     std::println(withdraw_result.2[1]);
-    std::print("publicInputs[13] = bytes32(nonceDiscoveryEntryX); // nonce_discovery_entry.x = ");
+    std::print("publicInputs[23] = bytes32(nonceDiscoveryEntryX); // nonce_discovery_entry.x = ");
     std::println(withdraw_result.3[0]);
-    std::print("publicInputs[14] = bytes32(nonceDiscoveryEntryY); // nonce_discovery_entry.y = ");
+    std::print("publicInputs[24] = bytes32(nonceDiscoveryEntryY); // nonce_discovery_entry.y = ");
     std::println(withdraw_result.3[1]);
+    std::print("publicInputs[25] = bytes32(timelockCiphertext); // timelock_ciphertext = ");
+    std::println(withdraw_result.4);
     std::println("");
     std::println("// Additional parameter for withdraw():");
     std::println("// call: bytes calldata (empty bytes for this test)");
