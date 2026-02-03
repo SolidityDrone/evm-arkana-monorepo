@@ -56,7 +56,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
     /// @notice Aave v3 Pool contract address
     IPool public immutable aavePool;
-    
+
     /// @notice Protocol fee in basis points (100 = 1%, 500 = 5%)
     uint256 public protocolFeeBps;
 
@@ -174,6 +174,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         uint256 nonceDiscoveryEntryX;
         uint256 nonceDiscoveryEntryY;
         uint256 timelockCiphertext;
+        uint256 tlHashchain; // Hash chain for TL swap chunks (0 if is_tl_swap = false)
     }
 
     /// @notice Nonce discovery entry struct
@@ -731,50 +732,64 @@ contract Arkana is AccessControl, ReentrancyGuard {
         // Verify proof using Withdraw verifier (index 3)
         //require(IVerifier(verifiersByIndex[3]).verify(proof, publicInputs), "Invalid proof");
 
-        // Validate publicInputs array length (requires 25 elements: 17 public inputs + 8 public outputs)
-        if (publicInputs.length < 25) {
+        // Validate publicInputs array length (requires 27 elements: 17 public inputs + 10 public outputs)
+        // Public inputs: token_address, chain_id, declared_time_reference, expected_root,
+        //                arbitrary_calldata_hash, receiver_address, relayer_fee_amount,
+        //                target_round, H_x, H_y, V_x, V_y, C1_x0, C1_x1, C1_y0, C1_y1, is_tl_swap
+        // Note: amount is now private, so it's not in publicInputs
+        // Public outputs: pedersen_commitment[2], new_nonce_commitment, encrypted_state_details[2],
+        //                 nonce_discovery_entry[2], timelock_ciphertext, tl_hashchain, final_amount
+        if (publicInputs.length < 27) {
             revert InvalidPublicInputs();
         }
 
         // Parse public inputs in correct order
+        // Note: amount is now private, so it's not in publicInputs
+        // Public inputs order: token_address, chain_id, declared_time_reference, expected_root,
+        //                      arbitrary_calldata_hash, receiver_address, relayer_fee_amount,
+        //                      target_round, H_x, H_y, V_x, V_y, C1_x0, C1_x1, C1_y0, C1_y1, is_tl_swap
         address tokenAddress = address(uint160(uint256(publicInputs[0]))); // token_address
-        uint256 sharesAmount = uint256(publicInputs[1]); // amount (in shares)
-        uint256 declaredTimeReference = uint256(publicInputs[3]); // declared_time_reference
-        uint256 expectedRoot = uint256(publicInputs[4]); // expected_root
-        bytes32 arbitraryCalldataHash = publicInputs[5]; // arbitrary_calldata_hash (for Multicall3)
-        address receiverAddress = address(uint160(uint256(publicInputs[6]))); // receiver_address
-        uint256 relayerFeeShares = uint256(publicInputs[7]); // relayer_fee_amount (in shares)
+        uint256 declaredTimeReference = uint256(publicInputs[2]); // declared_time_reference (index 2, chain_id is at 1)
+        uint256 expectedRoot = uint256(publicInputs[3]); // expected_root (index 3)
+        bytes32 arbitraryCalldataHash = publicInputs[4]; // arbitrary_calldata_hash (index 4)
+        address receiverAddress = address(uint160(uint256(publicInputs[5]))); // receiver_address (index 5)
+        uint256 relayerFeeShares = uint256(publicInputs[6]); // relayer_fee_amount (index 6)
 
         // Timelock parameters (grouped in struct to reduce stack depth)
         TimelockParams memory timelock = TimelockParams({
-            targetRound: uint256(publicInputs[8]),
-            H_x: uint256(publicInputs[9]),
-            H_y: uint256(publicInputs[10]),
-            V_x: uint256(publicInputs[11]),
-            V_y: uint256(publicInputs[12]),
-            C1_x0: uint256(publicInputs[13]),
-            C1_x1: uint256(publicInputs[14]),
-            C1_y0: uint256(publicInputs[15]),
-            C1_y1: uint256(publicInputs[16])
+            targetRound: uint256(publicInputs[7]), // index 7
+            H_x: uint256(publicInputs[8]), // index 8
+            H_y: uint256(publicInputs[9]), // index 9
+            V_x: uint256(publicInputs[10]), // index 10
+            V_y: uint256(publicInputs[11]), // index 11
+            C1_x0: uint256(publicInputs[12]), // index 12
+            C1_x1: uint256(publicInputs[13]), // index 13
+            C1_y0: uint256(publicInputs[14]), // index 14
+            C1_y1: uint256(publicInputs[15]) // index 15
         });
+
+        // Parse is_tl_swap (bool encoded as Field: 0 = false, 1 = true)
+        bool isTlSwap = uint256(publicInputs[16]) != 0; // index 16
 
         // Parse public outputs (grouped in struct to reduce stack depth)
         WithdrawOutputs memory outputs = WithdrawOutputs({
-            pedersenCommitmentX: uint256(publicInputs[17]),
-            pedersenCommitmentY: uint256(publicInputs[18]),
-            newNonceCommitment: uint256(publicInputs[19]),
-            encryptedBalance: bytes32(publicInputs[20]),
-            encryptedNullifier: bytes32(publicInputs[21]),
-            nonceDiscoveryEntryX: uint256(publicInputs[22]),
-            nonceDiscoveryEntryY: uint256(publicInputs[23]),
-            timelockCiphertext: uint256(publicInputs[24])
+            pedersenCommitmentX: uint256(publicInputs[17]), // index 17
+            pedersenCommitmentY: uint256(publicInputs[18]), // index 18
+            newNonceCommitment: uint256(publicInputs[19]), // index 19
+            encryptedBalance: bytes32(publicInputs[20]), // index 20
+            encryptedNullifier: bytes32(publicInputs[21]), // index 21
+            nonceDiscoveryEntryX: uint256(publicInputs[22]), // index 22
+            nonceDiscoveryEntryY: uint256(publicInputs[23]), // index 23
+            timelockCiphertext: uint256(publicInputs[24]), // index 24
+            tlHashchain: uint256(publicInputs[25]) // index 25
         });
 
-        if (
-            uint256(
-                    publicInputs[2] /*chainId*/
-                ) != block.chainid
-        ) {
+        // Parse final_amount (0 if TL swap, else actual withdrawal amount)
+        uint256 finalAmount = uint256(publicInputs[26]); // index 26
+
+        // Parse chain_id (index 1, after token_address)
+        uint256 chainId = uint256(publicInputs[1]);
+        if (chainId != block.chainid) {
             revert InvalidChainId();
         }
 
@@ -812,10 +827,6 @@ contract Arkana is AccessControl, ReentrancyGuard {
         Grumpkin.G1Point memory finalCommitment =
             Grumpkin.G1Point(outputs.pedersenCommitmentX, outputs.pedersenCommitmentY);
 
-        // Hash the Pedersen commitment point to create the leaf (circuit already has correct shares)
-        uint256 leaf =
-            Field.toUint256(poseidon2Hasher.hash_2(Field.toField(finalCommitment.x), Field.toField(finalCommitment.y)));
-
         // Mark the new nonce commitment as used (required for nonce discovery)
         if (usedCommitments[bytes32(outputs.newNonceCommitment)]) {
             revert CommitmentAlreadyUsed();
@@ -831,26 +842,81 @@ contract Arkana is AccessControl, ReentrancyGuard {
             tokenAddress, outputs.nonceDiscoveryEntryX, outputs.nonceDiscoveryEntryY, outputs.newNonceCommitment
         );
 
-        // Process vault operations (moved to internal function to reduce stack depth)
-        _processWithdrawVaultOperations(tokenAddress, sharesAmount, relayerFeeShares, receiverAddress);
+        // Handle TL swap vs normal withdrawal
+        if (isTlSwap) {
+            _handleTlSwapWithdrawal(tokenAddress, relayerFeeShares, receiverAddress, call);
+        } else {
+            _handleNormalWithdrawal(
+                tokenAddress, finalAmount, relayerFeeShares, receiverAddress, call, arbitraryCalldataHash
+            );
+        }
 
         // Store operation info for nonceCommitment (withdraw burns shares, doesn't mint)
         operationInfo[bytes32(outputs.newNonceCommitment)] =
             OperationInfo({operationType: OperationType.Withdraw, sharesMinted: 0, tokenAddress: tokenAddress});
 
+        return _addLeaf(
+            tokenAddress,
+            Field.toUint256(poseidon2Hasher.hash_2(Field.toField(finalCommitment.x), Field.toField(finalCommitment.y)))
+        );
+    }
+
+    /// @notice Handle TL swap withdrawal (virtual withdrawal - no actual vault withdrawal)
+    /// @param tokenAddress The token address
+    /// @param relayerFeeShares Relayer fee in shares
+    /// @param receiverAddress Address to receive relayer fee
+    /// @param callData Encrypted order data for TL swap registration
+    function _handleTlSwapWithdrawal(
+        address tokenAddress,
+        uint256 relayerFeeShares,
+        address receiverAddress,
+        bytes calldata callData
+    ) internal {
+        // TL Swap mode: Skip actual vault withdrawal (finalAmount is 0), but still pay relayer fee
+        // This is a virtual withdrawal - shares are allocated but not physically withdrawn
+        if (relayerFeeShares > 0) {
+            _processWithdrawVaultOperations(tokenAddress, 0, relayerFeeShares, receiverAddress);
+        }
+
+        // Register TL swap with TLswapRegister
+        // The call data contains the encrypted order (AES encrypted JSON with order details)
+        if (tlswapRegister != address(0)) {
+            // Call TLswapRegister.registerEncryptedOrder with the ciphertext from call data
+            // The call data should contain the encrypted order (AES encrypted JSON)
+            (bool success,) = tlswapRegister.call(abi.encodeWithSignature("registerEncryptedOrder(bytes)", callData));
+            require(success, "TL swap registration failed");
+        }
+    }
+
+    /// @notice Handle normal withdrawal (with actual vault withdrawal)
+    /// @param tokenAddress The token address
+    /// @param finalAmount Amount of shares to withdraw
+    /// @param relayerFeeShares Relayer fee in shares
+    /// @param receiverAddress Address to receive withdrawal assets
+    /// @param callData Multicall3 call data (if any)
+    /// @param arbitraryCalldataHash Hash of the call data for verification
+    function _handleNormalWithdrawal(
+        address tokenAddress,
+        uint256 finalAmount,
+        uint256 relayerFeeShares,
+        address receiverAddress,
+        bytes calldata callData,
+        bytes32 arbitraryCalldataHash
+    ) internal {
+        // Normal withdrawal: Process vault operations with actual withdrawal amount
+        _processWithdrawVaultOperations(tokenAddress, finalAmount, relayerFeeShares, receiverAddress);
+
         // Execute Multicall3 call if calldata is provided
-        if (call.length > 0) {
-            if (keccak256(call) != arbitraryCalldataHash) {
+        if (callData.length > 0) {
+            if (keccak256(callData) != arbitraryCalldataHash) {
                 revert InvalidCalldataHash();
             }
             // Execute the Multicall3 call
-            (bool success,) = multicall3Address.call(call);
+            (bool success,) = multicall3Address.call(callData);
             if (!success) {
                 revert Multicall3Failed();
             }
         }
-
-        return _addLeaf(tokenAddress, leaf);
     }
 
     /// @notice Process vault operations for withdrawal (internal function to reduce stack depth)
@@ -1069,11 +1135,10 @@ contract Arkana is AccessControl, ReentrancyGuard {
      * @param sharesAmount Amount of shares to withdraw
      * @param recipient Address to receive the withdrawn tokens (TLswapRegister contract)
      */
-    function withdrawForSwap(
-        address tokenAddress,
-        uint256 sharesAmount,
-        address recipient
-    ) external onlyRole(TLSWAP_REGISTER_ROLE) {
+    function withdrawForSwap(address tokenAddress, uint256 sharesAmount, address recipient)
+        external
+        onlyRole(TLSWAP_REGISTER_ROLE)
+    {
         // Get vault address
         address vaultAddress = tokenVaults[tokenAddress];
         if (vaultAddress == address(0)) {

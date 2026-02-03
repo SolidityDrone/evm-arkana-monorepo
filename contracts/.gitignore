@@ -17,3 +17,6 @@ node_modules/
 
 test/merkle_tree_data.json
 test/merkle_tree_data_real.json
+
+lib/v4-core/
+lib/v4-periphery/
