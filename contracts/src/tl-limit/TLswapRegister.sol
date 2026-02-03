@@ -19,7 +19,7 @@ contract TLswapRegister is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     /// @notice Arkana contract address
-    Arkana public immutable arkana;
+    Arkana public arkana;
 
     /// @notice Poseidon2 hasher for hash chain verification
     Poseidon2HuffWrapper public immutable poseidon2Hasher;
@@ -91,11 +91,14 @@ contract TLswapRegister is ReentrancyGuard {
     }
 
     constructor(address _arkana, address _uniswapRouter, address _poseidon2Huff) {
-        arkana = Arkana(_arkana);
         owner = msg.sender;
         uniswapRouter = _uniswapRouter;
         // Initialize Poseidon2 hasher with Huff contract address
         poseidon2Hasher = new Poseidon2HuffWrapper(_poseidon2Huff);
+    }
+
+    function setArkana(address _arkana) external onlyOwner {
+        arkana = Arkana(_arkana);
     }
 
     /**
