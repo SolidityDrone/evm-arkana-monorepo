@@ -9,8 +9,9 @@ import {Arkana} from "../Arkana.sol";
 /**
  * @title TLswapRegister
  * @notice Registry for executing timelocked encrypted swap intents
- * @dev Parameters (amountIn, amountOut, slippage, deadline, recipient) are encrypted in timelock ciphertext
+ * @dev Parameters (sharesAmount, amountOutMin, slippage, deadline, recipient, tokenOut) are encrypted in timelock ciphertext
  *      Executor decrypts off-chain and calls executeSwapIntent with decrypted parameters
+ *      Uses amountOutMin as target - swaps all available tokens (from shares) to achieve best output
  */
 contract TLswapRegister is ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -38,7 +39,17 @@ contract TLswapRegister is ReentrancyGuard {
         string beaconId;      // Beacon ID
     }
 
+    /// @notice Mapping from orderId to encrypted ciphertext
+    /// @dev orderId is keccak256(ciphertext) for uniqueness
+    mapping(bytes32 => bytes) public encryptedOrders;
+
     /// @notice Events
+    event EncryptedOrderRegistered(
+        bytes32 indexed orderId,
+        address indexed registrant,
+        bytes ciphertext
+    );
+
     event SwapIntentExecuted(
         bytes32 indexed intentId,
         address indexed executor,
@@ -52,6 +63,7 @@ contract TLswapRegister is ReentrancyGuard {
     /// @notice Errors
     error InvalidSlippage();
     error InvalidAmounts();
+    error InvalidCiphertext();
     error SwapFailed();
     error OnlyOwner();
     error InvalidDeadline();
@@ -91,16 +103,49 @@ contract TLswapRegister is ReentrancyGuard {
     }
 
     /**
+     * @notice Register an encrypted order
+     * @dev Called by users to register encrypted swap orders
+     *      The ciphertext contains encrypted order parameters (sharesAmount, amountOutMin, slippage, deadline, recipient, tokenOut)
+     *      and optionally the next order's ciphertext in a nested encryption chain
+     * @param ciphertext The encrypted order data (AES-128 encrypted JSON)
+     * @return orderId Unique identifier for the registered order
+     */
+    function registerEncryptedOrder(bytes calldata ciphertext) external returns (bytes32 orderId) {
+        if (ciphertext.length == 0) {
+            revert InvalidCiphertext();
+        }
+
+        // Generate unique orderId from ciphertext
+        orderId = keccak256(ciphertext);
+
+        // Store encrypted order
+        encryptedOrders[orderId] = ciphertext;
+
+        emit EncryptedOrderRegistered(orderId, msg.sender, ciphertext);
+
+        return orderId;
+    }
+
+    /**
+     * @notice Get encrypted order by ID
+     * @param orderId The order identifier
+     * @return ciphertext The encrypted order data
+     */
+    function getEncryptedOrder(bytes32 orderId) external view returns (bytes memory) {
+        return encryptedOrders[orderId];
+    }
+
+    /**
      * @notice Execute a swap intent
      * @dev Called by off-chain executor after decrypting the intent from timelock ciphertext
+     * @dev Uses amountOutMin as target - swaps all available tokens to achieve best output
      * @param intentId Unique identifier for the intent (hash of encrypted data)
      * @param intentor Address that created the intent (from Arkana withdraw)
      * @param tokenAddress Token address (for Arkana vault operations)
-     * @param sharesAmount Amount of shares to withdraw from Arkana
+     * @param sharesAmount Amount of shares to withdraw from Arkana (encrypted in ciphertext)
      * @param tokenIn Token to swap from
      * @param tokenOut Token to swap to
-     * @param amountIn Amount to swap (0 if using amountOutMin)
-     * @param amountOutMin Minimum amount out (0 if using amountIn)
+     * @param amountOutMin Minimum amount out (target for swap)
      * @param slippageBps Slippage in basis points (0-255, representing 0-2.55%)
      * @param deadline Deadline timestamp (uint24, max ~194 days)
      * @param executionFeeBps Execution fee in basis points (paid to executor)
@@ -117,7 +162,6 @@ contract TLswapRegister is ReentrancyGuard {
         uint256 sharesAmount,
         address tokenIn,
         address tokenOut,
-        uint256 amountIn,
         uint256 amountOutMin,
         uint8 slippageBps,
         uint24 deadline,
@@ -132,8 +176,8 @@ contract TLswapRegister is ReentrancyGuard {
             revert IntentExpired();
         }
 
-        // Validate amounts (exactly one must be non-zero)
-        if ((amountIn == 0 && amountOutMin == 0) || (amountIn != 0 && amountOutMin != 0)) {
+        // Validate amountOutMin is set
+        if (amountOutMin == 0) {
             revert InvalidAmounts();
         }
 
@@ -152,29 +196,25 @@ contract TLswapRegister is ReentrancyGuard {
             revert InvalidAmounts();
         }
 
-        // Withdraw tokens from Arkana vault
+        // Withdraw tokens from Arkana vault using sharesAmount
         // This calls Arkana's function that withdraws from Aave and sends tokens to this contract
-        arkana.withdrawForSwap(intentor, tokenAddress, sharesAmount, address(this));
+        arkana.withdrawForSwap(tokenAddress, sharesAmount, address(this));
 
-        // Get the actual amount received (should match amountIn if amountIn > 0)
-        uint256 receivedAmount = IERC20(tokenIn).balanceOf(address(this));
+        // Get the actual amount received (use all available tokens for swap)
+        uint256 availableAmount = IERC20(tokenIn).balanceOf(address(this));
         
-        // Use receivedAmount if amountIn was 0 (calculated from amountOutMin)
-        uint256 swapAmount = amountIn > 0 ? amountIn : receivedAmount;
-        
-        // Validate we have enough tokens
-        if (swapAmount > receivedAmount) {
+        if (availableAmount == 0) {
             revert InvalidAmounts();
         }
 
-        // Approve swap target to spend tokens
+        // Approve swap target to spend all available tokens
         IERC20(tokenIn).approve(swapTarget, 0);
-        IERC20(tokenIn).approve(swapTarget, swapAmount);
+        IERC20(tokenIn).approve(swapTarget, availableAmount);
 
         // Get balance before swap (swap should send tokens to this contract)
         uint256 balanceBefore = IERC20(tokenOut).balanceOf(address(this));
 
-        // Execute swap
+        // Execute swap - use all available tokens to get best output
         // NOTE: The swapCalldata must be configured to send output tokens to address(this),
         // NOT to the recipient directly. The contract will distribute fees and remaining tokens.
         (bool success,) = swapTarget.call(swapCalldata);
@@ -186,18 +226,11 @@ contract TLswapRegister is ReentrancyGuard {
         uint256 balanceAfter = IERC20(tokenOut).balanceOf(address(this));
         amountOut = balanceAfter - balanceBefore;
 
-        // Validate slippage
-        if (amountOutMin > 0) {
-            // Using amountOutMin: check we got at least that much
-            if (amountOut < amountOutMin) {
-                revert InvalidSlippage();
-            }
-        } else {
-            // Using amountIn: check slippage based on expected amount
-            uint256 minAmountOut = (swapAmount * (10000 - slippageBps)) / 10000;
-            if (amountOut < minAmountOut) {
-                revert InvalidSlippage();
-            }
+        // Validate we got at least amountOutMin (with slippage tolerance)
+        // Calculate minimum acceptable output considering slippage
+        uint256 minAcceptableOut = (amountOutMin * (10000 - slippageBps)) / 10000;
+        if (amountOut < minAcceptableOut) {
+            revert InvalidSlippage();
         }
 
         // Calculate and deduct fees from amountOut
@@ -233,7 +266,7 @@ contract TLswapRegister is ReentrancyGuard {
             intentor,
             tokenIn,
             tokenOut,
-            swapAmount,
+            availableAmount,
             recipientAmount
         );
 

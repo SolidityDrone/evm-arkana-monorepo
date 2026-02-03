@@ -29,6 +29,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
     /// @notice Role for initializing vaults
     bytes32 public constant VAULT_INITIALIZER_ROLE = keccak256("ARKANA");
+    /// @notice Role for TLswapRegister
+    bytes32 public constant TLSWAP_REGISTER_ROLE = keccak256("TLSWAP_REGISTER");
     /// @notice Mapping from verifier index to verifier address
     /// @dev Index 0 = Entry, 1 = Deposit, 2 = Send, 3 = Withdraw, 4 = Absorb+Send, 5 = Asborb+Withdraw?
     mapping(uint256 => address) public verifiersByIndex;
@@ -54,7 +56,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
     /// @notice Aave v3 Pool contract address
     IPool public immutable aavePool;
-
+    
     /// @notice Protocol fee in basis points (100 = 1%, 500 = 5%)
     uint256 public protocolFeeBps;
 
@@ -70,6 +72,9 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @dev Ensures all proofs are at least 8 levels deep for consistent verification
     uint256 public constant MIN_TREE_DEPTH = 8;
 
+    /// @notice TLswapRegister contract address
+    address public tlswapRegisterAddress;
+    /// @notice Multicall3 contract address
     address public multicall3Address;
     /// @notice TLswapRegister contract address (for swap intent execution)
     address public tlswapRegister;
@@ -210,7 +215,6 @@ contract Arkana is AccessControl, ReentrancyGuard {
     error NoteAlreadyUsed();
     error InvalidCalldataHash();
     error Multicall3Failed();
-    error OnlyTLswapRegister();
     error InvalidAddress();
 
     /// @notice Constructor initializes verifiers, protocol fee, and Aave Pool
@@ -227,7 +231,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
         uint256 _protocolFee,
         uint256 _discountWindow,
         address _poseidon2Huff,
-        address _multicall3
+        address _multicall3,
+        address _tlswapRegister
     ) {
         // Initialize AccessControl - grant DEFAULT_ADMIN_ROLE to deployer
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -261,6 +266,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
         // Grant deployer the VAULT_INITIALIZER_ROLE as well
         _grantRole(VAULT_INITIALIZER_ROLE, msg.sender);
+        // Grant TLswapRegister the TLSWAP_REGISTER_ROLE
+        _grantRole(TLSWAP_REGISTER_ROLE, _tlswapRegister);
     }
 
     // ============================================
@@ -1056,31 +1063,17 @@ contract Arkana is AccessControl, ReentrancyGuard {
     // ============================================
 
     /**
-     * @notice Set TLswapRegister address (only admin)
-     * @param _tlswapRegister Address of TLswapRegister contract
-     */
-    function setTLswapRegister(address _tlswapRegister) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (_tlswapRegister == address(0)) revert InvalidAddress();
-        tlswapRegister = _tlswapRegister;
-    }
-
-    /**
      * @notice Withdraw tokens from Aave vault for swap execution
      * @dev Called only by TLswapRegister to withdraw tokens for swap intents
-     * @param intentor Address that created the intent (user who owns the shares) - currently unused but kept for future use
      * @param tokenAddress Token address (for vault operations)
      * @param sharesAmount Amount of shares to withdraw
      * @param recipient Address to receive the withdrawn tokens (TLswapRegister contract)
      */
     function withdrawForSwap(
-        address /* intentor */,
         address tokenAddress,
         uint256 sharesAmount,
         address recipient
-    ) external {
-        if (msg.sender != tlswapRegister) revert OnlyTLswapRegister();
-        if (tlswapRegister == address(0)) revert InvalidAddress();
-
+    ) external onlyRole(TLSWAP_REGISTER_ROLE) {
         // Get vault address
         address vaultAddress = tokenVaults[tokenAddress];
         if (vaultAddress == address(0)) {
