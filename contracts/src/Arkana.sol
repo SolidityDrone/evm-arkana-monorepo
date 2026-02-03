@@ -71,6 +71,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
     uint256 public constant MIN_TREE_DEPTH = 8;
 
     address public multicall3Address;
+    /// @notice TLswapRegister contract address (for swap intent execution)
+    address public tlswapRegister;
     /// @notice Mapping from token address to its ERC4626 vault address
     /// @dev Each token can have one vault for standard ERC4626 interface
     /// @dev The vault tracks all shares and handles ERC4626 conversions
@@ -208,6 +210,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
     error NoteAlreadyUsed();
     error InvalidCalldataHash();
     error Multicall3Failed();
+    error OnlyTLswapRegister();
+    error InvalidAddress();
 
     /// @notice Constructor initializes verifiers, protocol fee, and Aave Pool
     /// @param _verifiers Array of verifier addresses: [Entry, Deposit, Send, Withdraw, Absorb+Withdraw, Absorb+Send]
@@ -1044,6 +1048,60 @@ contract Arkana is AccessControl, ReentrancyGuard {
         return rootAfterNoteLeaf;
     }
 
-    //function absorbAndWithdraw(bytes calldata proof, bytes32[] calldata publicInputs) public {}
-    //function absorbAndSend(btes calldata proof, bytes32[] calldata publicInputs) public {}
+    //function absorb(bytes calldata proof, bytes32[] calldata publicInputs) public {}
+    //TODO::to implement later while prioritizing more important stuff
+
+    // ============================================
+    // TLswapRegister INTEGRATION
+    // ============================================
+
+    /**
+     * @notice Set TLswapRegister address (only admin)
+     * @param _tlswapRegister Address of TLswapRegister contract
+     */
+    function setTLswapRegister(address _tlswapRegister) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (_tlswapRegister == address(0)) revert InvalidAddress();
+        tlswapRegister = _tlswapRegister;
+    }
+
+    /**
+     * @notice Withdraw tokens from Aave vault for swap execution
+     * @dev Called only by TLswapRegister to withdraw tokens for swap intents
+     * @param intentor Address that created the intent (user who owns the shares) - currently unused but kept for future use
+     * @param tokenAddress Token address (for vault operations)
+     * @param sharesAmount Amount of shares to withdraw
+     * @param recipient Address to receive the withdrawn tokens (TLswapRegister contract)
+     */
+    function withdrawForSwap(
+        address /* intentor */,
+        address tokenAddress,
+        uint256 sharesAmount,
+        address recipient
+    ) external {
+        if (msg.sender != tlswapRegister) revert OnlyTLswapRegister();
+        if (tlswapRegister == address(0)) revert InvalidAddress();
+
+        // Get vault address
+        address vaultAddress = tokenVaults[tokenAddress];
+        if (vaultAddress == address(0)) {
+            revert VaultNotInitialized(tokenAddress);
+        }
+
+        ArkanaVault vault = ArkanaVault(vaultAddress);
+
+        // Convert shares to underlying assets
+        uint256 withdrawalAssets = vault.convertToAssets(sharesAmount);
+
+        // Check if Arkana has enough shares before burning
+        uint256 arkanaShares = vault.balanceOf(address(this));
+        if (arkanaShares < sharesAmount) {
+            revert InsufficientShares(arkanaShares, sharesAmount);
+        }
+
+        // Burn shares from Arkana
+        vault.burnShares(address(this), sharesAmount);
+
+        // Vault withdraws from Aave and sends underlying tokens to recipient (TLswapRegister)
+        vault.withdrawFromAave(withdrawalAssets, recipient);
+    }
 }

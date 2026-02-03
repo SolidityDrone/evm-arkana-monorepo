@@ -814,5 +814,148 @@ contract ArkanaTest is Test {
         console.log("      Entry -> Withdraw Integration Test PASSED");
         console.log("========================================================================");
     }
+
+    /// @notice Test entry -> deposit flow using values from Noir integration test
+    /// @dev This test uses exact values from circuits/main/deposit/src/test/tests.nr::test_entry_then_deposit_integration
+    /// Run: nargo test test_entry_then_deposit_integration --show-output to regenerate values
+    /// @dev Note: The Noir test uses token_address = 0x7775e4b6f4d40be537b55b6c47e09ada0157bd, but we use testTokenAddress (WETH) for vault operations
+    /// @dev The commitments in the Noir test were computed with token_address = 0x7775e4b6f4d40be537b55b6c47e09ada0157bd, so they won't match exactly
+    /// @dev This test verifies the contract logic works, but the root values will differ due to different token addresses
+    function test_EntryThenDeposit_Integration() public {
+        console.log("========================================================================");
+        console.log("      TEST: Entry -> Deposit Integration (from Noir test)");
+        console.log("========================================================================");
+        console.log("");
+
+        // === STEP 1: INITIALIZE (ENTRY) ===
+        console.log("STEP 1: Calling initialize() with entry data...");
+
+        // Prepare publicInputs for initialize (7 elements)
+        // Note: Using testTokenAddress instead of 0x7775e4b6f4d40be537b55b6c47e09ada0157bd because we need a vault
+        bytes32[] memory entryPublicInputs = new bytes32[](7);
+        entryPublicInputs[0] = bytes32(uint256(uint160(testTokenAddress))); // token_address (using testTokenAddress for vault)
+        entryPublicInputs[1] = bytes32(uint256(0xaa36a7)); // chain_id = 11155111 (Sepolia)
+        entryPublicInputs[2] = bytes32(uint256(0x01e6475b19b2a7b1286252a724926ce4c60d3ad048ea798171f88e719c911293)); // balance_commitment.x
+        entryPublicInputs[3] = bytes32(uint256(0x1f12bef8a2f0ec08fcf33766ecf5d16c27361ea76cea42187f8695809de10e31)); // balance_commitment.y
+        entryPublicInputs[4] = bytes32(uint256(0x02424a21c81596e7b22176b58cc3b12401be7e3548befbd5d9e4fe540ff9b3c2)); // new_nonce_commitment
+        entryPublicInputs[5] = bytes32(uint256(0x2cac3458d804fa5a0b4c3de2001cac32f039d443c6717ed80fb7ba0ffc746ab3)); // nonce_discovery_entry.x
+        entryPublicInputs[6] = bytes32(uint256(0x132fa0e3540ab5d87bf3d870780d24101920d195f60befef0706735a9905b47d)); // nonce_discovery_entry.y
+
+        uint256 amountIn = 0x0f4240; // 1,000,000 (in token decimals) - larger amount to avoid Aave conversion underflow
+        uint256 lockDuration = 0x00; // 0
+
+        // Deal tokens to this contract for the initialize call
+        // Note: amountIn is 1,000,000, but testToken (WETH) has 6 decimals, so we need 1,000,000e6
+        deal(testTokenAddress, address(this), 1_000_000e6);
+
+        // Approve arkana to spend tokens
+        IERC20(testTokenAddress).approve(address(arkana), 1_000_000e6);
+
+        // Call initialize
+        bytes memory emptyProof;
+        uint256 rootAfterEntry = arkana.initialize(emptyProof, entryPublicInputs, 1_000_000e6, lockDuration);
+
+        console.log("  Root after entry:", rootAfterEntry);
+        console.log("  Tree depth:", arkana.getDepth(testTokenAddress));
+        console.log("  Tree size:", arkana.getSize(testTokenAddress));
+        console.log(
+            "  Note: Root will differ because token_address differs (Noir used 0x7775e4b6f4d40be537b55b6c47e09ada0157bd, we use testTokenAddress)"
+        );
+        console.log("  Entry completed successfully");
+        console.log("");
+
+        // === STEP 2: DEPOSIT ===
+        console.log("STEP 2: Calling deposit() with deposit data...");
+
+        // Prepare publicInputs for deposit (11 elements: 4 inputs + 7 outputs)
+        bytes32[] memory depositPublicInputs = new bytes32[](11);
+
+        // Public inputs (4 elements)
+        depositPublicInputs[0] = bytes32(uint256(uint160(testTokenAddress))); // token_address = 0x7775e4b6f4d40be537b55b6c47e09ada0157bd (using testTokenAddress for vault)
+        depositPublicInputs[1] = bytes32(uint256(0x07a120)); // amount (in shares) = 500,000
+        depositPublicInputs[2] = bytes32(uint256(0xaa36a7)); // chain_id = 11155111 (Sepolia)
+        depositPublicInputs[3] = bytes32(rootAfterEntry); // expected_root (use actual root from entry)
+
+        // Public outputs (7 elements)
+        depositPublicInputs[4] = bytes32(uint256(0x0a5a950e6d688a6e146a0939ad866ce0d62270fee5983641163f78d44a6f4d57)); // pedersen_commitment.x
+        depositPublicInputs[5] = bytes32(uint256(0x18a7bd3655b96c5986e969e67966142ec5a88d1bcc5f7cd63f723ac372b317a8)); // pedersen_commitment.y
+        depositPublicInputs[6] = bytes32(uint256(0x05855fd7cf8d5fe5d1f51463dc91c18fc82e00ddc4fc42d853fb4311d034af82)); // encrypted_state_details[0]
+        depositPublicInputs[7] = bytes32(uint256(0x271deab6946acc6af9027774c2a962872f718cd8e490c9f25436c9c591c5cd8b)); // encrypted_state_details[1]
+        depositPublicInputs[8] = bytes32(uint256(0x0279080a755f1b05f80d45e96f47ef34c1d753e45697183f0fe25dd913727e9a)); // nonce_discovery_entry.x
+        depositPublicInputs[9] = bytes32(uint256(0x2a60db6e19f46c673f3a687202e3d9bbd84c00717e795f71f63f789a7e12e6)); // nonce_discovery_entry.y
+        depositPublicInputs[10] = bytes32(uint256(0x2872629850832f7913677519f8b07439325cc057b26830cd27f30609de37dbc2)); // new_nonce_commitment
+
+        // Call deposit
+        // Note: The deposit function reads amount from publicInputs[1] (in shares)
+        // The contract will calculate the actual token amount from shares using the vault
+        // We need to ensure the vault has enough assets to cover the deposit
+        // For simplicity, we'll deal more tokens to the contract
+        uint256 depositAmountIn = 500_000e6; // 500,000 tokens (6 decimals) - approximate conversion
+
+        // Deal more tokens for deposit (the contract will transfer from this address)
+        deal(testTokenAddress, address(this), depositAmountIn);
+        IERC20(testTokenAddress).approve(address(arkana), depositAmountIn);
+
+        uint256 rootAfterDeposit = arkana.deposit(emptyProof, depositPublicInputs);
+
+        console.log("  Root after deposit:", rootAfterDeposit);
+        console.log("  Tree depth:", arkana.getDepth(testTokenAddress));
+        console.log("  Tree size:", arkana.getSize(testTokenAddress));
+        console.log("");
+
+        // Verify tree state
+        assertTrue(rootAfterDeposit != 0, "Root after deposit should not be zero");
+        assertTrue(rootAfterDeposit != rootAfterEntry, "Root should change after deposit");
+        assertEq(arkana.getSize(testTokenAddress), 2, "Tree should have 2 leaves (entry + deposit commitment)");
+        console.log("  Deposit completed successfully");
+        console.log("");
+
+        // Verify the new commitment leaf was added
+        // The deposit circuit returns pedersen_commitment, but the contract adds shares*G before hashing
+        // We need to replicate the contract's calculation:
+        // 1. Get commitment point from circuit
+        // 2. Calculate shares (as contract does: convertToShares(amountAfterFee))
+        // 3. Add shares*G to commitment point
+        // 4. Hash the result
+
+        // Get commitment point from circuit
+        uint256 pedersenCommitmentX = uint256(depositPublicInputs[4]);
+        uint256 pedersenCommitmentY = uint256(depositPublicInputs[5]);
+        Grumpkin.G1Point memory circuitCommitment = Grumpkin.G1Point(pedersenCommitmentX, pedersenCommitmentY);
+
+        // Calculate shares as contract does
+        // Note: publicInputs[1] is treated as token amount by contract (even though circuit uses it as shares)
+        uint256 depositAmount = uint256(depositPublicInputs[1]); // 500000
+        uint256 protocolFee = arkana.protocol_fee();
+        uint256 feeAmount = (depositAmount * protocolFee) / 10000;
+        uint256 amountAfterFee = depositAmount - feeAmount;
+
+        // Get vault and calculate shares
+        address vaultAddress = arkana.tokenVaults(testTokenAddress);
+        ArkanaVault vault = ArkanaVault(vaultAddress);
+        uint256 shares = vault.convertToShares(amountAfterFee);
+
+        // Get generator G
+        (uint256 gX, uint256 gY) = Generators.getG();
+        Grumpkin.G1Point memory G = Grumpkin.G1Point(gX, gY);
+
+        // Add shares*G to circuit commitment
+        Grumpkin.G1Point memory sharesCommitment = Grumpkin.getTerm(G, shares);
+        Grumpkin.G1Point memory finalCommitment = Grumpkin.add(circuitCommitment, sharesCommitment);
+
+        // Hash the final commitment point to get the leaf (as contract does)
+        Field.Type finalCommitmentXField = Field.toField(finalCommitment.x);
+        Field.Type finalCommitmentYField = Field.toField(finalCommitment.y);
+        Field.Type newCommitmentLeafField = hasher.hash_2(finalCommitmentXField, finalCommitmentYField);
+        uint256 newCommitmentLeaf = Field.toUint256(newCommitmentLeafField);
+
+        assertTrue(arkana.hasLeaf(testTokenAddress, newCommitmentLeaf), "New commitment leaf should exist in tree");
+        console.log("  New commitment leaf verified in tree");
+        console.log("");
+
+        console.log("========================================================================");
+        console.log("      Entry -> Deposit Integration Test PASSED");
+        console.log("========================================================================");
+    }
 }
 
