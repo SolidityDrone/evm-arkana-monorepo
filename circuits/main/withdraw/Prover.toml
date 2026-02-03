@@ -1,33 +1,33 @@
 
 user_key = "0x19e573f3801c7b2e4619998342e8e305e1692184cbacd220c04198a04c36b7d2"
 
-previous_nonce = "0x03"
+previous_nonce = "0x00"
 
-previous_shares = "0x64"
+previous_shares = "0x0f4240"
 
 nullifier = "0x00"
 
-previous_commitment_leaf = "0x2c1b45cba36c96d9049a38f445fba21d58f14de2bfd88b818e0c35cb2dca9e33"
+previous_commitment_leaf = "0x112490ff41246d19d218de6e3f1f7542d399f2f8aec3fdebff7186eec7146b3e"
 
-commitment_index = "0x03"
+commitment_index = "0x00"
 
-tree_depth = "0x02"
+tree_depth = "0x01"
 
-expected_root = "0x176444929ca9e37f64ec3647eac6b28af6c38754f35cbb75249b6f19c3fba4e7"
+expected_root = "0x112490ff41246d19d218de6e3f1f7542d399f2f8aec3fdebff7186eec7146b3e"
 
-merkle_proof = ["0x2d9ef1023cef3c2d6c293641045639a3e5b22bbfff248297c2fec63c210aa1c2", "0x1929818f8c0678d133d3785d5d996bb759282170e0c64784cbd6d8252cadb153", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00"]
+merkle_proof = ["0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00"]
 
 token_address = "0x7775e4b6f4d40be537b55b6c47e09ada0157bd"
 
-chain_id = "0x01"
+chain_id = "0xaa36a7"
 
-amount = "0x32"
+amount = "0x07a120"
 
 previous_unlocks_at = "0x00"
 
 declared_time_reference = "0x0f4240"
 
-arbitrary_calldata_hash = "0x1234567890abcdef"
+arbitrary_calldata_hash = "0x00"
 
 receiver_address = "0x742d35cc6634c0532925a3b8d4c9db96c4b4d8b6"
 
@@ -52,3 +52,7 @@ C1_y0 = "0x01f86545bd5d6b6cd70010f39e89725793cfb578a9aa37d88c64a039b40e4f1a"
 C1_y1 = "0x05ddbacaa77db26735b8554c800cbf0f159a85a2e5ec71dffbaffbffaf4574f7"
 
 pairing_result = "0x107b5ed0db8d82f8e13cd635f33dc1ba12d85cb4baa964af52bf429114f15c2b"
+
+is_tl_swap = "0x01"
+
+tl_swap_shares_amounts = ["0x0186a0", "0x0249f0", "0x03d090", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00"]

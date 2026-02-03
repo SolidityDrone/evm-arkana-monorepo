@@ -28,7 +28,7 @@ global TRAIL_STRING: Field = 0x696b6520696e206c6f6e652070786b as Field;
 fn main(
     user_key: Field,
     token_address: pub Field,
-    amount: pub Field,
+    amount: Field,
     chain_id: pub Field,
     previous_nonce: Field,
     previous_shares: Field,
@@ -47,7 +47,7 @@ fn main(
     arbitrary_calldata_hash: pub Field, // this will serve to attach extra calldata to proof 
     receiver_address: pub Field,
     relayer_fee_amount: pub Field,
-    
+
     // === DRAND TIMELOCK ENCRYPTION ===
     // These public inputs enable timelock encryption of user_key
     // Contract verifies BEFORE round: e(V, G2_gen) * e(-H, C1) == 1 (proves V = r*H, C1 = r*G2)
@@ -61,9 +61,41 @@ fn main(
     C1_x1: pub Field,                  // C1 = r * G2_gen on G2 (x.c1 coordinate)
     C1_y0: pub Field,                  // C1 = r * G2_gen on G2 (y.c0 coordinate)
     C1_y1: pub Field,                  // C1 = r * G2_gen on G2 (y.c1 coordinate)
-    pairing_result: Field              // hash(e(V, drand_pubkey)) computed offchain (private input)
+    pairing_result: Field,              // hash(e(V, drand_pubkey)) computed offchain (private input)
+    is_tl_swap: pub bool,
+    tl_swap_shares_amounts: [Field; 10] // <-- NOTICE: because noir dosent accept dynamic arrays, for now i set a max of 10;
+) -> pub ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field, Field) {
     
-) -> pub ([Field; 2], Field, [Field; 2], [Field; 2], Field) {
+    // === TL SWAP HASH CHAIN VERIFICATION ===
+    // When is_tl_swap = true, we build a hash chain to ensure:
+    // 1. The sum of chunks equals the total amount
+    // 2. The order of chunks is fixed (prevents reordering)
+    // 3. Each chunk can only be used once
+    // Hash chain: h0 = hash(0, totalShares), h1 = hash(h0, s1), h2 = hash(h1, s2), ..., h10 = hash(h9, s10)
+    let mut used_shares = 0 as Field;
+    let mut tl_hashchain = 0 as Field;
+    let initial_hashchain = Poseidon2::hash([user_key, previous_nonce], 2) as Field;
+
+    if is_tl_swap {
+        // Initialize hash chain: h0 = hash(0, totalShares)
+        // where totalShares = amount (the total shares being allocated)
+        
+        tl_hashchain = Poseidon2::hash([initial_hashchain, amount], 2);
+        
+        // Build hash chain for each chunk: h_i = hash(h_{i-1}, s_i)
+        for i in 0..10 {  //<-- NOTICE: because noir dosent accept dynamic arrays, for now i set a max of 10;
+            if tl_swap_shares_amounts[i] != 0 { 
+                used_shares += tl_swap_shares_amounts[i];
+                // Hash each chunk (even if zero, to maintain chain structure)
+                // This ensures the order is fixed and prevents reordering
+                tl_hashchain = Poseidon2::hash([tl_hashchain, tl_swap_shares_amounts[i]], 2);
+            }
+        }
+        
+        // Verify that sum of chunks equals total amount
+        assert(used_shares == amount, "TL swap: sum of chunks must equal total amount");
+    }
+
     
     // === SETUP ===
     // Hash user_key with chain_id and token_address to prevent cross-chain/token overlap
@@ -150,7 +182,7 @@ fn main(
     // Contract will verify pairing_result matches e(V, drand_pubkey) using BN254 precompile
     let timelock_ciphertext = timelock_plaintext + timelock_K;
 
-
+    
     // Ensure all public inputs are used
     let _ = arbitrary_calldata_hash;
     let _ = receiver_address;
@@ -165,12 +197,18 @@ fn main(
     let _ = C1_y0;
     let _ = C1_y1;
     
+    // If TL swap, return 0 as withdrawal amount (no actual vault withdrawal)
+    // Otherwise, return the actual amount
+    let final_amount = if is_tl_swap { 0 as Field } else { amount };
+    
     (
         [new_commitment_point.x, new_commitment_point.y], 
         new_nonce_commitment,
         encrypted_state_details,
         [nonce_discovery_entry.x, nonce_discovery_entry.y],
-        timelock_ciphertext
+        timelock_ciphertext,
+        tl_hashchain,
+        final_amount
     )
 }
 

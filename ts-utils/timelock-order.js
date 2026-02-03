@@ -7,6 +7,8 @@ import { hexToBytes, randomBytes } from '@noble/curves/utils.js';
 import { webcrypto } from 'node:crypto';
 import { createCipheriv, createDecipheriv } from 'node:crypto';
 import { poseidon2Hash } from '@aztec/foundation/crypto';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // Set up crypto.getRandomValues for Node.js
 if (typeof globalThis.crypto === 'undefined') {
@@ -110,11 +112,11 @@ async function kdf(pairingResult) {
     });
     const pairingHash = sha256(new TextEncoder().encode(pairingStr));
     const pairingFieldRaw = BigInt('0x' + Buffer.from(pairingHash).toString('hex'));
-    
+
     // Aztec Fr field modulus (same as Noir)
     const FR_MODULUS = BigInt('0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001');
     const pairingField = pairingFieldRaw % FR_MODULUS;
-    
+
     // Use Poseidon2 hash (same as Noir circuit)
     const fields = [pairingField];
     const kdfResult = await poseidon2Hash(fields);
@@ -143,10 +145,10 @@ async function deriveAESKey(pairingResult) {
 function encryptAES128(data, key) {
     const iv = Buffer.from(randomBytes(16));
     const cipher = createCipheriv('aes-128-cbc', Buffer.from(key), iv);
-    
+
     let encrypted = cipher.update(data, 'utf8', 'hex');
     encrypted += cipher.final('hex');
-    
+
     return {
         iv: iv.toString('hex'),
         ciphertext: encrypted
@@ -176,7 +178,7 @@ function parseDrandPubkey() {
     const pubkeyX1Hex = DRAND_PUBKEY_HEX.substring(64, 128);
     const pubkeyY0Hex = DRAND_PUBKEY_HEX.substring(128, 192);
     const pubkeyY1Hex = DRAND_PUBKEY_HEX.substring(192, 256);
-    
+
     // Try different coordinate orderings (same as timelock-prep.js)
     const orderings = [
         { name: 'x0,x1,y0,y1', hex: '04' + pubkeyX0Hex + pubkeyX1Hex + pubkeyY0Hex + pubkeyY1Hex },
@@ -184,7 +186,7 @@ function parseDrandPubkey() {
         { name: 'y1,y0,x1,x0', hex: '04' + pubkeyY1Hex + pubkeyY0Hex + pubkeyX1Hex + pubkeyX0Hex },
         { name: 'y0,y1,x0,x1', hex: '04' + pubkeyY0Hex + pubkeyY1Hex + pubkeyX0Hex + pubkeyX1Hex },
     ];
-    
+
     for (const ordering of orderings) {
         try {
             const drandPubkey = G2.Point.fromHex(ordering.hex);
@@ -193,7 +195,7 @@ function parseDrandPubkey() {
             // Continue to next ordering
         }
     }
-    
+
     throw new Error('Could not parse drand pubkey as G2 point');
 }
 
@@ -206,30 +208,30 @@ function parseDrandPubkey() {
 async function createTimelockEncryption(plaintext, targetRound) {
     const G2 = bn254.G2;
     const Fr = bn254.fields.Fr;
-    
+
     // Generate random r (must be in scalar field)
     const rRaw = BigInt('0x' + Buffer.from(randomBytes(32)).toString('hex'));
     const r = Fr.create(rRaw % Fr.ORDER);
-    
+
     // Hash round to G1: H = hash_to_curve(round)
     const roundBytes = new TextEncoder().encode(targetRound.toString());
     const H = hashToG1(roundBytes);
-    
+
     // V = r * H (on G1)
     const V = H.multiply(r);
-    
+
     // C1 = r * G2_gen (on G2) - needed for on-chain pairing verification
     const C1 = G2.Point.BASE.multiply(r);
-    
+
     // Parse dRand public key (G2 point)
     const drandPubkey = parseDrandPubkey();
-    
+
     // Pairing: e(V, drandPubkey) - this is the shared secret
     const pairingResult = bn254.pairing(V, drandPubkey);
-    
+
     // Get C1 affine coordinates (G2 point has Fp2 coordinates)
     const C1_affine = C1.toAffine();
-    
+
     return {
         V: { x: V.x.toString(), y: V.y.toString() },
         C1: {
@@ -245,21 +247,51 @@ async function createTimelockEncryption(plaintext, targetRound) {
 }
 
 /**
- * Create nested encryption chain for sequential orders
- * @param orders Array of order objects: [{amountIn, amountOutMin, slippageBps, deadline, recipient, tokenOut, executionFeeBps}, ...]
+ * Create nested encryption chain for sequential orders with hash chain verification
+ * @param orders Array of order objects: [{sharesAmount, amountOutMin, slippageBps, deadline, recipient, tokenOut, executionFeeBps}, ...]
  * @param startRound Starting dRand round
  * @param roundStep Step between rounds (e.g., 1000)
- * @returns Array of encrypted orders with nested ciphertexts
+ * @param userKey User key (Field) for hash chain initialization
+ * @param previousNonce Previous nonce (Field) for hash chain initialization
+ * @returns Array of encrypted orders with nested ciphertexts and hash chain data
  */
-async function createOrderChain(orders, startRound, roundStep = 1000) {
+async function createOrderChain(orders, startRound, roundStep = 1000, userKey, previousNonce) {
     const encryptedOrders = [];
-    
+
+    // Calculate total shares (sum of all chunks)
+    const totalShares = orders.reduce((sum, order) => {
+        return sum + BigInt(order.sharesAmount?.toString() || '0');
+    }, 0n);
+
+    // Calculate initial_hashchain = Poseidon2::hash([user_key, previous_nonce], 2)
+    const initialHashchain = await poseidon2Hash([userKey, previousNonce]);
+    const initialHashchainBigInt = initialHashchain.toBigInt();
+
+    // Calculate h0 = Poseidon2::hash([initial_hashchain, amount], 2)
+    // where amount = totalShares (the total shares being allocated)
+    const h0 = await poseidon2Hash([initialHashchainBigInt, totalShares]);
+    let currentHash = h0.toBigInt();
+
+    // Calculate hash chain for all chunks (forward direction)
+    // h1 = hash(h0, chunk1), h2 = hash(h1, chunk2), etc.
+    const hashChain = [currentHash]; // Start with h0
+    for (let i = 0; i < orders.length; i++) {
+        const chunkShares = BigInt(orders[i].sharesAmount?.toString() || '0');
+        const nextHash = await poseidon2Hash([currentHash, chunkShares]);
+        currentHash = nextHash.toBigInt();
+        hashChain.push(currentHash); // Store h1, h2, h3, ...
+    }
+
+    // The final hash (tl_hashchain) is the last element
+    const tlHashchain = hashChain[hashChain.length - 1];
+
     // Start from the last order and work backwards
     // Each order contains the ciphertext of the next order
     for (let i = orders.length - 1; i >= 0; i--) {
         const order = orders[i];
         const round = startRound + (i * roundStep);
-        
+        const chunkIndex = i; // Index in forward order (0 = first chunk)
+
         // Create order JSON
         // Note: sharesAmount is encrypted (amount of shares to withdraw from Arkana)
         // amountOutMin is the target output amount for the swap
@@ -270,9 +302,13 @@ async function createOrderChain(orders, startRound, roundStep = 1000) {
             deadline: order.deadline || 0,
             recipient: order.recipient || '',
             tokenOut: order.tokenOut || '',
-            executionFeeBps: order.executionFeeBps || 0
+            executionFeeBps: order.executionFeeBps || 0,
+            // Include hash chain data for verification
+            // When this chunk is decrypted, we can verify: hash(prevHash, sharesAmount) == nextHash
+            prevHash: hashChain[chunkIndex].toString(), // h_i (hash before this chunk)
+            nextHash: hashChain[chunkIndex + 1].toString() // h_{i+1} (hash after this chunk)
         };
-        
+
         // If this is not the last order, include the next order's ciphertext
         let plaintext;
         if (i < orders.length - 1) {
@@ -286,16 +322,16 @@ async function createOrderChain(orders, startRound, roundStep = 1000) {
             // Last order in chain - no next ciphertext
             plaintext = JSON.stringify(orderData);
         }
-        
+
         // Create timelock encryption (uses real dRand pairing)
         const timelock = await createTimelockEncryption(plaintext, round);
-        
+
         // Derive AES-128 key from pairing result
         const aesKey = await deriveAESKey(timelock.pairingResult);
-        
+
         // Encrypt order data with AES-128-CBC
         const aesEncrypted = encryptAES128(plaintext, aesKey);
-        
+
         // Full ciphertext for contract registration (AES-128-CBC encrypted JSON)
         // This is what gets registered on-chain
         const fullCiphertext = JSON.stringify({
@@ -309,7 +345,7 @@ async function createOrderChain(orders, startRound, roundStep = 1000) {
                 targetRound: timelock.targetRound
             }
         });
-        
+
         const encryptedOrder = {
             round,
             roundTimestamp: getRoundTimestamp(round),
@@ -317,14 +353,27 @@ async function createOrderChain(orders, startRound, roundStep = 1000) {
             timelock,
             aes: aesEncrypted,
             fullCiphertext,
-            hasNextCiphertext: i < orders.length - 1
+            hasNextCiphertext: i < orders.length - 1,
+            // Hash chain data for verification
+            prevHash: hashChain[chunkIndex].toString(),
+            nextHash: hashChain[chunkIndex + 1].toString(),
+            chunkIndex
         };
-        
+
         // Add to beginning (since we're working backwards)
         encryptedOrders.unshift(encryptedOrder);
     }
-    
-    return encryptedOrders;
+
+    // Return encrypted orders with hash chain metadata
+    return {
+        orders: encryptedOrders,
+        hashChain: {
+            initialHashchain: initialHashchainBigInt.toString(),
+            h0: hashChain[0].toString(),
+            tlHashchain: tlHashchain.toString(), // Final hash (public on-chain)
+            totalShares: totalShares.toString()
+        }
+    };
 }
 
 /**
@@ -336,11 +385,11 @@ async function createOrderChain(orders, startRound, roundStep = 1000) {
 function decryptOrder(encryptedOrder, drandSignature) {
     // Derive AES key from signature
     const aesKey = deriveAESKey(drandSignature);
-    
+
     // Decrypt AES-encrypted data
     const decrypted = decryptAES128(encryptedOrder.aes.ciphertext, Buffer.from(aesKey), encryptedOrder.aes.iv);
     const orderData = JSON.parse(decrypted);
-    
+
     return {
         ...orderData,
         round: encryptedOrder.round
@@ -355,17 +404,22 @@ async function main() {
     console.log('║      TIMELOCK ORDER CHAIN CREATOR                           ║');
     console.log('╚══════════════════════════════════════════════════════════════╝');
     console.log('');
-    
+
     // Example: Create 4 orders unlocking at rounds x, x+1000, x+2000, x+3000
     const currentRound = getCurrentRound();
     const startRound = currentRound + 1000; // Start 1000 rounds in the future
     const roundStep = 1000;
-    
+
     console.log(`Current round: ${currentRound}`);
     console.log(`Starting round: ${startRound}`);
     console.log(`Round step: ${roundStep}`);
     console.log('');
-    
+
+    // Example user key and previous nonce (these should come from the actual withdraw circuit)
+    // For testing, use example values
+    const userKey = BigInt('0x19e573f3801c7b2e4619998342e8e305e1692184cbacd220c04198a04c36b7d2');
+    const previousNonce = BigInt('0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef');
+
     // Example orders
     // Note: sharesAmount is in shares (from Arkana vault), amountOutMin is target output
     const orders = [
@@ -406,20 +460,34 @@ async function main() {
             executionFeeBps: 10
         }
     ];
-    
+
     console.log('Creating order chain...');
     console.log(`Number of orders: ${orders.length}`);
+    console.log(`User key: 0x${userKey.toString(16)}`);
+    console.log(`Previous nonce: 0x${previousNonce.toString(16)}`);
     console.log('');
-    
-    const encryptedOrders = await createOrderChain(orders, startRound, roundStep);
-    
+
+    const result = await createOrderChain(orders, startRound, roundStep, userKey, previousNonce);
+    const encryptedOrders = result.orders;
+    const hashChainData = result.hashChain;
+
+    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('HASH CHAIN DATA');
+    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('');
+    console.log(`Initial Hashchain: 0x${hashChainData.initialHashchain}`);
+    console.log(`H0 (hash of initial + totalShares): 0x${hashChainData.h0}`);
+    console.log(`TL Hashchain (final, public on-chain): 0x${hashChainData.tlHashchain}`);
+    console.log(`Total Shares: ${hashChainData.totalShares}`);
+    console.log('');
+
     console.log('═══════════════════════════════════════════════════════════════');
     console.log('ENCRYPTED ORDER CHAIN');
     console.log('═══════════════════════════════════════════════════════════════');
     console.log('');
-    
+
     encryptedOrders.forEach((order, index) => {
-        console.log(`Order ${index + 1}:`);
+        console.log(`Order ${index + 1} (Chunk ${order.chunkIndex + 1}):`);
         console.log(`  Round: ${order.round}`);
         console.log(`  Round Timestamp: ${new Date(order.roundTimestamp * 1000).toISOString()}`);
         console.log(`  Shares Amount: ${order.orderData.sharesAmount}`);
@@ -429,11 +497,13 @@ async function main() {
         console.log(`  Slippage: ${order.orderData.slippageBps} bps`);
         console.log(`  Deadline: ${new Date(parseInt(order.orderData.deadline) * 1000).toISOString()}`);
         console.log(`  Execution Fee: ${order.orderData.executionFeeBps} bps`);
+        console.log(`  Prev Hash (h${order.chunkIndex}): 0x${order.prevHash}`);
+        console.log(`  Next Hash (h${order.chunkIndex + 1}): 0x${order.nextHash}`);
         console.log(`  Has Next Ciphertext: ${order.hasNextCiphertext ? 'Yes' : 'No'}`);
         console.log(`  Full Ciphertext (hex): ${order.fullCiphertext.substring(0, 100)}...`);
         console.log('');
     });
-    
+
     console.log('═══════════════════════════════════════════════════════════════');
     console.log('CIPHERTEXT FOR CONTRACT REGISTRATION');
     console.log('═══════════════════════════════════════════════════════════════');
@@ -442,16 +512,21 @@ async function main() {
     console.log('      It contains all subsequent orders in a nested encryption chain.');
     console.log('      When Order 1 is decrypted at its round, it reveals Order 2, and so on.');
     console.log('');
-    
+
     // Only print the first order's ciphertext (contains all others nested)
     const firstOrder = encryptedOrders[0];
     const ciphertextHex = Buffer.from(firstOrder.fullCiphertext, 'utf8').toString('hex');
     const ciphertextBytes = Buffer.from(firstOrder.fullCiphertext, 'utf8').length;
-    
+
     console.log('// First Order (Round ' + firstOrder.round + ') - Contains entire chain');
     console.log(`// Ciphertext size: ${ciphertextBytes} bytes (${(ciphertextBytes / 1024).toFixed(2)} KB)`);
     console.log('bytes memory ciphertext = hex"' + ciphertextHex + '";');
     console.log('registerEncryptedOrder(ciphertext);');
+    console.log('');
+    console.log('// Hash Chain Verification:');
+    console.log(`// TL Hashchain (from withdraw circuit): 0x${hashChainData.tlHashchain}`);
+    console.log(`// When Order 1 is decrypted, verify: hash(prevHash, sharesAmount) == nextHash`);
+    console.log(`//   hash(0x${firstOrder.prevHash}, ${firstOrder.orderData.sharesAmount}) == 0x${firstOrder.nextHash}`);
     console.log('');
     console.log('Chain structure:');
     console.log('  Order 1 (Round ' + firstOrder.round + ') -> contains Order 2');
@@ -465,11 +540,41 @@ async function main() {
         console.log('  Order 4 (Round ' + encryptedOrders[3].round + ') -> no next (last in chain)');
     }
     console.log('');
-    
+
     console.log('✅ Order chain created successfully!');
     console.log('');
     console.log('✅ Order chain created using real dRand evmnet pairing!');
     console.log('   Encryption: AES-128-CBC (16 bytes IV overhead)');
+    console.log('   Hash Chain: Poseidon2 forward chain with intermediate hashes');
+    console.log('');
+
+    // Save first order JSON to file
+    const firstOrderJson = JSON.stringify({
+        order: firstOrder.orderData,
+        round: firstOrder.round,
+        roundTimestamp: firstOrder.roundTimestamp,
+        prevHash: firstOrder.prevHash,
+        nextHash: firstOrder.nextHash,
+        chunkIndex: firstOrder.chunkIndex,
+        hasNextCiphertext: firstOrder.hasNextCiphertext,
+        timelock: {
+            H: firstOrder.timelock.H,
+            V: firstOrder.timelock.V,
+            C1: firstOrder.timelock.C1,
+            targetRound: firstOrder.timelock.targetRound
+        },
+        aes: {
+            iv: firstOrder.aes.iv,
+            ciphertext: firstOrder.aes.ciphertext
+        },
+        fullCiphertext: firstOrder.fullCiphertext,
+        hashChain: hashChainData
+    }, null, 2);
+
+    const outputFile = join(process.cwd(), 'first-order.json');
+    writeFileSync(outputFile, firstOrderJson, 'utf8');
+    console.log(`📄 First order JSON saved to: ${outputFile}`);
+    console.log('');
 }
 
 // Run if called directly

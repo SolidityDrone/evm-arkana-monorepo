@@ -34,6 +34,17 @@ echo -e "${CYAN}║           drand Timelock Encryption Sync Script             
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
+# Check if TL swap mode is enabled
+if [ "$EXPORT" = "tlswap" ]; then
+    echo -e "${YELLOW}⚠ TL Swap mode enabled - will use test_entry_then_withdraw_integration_tlswap${NC}"
+    TEST_NAME="test_entry_then_withdraw_integration_tlswap"
+    IS_TLSWAP=true
+else
+    TEST_NAME="test_entry_then_withdraw_integration"
+    IS_TLSWAP=false
+fi
+echo ""
+
 # =============================================================================
 # Step 1: Run TypeScript timelock-prep.js
 # =============================================================================
@@ -411,10 +422,20 @@ echo ""
 # =============================================================================
 # Step 4: Run Noir test
 # =============================================================================
-echo -e "${BLUE}[4/7] Running Noir test...${NC}"
+if [ "$IS_TLSWAP" = true ]; then
+    echo -e "${BLUE}[4/8] Running Noir test ($TEST_NAME)...${NC}"
+else
+    echo -e "${BLUE}[4/7] Running Noir test...${NC}"
+fi
 
 cd "$CIRCUITS_DIR"
-NOIR_OUTPUT=$(nargo test --show-output 2>&1) || true
+
+# Run specific test if TL swap mode
+if [ "$IS_TLSWAP" = true ]; then
+    NOIR_OUTPUT=$(nargo test $TEST_NAME --show-output 2>&1) || true
+else
+    NOIR_OUTPUT=$(nargo test --show-output 2>&1) || true
+fi
 
 # Check if tests passed (look for "N test(s) passed" pattern)
 if echo "$NOIR_OUTPUT" | grep -qE "[0-9]+ tests? passed"; then
@@ -427,10 +448,34 @@ else
 fi
 echo ""
 
+# Extract TL swap values if in TL swap mode
+if [ "$IS_TLSWAP" = true ]; then
+    echo -e "${BLUE}[4.5/8] Extracting TL swap values from test output...${NC}"
+    
+    # Extract tl_hashchain from test output
+    # Look for "publicInputs[25] = bytes32(tlHashchain); // tl_hashchain = "
+    TL_HASHCHAIN=$(echo "$NOIR_OUTPUT" | grep "publicInputs\[25\] = bytes32(tlHashchain)" | sed 's/.*tl_hashchain = //' | tr -d ' ')
+    
+    # Extract chunk values from test output or use defaults
+    # The test uses: chunk1=100000, chunk2=150000, chunk3=250000
+    CHUNK1=100000
+    CHUNK2=150000
+    CHUNK3=250000
+    
+    echo "  TL Hashchain: ${TL_HASHCHAIN:0:20}..."
+    echo "  Chunks: [$CHUNK1, $CHUNK2, $CHUNK3, 0, 0, 0, 0, 0, 0, 0]"
+    echo -e "${GREEN}✓ TL swap values extracted${NC}"
+    echo ""
+fi
+
 # =============================================================================
 # Step 5: Update Noir tests.nr with real timelock values
 # =============================================================================
-echo -e "${BLUE}[5/7] Updating Noir tests.nr with real timelock values...${NC}"
+if [ "$IS_TLSWAP" = true ]; then
+    echo -e "${BLUE}[5/8] Updating Noir tests.nr with real timelock values...${NC}"
+else
+    echo -e "${BLUE}[5/7] Updating Noir tests.nr with real timelock values...${NC}"
+fi
 
 # Update the test helper functions with real values
 # Note: Using regex pattern to match existing values (not just 0)
@@ -452,7 +497,11 @@ echo ""
 # =============================================================================
 # Step 6: Update Solidity test file
 # =============================================================================
-echo -e "${BLUE}[6/7] Updating Solidity test file...${NC}"
+if [ "$IS_TLSWAP" = true ]; then
+    echo -e "${BLUE}[6/8] Updating Solidity test file...${NC}"
+else
+    echo -e "${BLUE}[6/7] Updating Solidity test file...${NC}"
+fi
 
 # Convert decimal values to hex for Solidity (using node for big numbers)
 H_X_HEX=$(node -e "console.log('0x' + BigInt('$H_X').toString(16))")
@@ -623,7 +672,11 @@ echo ""
 # =============================================================================
 # Step 7: Update decrypt script with hardcoded values
 # =============================================================================
-echo -e "${BLUE}[7/7] Updating decrypt script...${NC}"
+if [ "$IS_TLSWAP" = true ]; then
+    echo -e "${BLUE}[7/8] Updating decrypt script...${NC}"
+else
+    echo -e "${BLUE}[7/7] Updating decrypt script...${NC}"
+fi
 
 DECRYPT_FILE="$TS_UTILS_DIR/timelock-decrypt.js"
 
@@ -857,7 +910,11 @@ echo ""
 # =============================================================================
 # Step 8: Update Arkana.t.sol with timelock values
 # =============================================================================
-echo -e "${BLUE}[8/8] Updating Arkana.t.sol with timelock values...${NC}"
+if [ "$IS_TLSWAP" = true ]; then
+    echo -e "${BLUE}[8/8] Updating Arkana.t.sol with timelock values (TL Swap mode)...${NC}"
+else
+    echo -e "${BLUE}[8/8] Updating Arkana.t.sol with timelock values...${NC}"
+fi
 
 # Convert decimal values to hex for Solidity (using node for big numbers)
 TARGET_ROUND_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$TARGET_ROUND').toString(16))")
@@ -872,19 +929,40 @@ C1_Y1_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$C1_Y1').toString(16))")
 CIPHERTEXT_HEX_ARKANA=$(node -e "console.log('0x' + BigInt('$CIPHERTEXT').toString(16))")
 
 # Update timelock values in Arkana.t.sol using sed
-# Note: We match the line with the index and comment to ensure we update the right value
-sed -i "s|withdrawPublicInputs\[8\] = bytes32(uint256(0x[0-9a-fA-F]*)); // target_round|withdrawPublicInputs[8] = bytes32(uint256($TARGET_ROUND_HEX_ARKANA)); // target_round|" "$ARKANA_TEST_FILE"
-sed -i "s|withdrawPublicInputs\[9\] = bytes32(uint256(0x[0-9a-fA-F]*)); // H_x.*|withdrawPublicInputs[9] = bytes32(uint256($H_X_HEX_ARKANA)); // H_x (G1 point) - hash_to_curve(round)|" "$ARKANA_TEST_FILE"
-sed -i "s|withdrawPublicInputs\[10\] = bytes32(uint256(0x[0-9a-fA-F]*)); // H_y.*|withdrawPublicInputs[10] = bytes32(uint256($H_Y_HEX_ARKANA)); // H_y (G1 point)|" "$ARKANA_TEST_FILE"
-sed -i "s|withdrawPublicInputs\[11\] = bytes32(uint256(0x[0-9a-fA-F]*)); // V_x.*|withdrawPublicInputs[11] = bytes32(uint256($V_X_HEX_ARKANA)); // V_x (G1 point) - r * H|" "$ARKANA_TEST_FILE"
-sed -i "s|withdrawPublicInputs\[12\] = bytes32(uint256(0x[0-9a-fA-F]*)); // V_y.*|withdrawPublicInputs[12] = bytes32(uint256($V_Y_HEX_ARKANA)); // V_y (G1 point)|" "$ARKANA_TEST_FILE"
-sed -i "s|withdrawPublicInputs\[13\] = bytes32(uint256(0x[0-9a-fA-F]*)); // C1_x0.*|withdrawPublicInputs[13] = bytes32(uint256($C1_X0_HEX_ARKANA)); // C1_x0 (G2 point) - r * G2_gen (real) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
-sed -i "s|withdrawPublicInputs\[14\] = bytes32(uint256(0x[0-9a-fA-F]*)); // C1_x1.*|withdrawPublicInputs[14] = bytes32(uint256($C1_X1_HEX_ARKANA)); // C1_x1 (G2 point) - r * G2_gen (imag) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
-sed -i "s|withdrawPublicInputs\[15\] = bytes32(uint256(0x[0-9a-fA-F]*)); // C1_y0.*|withdrawPublicInputs[15] = bytes32(uint256($C1_Y0_HEX_ARKANA)); // C1_y0 (G2 point) - r * G2_gen (real) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
-sed -i "s|withdrawPublicInputs\[16\] = bytes32(uint256(0x[0-9a-fA-F]*)); // C1_y1.*|withdrawPublicInputs[16] = bytes32(uint256($C1_Y1_HEX_ARKANA)); // C1_y1 (G2 point) - r * G2_gen (imag) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
+# Note: amount is now private, so indices shift: target_round is now at index 7 (was 8)
+# Public inputs order: token_address[0], chain_id[1], declared_time_reference[2], expected_root[3],
+#                      arbitrary_calldata_hash[4], receiver_address[5], relayer_fee_amount[6],
+#                      target_round[7], H_x[8], H_y[9], V_x[10], V_y[11], C1_x0[12], C1_x1[13], C1_y0[14], C1_y1[15], is_tl_swap[16]
+sed -i "s|withdrawPublicInputs\[7\] = bytes32(uint256(0x[0-9a-fA-F]*)); // target_round|withdrawPublicInputs[7] = bytes32(uint256($TARGET_ROUND_HEX_ARKANA)); // target_round|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[8\] = bytes32(uint256(0x[0-9a-fA-F]*)); // H_x.*|withdrawPublicInputs[8] = bytes32(uint256($H_X_HEX_ARKANA)); // H_x (G1 point) - hash_to_curve(round)|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[9\] = bytes32(uint256(0x[0-9a-fA-F]*)); // H_y.*|withdrawPublicInputs[9] = bytes32(uint256($H_Y_HEX_ARKANA)); // H_y (G1 point)|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[10\] = bytes32(uint256(0x[0-9a-fA-F]*)); // V_x.*|withdrawPublicInputs[10] = bytes32(uint256($V_X_HEX_ARKANA)); // V_x (G1 point) - r * H|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[11\] = bytes32(uint256(0x[0-9a-fA-F]*)); // V_y.*|withdrawPublicInputs[11] = bytes32(uint256($V_Y_HEX_ARKANA)); // V_y (G1 point)|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[12\] = bytes32(uint256(0x[0-9a-fA-F]*)); // C1_x0.*|withdrawPublicInputs[12] = bytes32(uint256($C1_X0_HEX_ARKANA)); // C1_x0 (G2 point) - r * G2_gen (real) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[13\] = bytes32(uint256(0x[0-9a-fA-F]*)); // C1_x1.*|withdrawPublicInputs[13] = bytes32(uint256($C1_X1_HEX_ARKANA)); // C1_x1 (G2 point) - r * G2_gen (imag) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[14\] = bytes32(uint256(0x[0-9a-fA-F]*)); // C1_y0.*|withdrawPublicInputs[14] = bytes32(uint256($C1_Y0_HEX_ARKANA)); // C1_y0 (G2 point) - r * G2_gen (real) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
+sed -i "s|withdrawPublicInputs\[15\] = bytes32(uint256(0x[0-9a-fA-F]*)); // C1_y1.*|withdrawPublicInputs[15] = bytes32(uint256($C1_Y1_HEX_ARKANA)); // C1_y1 (G2 point) - r * G2_gen (imag) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
 sed -i "s|withdrawPublicInputs\[24\] = bytes32(uint256(0x[0-9a-fA-F]*)); // timelock_ciphertext.*|withdrawPublicInputs[24] = bytes32(uint256($CIPHERTEXT_HEX_ARKANA)); // timelock_ciphertext (public output)|" "$ARKANA_TEST_FILE"
 
-echo -e "${GREEN}✓ Arkana.t.sol updated with timelock values${NC}"
+# Note: tl_hashchain is at index 25, but it's not generated by timelock-prep.js
+# It's computed in-circuit based on is_tl_swap and tl_swap_shares_amounts
+# For normal withdrawals (is_tl_swap=false), tl_hashchain will be 0
+# The script doesn't update it as it depends on the specific withdrawal scenario
+
+# Update array size from 26 to 27 if needed (amount is now private, added is_tl_swap and final_amount)
+sed -i "s|bytes32\[\] memory withdrawPublicInputs = new bytes32\[\](26);|bytes32[] memory withdrawPublicInputs = new bytes32[](27);|" "$ARKANA_TEST_FILE"
+sed -i "s|bytes32\[\] memory withdrawPublicInputs = new bytes32\[\](25);|bytes32[] memory withdrawPublicInputs = new bytes32[](27);|" "$ARKANA_TEST_FILE"
+
+# If TL swap mode, update tl_hashchain value
+if [ "$IS_TLSWAP" = true ] && [ -n "$TL_HASHCHAIN" ]; then
+    TL_HASHCHAIN_HEX=$(node -e "console.log('0x' + BigInt('$TL_HASHCHAIN').toString(16))" 2>/dev/null || echo "0x00")
+    sed -i "s|withdrawPublicInputs\[25\] = bytes32(uint256(0x[0-9a-fA-F]*)); // tl_hashchain.*|withdrawPublicInputs[25] = bytes32(uint256($TL_HASHCHAIN_HEX)); // tl_hashchain (TL Swap) - AUTO-GENERATED|" "$ARKANA_TEST_FILE"
+    echo -e "${GREEN}✓ Arkana.t.sol updated with TL swap values (tl_hashchain)${NC}"
+else
+    # For normal mode, ensure tl_hashchain is 0
+    sed -i "s|withdrawPublicInputs\[25\] = bytes32(uint256(0x[0-9a-fA-F]*)); // tl_hashchain.*|withdrawPublicInputs[25] = bytes32(uint256(0x00)); // tl_hashchain (0 for normal withdraw)|" "$ARKANA_TEST_FILE"
+    echo -e "${GREEN}✓ Arkana.t.sol updated with timelock values${NC}"
+fi
 echo ""
 
 # =============================================================================
@@ -907,6 +985,10 @@ echo -e "  V_x: ${YELLOW}${V_X:0:20}...${NC}"
 echo -e "  V_y: ${YELLOW}${V_Y:0:20}...${NC}"
 echo -e "  Pairing Result: ${YELLOW}${PAIRING_RESULT:0:20}...${NC}"
 echo -e "  Ciphertext: ${YELLOW}${CIPHERTEXT:0:20}...${NC}"
+if [ "$IS_TLSWAP" = true ]; then
+    echo -e "  TL Hashchain: ${YELLOW}${TL_HASHCHAIN:0:20}...${NC}"
+    echo -e "  TL Swap Chunks: ${YELLOW}[$CHUNK1, $CHUNK2, $CHUNK3, ...]${NC}"
+fi
 echo ""
 echo -e "Next steps:"
 echo -e "  1. Run Solidity test: ${BLUE}cd contracts && forge test --match-contract DrandTest -vv --via-ir --ffi${NC}"
