@@ -844,7 +844,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
         // Handle TL swap vs normal withdrawal
         if (isTlSwap) {
-            _handleTlSwapWithdrawal(tokenAddress, relayerFeeShares, receiverAddress, call);
+            _handleTlSwapWithdrawal(tokenAddress, relayerFeeShares, receiverAddress, call, outputs.newNonceCommitment);
         } else {
             _handleNormalWithdrawal(
                 tokenAddress, finalAmount, relayerFeeShares, receiverAddress, call, arbitraryCalldataHash
@@ -866,11 +866,13 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @param relayerFeeShares Relayer fee in shares
     /// @param receiverAddress Address to receive relayer fee
     /// @param callData Encrypted order data for TL swap registration
+    /// @param newNonceCommitment The newNonceCommitment from withdraw circuit (used as orderId)
     function _handleTlSwapWithdrawal(
         address tokenAddress,
         uint256 relayerFeeShares,
         address receiverAddress,
-        bytes calldata callData
+        bytes calldata callData,
+        uint256 newNonceCommitment
     ) internal {
         // TL Swap mode: Skip actual vault withdrawal (finalAmount is 0), but still pay relayer fee
         // This is a virtual withdrawal - shares are allocated but not physically withdrawn
@@ -880,10 +882,14 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
         // Register TL swap with TLswapRegister
         // The call data contains the encrypted order (AES encrypted JSON with order details)
+        // orderId is the newNonceCommitment from the withdraw circuit
         if (tlswapRegister != address(0)) {
-            // Call TLswapRegister.registerEncryptedOrder with the ciphertext from call data
+            // Call TLswapRegister.registerEncryptedOrder with newNonceCommitment and ciphertext
             // The call data should contain the encrypted order (AES encrypted JSON)
-            (bool success,) = tlswapRegister.call(abi.encodeWithSignature("registerEncryptedOrder(bytes)", callData));
+            // Convert uint256 newNonceCommitment to bytes32
+            bytes32 orderId = bytes32(newNonceCommitment);
+            (bool success,) =
+                tlswapRegister.call(abi.encodeWithSignature("registerEncryptedOrder(bytes32,bytes)", orderId, callData));
             require(success, "TL swap registration failed");
         }
     }

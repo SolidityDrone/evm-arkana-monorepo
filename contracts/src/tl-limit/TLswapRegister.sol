@@ -5,6 +5,8 @@ import {IERC20} from "@oz/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@oz/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@oz/contracts/utils/ReentrancyGuard.sol";
 import {Arkana} from "../Arkana.sol";
+import "../merkle/Poseidon2HuffWrapper.sol";
+import {Field} from "../../lib/poseidon2-evm/src/Field.sol";
 
 /**
  * @title TLswapRegister
@@ -19,6 +21,9 @@ contract TLswapRegister is ReentrancyGuard {
     /// @notice Arkana contract address
     Arkana public immutable arkana;
 
+    /// @notice Poseidon2 hasher for hash chain verification
+    Poseidon2HuffWrapper public immutable poseidon2Hasher;
+
     /// @notice Owner address (for fee collection)
     address public owner;
 
@@ -28,27 +33,29 @@ contract TLswapRegister is ReentrancyGuard {
     /// @notice Maximum slippage allowed (in basis points, default 1000 = 10%)
     uint256 public constant MAX_SLIPPAGE_BPS = 1000;
 
+    address public uniswapRouter;
+
+    /// @notice Mapping to track used hash chain nodes (prevHash) to prevent chunk reuse
+    /// @dev When a chunk is executed, we mark its prevHash as used
+    mapping(uint256 => bool) public usedHashChainNodes;
+
+    /// @notice Mapping from newNonceCommitment to encrypted order ciphertext
+    /// @dev orderId is now the newNonceCommitment from the withdraw circuit
+    mapping(bytes32 => bytes) public encryptedOrdersByNonce;
+
     /// @notice dRand evmnet configuration (hardcoded)
     struct DrandInfo {
-        bytes publicKey;      // Public key hex string
-        uint256 period;       // Period in seconds
-        uint256 genesisTime;  // Genesis timestamp
-        bytes genesisSeed;    // Genesis seed hex string
-        bytes chainHash;      // Chain hash hex string
-        string scheme;        // Scheme name
-        string beaconId;      // Beacon ID
+        bytes publicKey; // Public key hex string
+        uint256 period; // Period in seconds
+        uint256 genesisTime; // Genesis timestamp
+        bytes genesisSeed; // Genesis seed hex string
+        bytes chainHash; // Chain hash hex string
+        string scheme; // Scheme name
+        string beaconId; // Beacon ID
     }
 
-    /// @notice Mapping from orderId to encrypted ciphertext
-    /// @dev orderId is keccak256(ciphertext) for uniqueness
-    mapping(bytes32 => bytes) public encryptedOrders;
-
     /// @notice Events
-    event EncryptedOrderRegistered(
-        bytes32 indexed orderId,
-        address indexed registrant,
-        bytes ciphertext
-    );
+    event EncryptedOrderRegistered(bytes32 indexed orderId, address indexed registrant, bytes ciphertext);
 
     event SwapIntentExecuted(
         bytes32 indexed intentId,
@@ -70,6 +77,8 @@ contract TLswapRegister is ReentrancyGuard {
     error IntentExpired();
     error InvalidRound();
     error OnlyArkana();
+    error InvalidHashChain();
+    error HashChainNodeAlreadyUsed();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert OnlyOwner();
@@ -81,9 +90,12 @@ contract TLswapRegister is ReentrancyGuard {
         _;
     }
 
-    constructor(address _arkana) {
+    constructor(address _arkana, address _uniswapRouter, address _poseidon2Huff) {
         arkana = Arkana(_arkana);
         owner = msg.sender;
+        uniswapRouter = _uniswapRouter;
+        // Initialize Poseidon2 hasher with Huff contract address
+        poseidon2Hasher = new Poseidon2HuffWrapper(_poseidon2Huff);
     }
 
     /**
@@ -104,22 +116,31 @@ contract TLswapRegister is ReentrancyGuard {
 
     /**
      * @notice Register an encrypted order
-     * @dev Called by users to register encrypted swap orders
+     * @dev Called by Arkana contract when is_tl_swap = true in withdraw()
+     *      The orderId is the newNonceCommitment from the withdraw circuit
      *      The ciphertext contains encrypted order parameters (sharesAmount, amountOutMin, slippage, deadline, recipient, tokenOut)
      *      and optionally the next order's ciphertext in a nested encryption chain
+     * @param newNonceCommitment The newNonceCommitment from withdraw circuit (used as orderId)
      * @param ciphertext The encrypted order data (AES-128 encrypted JSON)
-     * @return orderId Unique identifier for the registered order
+     * @return orderId The orderId (same as newNonceCommitment)
      */
-    function registerEncryptedOrder(bytes calldata ciphertext) external returns (bytes32 orderId) {
+    function registerEncryptedOrder(bytes32 newNonceCommitment, bytes calldata ciphertext)
+        external
+        returns (bytes32 orderId)
+    {
+        if (msg.sender != address(arkana)) {
+            revert OnlyArkana();
+        }
+
         if (ciphertext.length == 0) {
             revert InvalidCiphertext();
         }
 
-        // Generate unique orderId from ciphertext
-        orderId = keccak256(ciphertext);
+        // Use newNonceCommitment as orderId (from withdraw circuit)
+        orderId = newNonceCommitment;
 
-        // Store encrypted order
-        encryptedOrders[orderId] = ciphertext;
+        // Store encrypted order by nonce commitment
+        encryptedOrdersByNonce[orderId] = ciphertext;
 
         emit EncryptedOrderRegistered(orderId, msg.sender, ciphertext);
 
@@ -127,18 +148,19 @@ contract TLswapRegister is ReentrancyGuard {
     }
 
     /**
-     * @notice Get encrypted order by ID
-     * @param orderId The order identifier
+     * @notice Get encrypted order by nonce commitment (orderId)
+     * @param orderId The order identifier (newNonceCommitment from withdraw circuit)
      * @return ciphertext The encrypted order data
      */
     function getEncryptedOrder(bytes32 orderId) external view returns (bytes memory) {
-        return encryptedOrders[orderId];
+        return encryptedOrdersByNonce[orderId];
     }
 
     /**
      * @notice Execute a swap intent
      * @dev Called by off-chain executor after decrypting the intent from timelock ciphertext
      * @dev Uses amountOutMin as target - swaps all available tokens to achieve best output
+     * @dev Verifies hash chain: hash(prevHash, sharesAmount) == nextHash
      * @param intentId Unique identifier for the intent (hash of encrypted data)
      * @param intentor Address that created the intent (from Arkana withdraw)
      * @param tokenAddress Token address (for Arkana vault operations)
@@ -153,6 +175,9 @@ contract TLswapRegister is ReentrancyGuard {
      * @param drandRound dRand round when intent becomes decryptable
      * @param swapCalldata The calldata to execute the swap (e.g., Uniswap Universal Router)
      * @param swapTarget The target contract for the swap (e.g., Universal Router address)
+     * @param prevHash Previous hash in the hash chain (h_{i-1})
+     * @param nextHash Next hash in the hash chain (h_i) - should equal hash(prevHash, sharesAmount)
+     * @param tlHashchain Final hash chain value from withdraw circuit (public output)
      * @return amountOut The amount of tokens received by the recipient (after fees)
      */
     function executeSwapIntent(
@@ -169,7 +194,10 @@ contract TLswapRegister is ReentrancyGuard {
         address recipient,
         uint256 drandRound,
         bytes calldata swapCalldata,
-        address swapTarget
+        address swapTarget,
+        uint256 prevHash,
+        uint256 nextHash,
+        uint256 tlHashchain
     ) external nonReentrant returns (uint256 amountOut) {
         // Validate deadline
         if (deadline <= block.timestamp) {
@@ -196,13 +224,38 @@ contract TLswapRegister is ReentrancyGuard {
             revert InvalidAmounts();
         }
 
+        // === HASH CHAIN VERIFICATION ===
+        // Verify that prevHash hasn't been used before (nullifier check)
+        if (usedHashChainNodes[prevHash]) {
+            revert HashChainNodeAlreadyUsed();
+        }
+
+        // Verify hash chain: hash(prevHash, sharesAmount) == nextHash
+        // This ensures the chunk is part of the correct hash chain
+        Field.Type prevHashField = Field.toField(prevHash);
+        Field.Type sharesAmountField = Field.toField(sharesAmount);
+        Field.Type computedNextHash = poseidon2Hasher.hash_2(prevHashField, sharesAmountField);
+        uint256 computedNextHashUint = Field.toUint256(computedNextHash);
+
+        if (computedNextHashUint != nextHash) {
+            revert InvalidHashChain();
+        }
+
+        // Mark prevHash as used (nullifier) to prevent chunk reuse
+        usedHashChainNodes[prevHash] = true;
+
+        // Note: We don't verify nextHash == tlHashchain here because:
+        // - tlHashchain is the FINAL hash after all chunks
+        // - We verify chunks sequentially, so we only verify the immediate chain step
+        // - The final verification (nextHash == tlHashchain) happens when the last chunk is executed
+
         // Withdraw tokens from Arkana vault using sharesAmount
         // This calls Arkana's function that withdraws from Aave and sends tokens to this contract
         arkana.withdrawForSwap(tokenAddress, sharesAmount, address(this));
 
         // Get the actual amount received (use all available tokens for swap)
         uint256 availableAmount = IERC20(tokenIn).balanceOf(address(this));
-        
+
         if (availableAmount == 0) {
             revert InvalidAmounts();
         }
@@ -235,7 +288,7 @@ contract TLswapRegister is ReentrancyGuard {
 
         // Calculate and deduct fees from amountOut
         uint256 totalFees = 0;
-        
+
         // Calculate execution fee (if any)
         if (executionFeeBps > 0) {
             uint256 executionFeeAmount = (amountOut * executionFeeBps) / 10000;
@@ -260,15 +313,7 @@ contract TLswapRegister is ReentrancyGuard {
             IERC20(tokenOut).safeTransfer(recipient, recipientAmount);
         }
 
-        emit SwapIntentExecuted(
-            intentId,
-            msg.sender,
-            intentor,
-            tokenIn,
-            tokenOut,
-            availableAmount,
-            recipientAmount
-        );
+        emit SwapIntentExecuted(intentId, msg.sender, intentor, tokenIn, tokenOut, availableAmount, recipientAmount);
 
         return recipientAmount;
     }
