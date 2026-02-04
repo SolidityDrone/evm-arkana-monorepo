@@ -82,4 +82,3 @@ export function SpellButton({ children, variant = "primary", onClick, className 
     </button>
   )
 }
-

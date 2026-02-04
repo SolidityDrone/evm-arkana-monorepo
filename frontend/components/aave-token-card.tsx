@@ -15,6 +15,11 @@ export function AaveTokenCard({ token }: AaveTokenCardProps) {
   const [copied, setCopied] = useState(false)
   const [logoError, setLogoError] = useState(false)
 
+  // Early return if token is invalid
+  if (!token || !token.address) {
+    return null
+  }
+
   const logoUrl = getTokenLogoUrl(token.address)
 
   const handleCopy = async (text: string, type: string) => {
@@ -27,7 +32,8 @@ export function AaveTokenCard({ token }: AaveTokenCardProps) {
     }
   }
 
-  const formatAddress = (address: string) => {
+  const formatAddress = (address: string | undefined | null) => {
+    if (!address) return 'N/A'
     return `${address.slice(0, 6)}...${address.slice(-4)}`
   }
 
@@ -87,7 +93,7 @@ export function AaveTokenCard({ token }: AaveTokenCardProps) {
                     filter: isHovered ? "drop-shadow(0 0 8px rgba(167, 139, 250, 0.5))" : "none"
                   }}
                 >
-                  <span className="text-primary/60 font-mono text-lg">{token.symbol[0]}</span>
+                  <span className="text-primary/60 font-mono text-lg">{token.symbol?.[0] || '?'}</span>
                 </div>
               )}
               {/* Active indicator */}
@@ -114,31 +120,35 @@ export function AaveTokenCard({ token }: AaveTokenCardProps) {
                 <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
                   Token Address
                 </p>
-                <button
-                  onClick={() => handleCopy(token.address, 'token address')}
-                  className="p-1 text-muted-foreground/60 hover:text-primary transition-colors"
-                  title="Copy address"
-                >
-                  {copied ? (
-                    <Check className="w-3 h-3" />
-                  ) : (
-                    <Copy className="w-3 h-3" />
-                  )}
-                </button>
+                {token.address && (
+                  <button
+                    onClick={() => handleCopy(token.address, 'token address')}
+                    className="p-1 text-muted-foreground/60 hover:text-primary transition-colors"
+                    title="Copy address"
+                  >
+                    {copied ? (
+                      <Check className="w-3 h-3" />
+                    ) : (
+                      <Copy className="w-3 h-3" />
+                    )}
+                  </button>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <p className="text-[10px] font-mono text-primary/80 break-all bg-primary/5 px-2 py-1 rounded border border-primary/20">
                   {formatAddress(token.address)}
                 </p>
-                <a
-                  href={`https://sepolia.etherscan.io/address/${token.address}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary/60 hover:text-primary transition-colors"
-                  title="View on Etherscan"
-                >
-                  <ExternalLink className="w-3 h-3" />
-                </a>
+                {token.address && (
+                  <a
+                    href={`https://sepolia.etherscan.io/address/${token.address}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary/60 hover:text-primary transition-colors"
+                    title="View on Etherscan"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
               </div>
             </div>
 
@@ -148,31 +158,35 @@ export function AaveTokenCard({ token }: AaveTokenCardProps) {
                 <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
                   aToken Address
                 </p>
-                <button
-                  onClick={() => handleCopy(token.aTokenAddress, 'aToken address')}
-                  className="p-1 text-muted-foreground/60 hover:text-primary transition-colors"
-                  title="Copy address"
-                >
-                  {copied ? (
-                    <Check className="w-3 h-3" />
-                  ) : (
-                    <Copy className="w-3 h-3" />
-                  )}
-                </button>
+                {token.aTokenAddress && (
+                  <button
+                    onClick={() => handleCopy(token.aTokenAddress, 'aToken address')}
+                    className="p-1 text-muted-foreground/60 hover:text-primary transition-colors"
+                    title="Copy address"
+                  >
+                    {copied ? (
+                      <Check className="w-3 h-3" />
+                    ) : (
+                      <Copy className="w-3 h-3" />
+                    )}
+                  </button>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <p className="text-[10px] font-mono text-accent/80 break-all bg-accent/5 px-2 py-1 rounded border border-accent/20">
                   {formatAddress(token.aTokenAddress)}
                 </p>
-                <a
-                  href={`https://sepolia.etherscan.io/address/${token.aTokenAddress}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-accent/60 hover:text-accent transition-colors"
-                  title="View on Etherscan"
-                >
-                  <ExternalLink className="w-3 h-3" />
-                </a>
+                {token.aTokenAddress && (
+                  <a
+                    href={`https://sepolia.etherscan.io/address/${token.aTokenAddress}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-accent/60 hover:text-accent transition-colors"
+                    title="View on Etherscan"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
               </div>
             </div>
 

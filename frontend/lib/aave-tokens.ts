@@ -1,5 +1,6 @@
 import { createPublicClient, http, Address, PublicClient } from 'viem';
 import { sepolia } from '@/config';
+import { getTokenSymbol, getTokenName, getTokenDecimals } from './token-metadata';
 
 // Aave v3 Pool ABI - minimal interface for getting reserves
 const AAVE_POOL_ABI = [
@@ -120,30 +121,35 @@ export async function getAaveTokens(
           return null;
         }
 
-        // Get token info (name, symbol, decimals)
-        const [name, symbol, decimals] = await Promise.all([
+        // Get token info (name, symbol, decimals) with fallback to local metadata
+        const [onChainName, onChainSymbol, onChainDecimals] = await Promise.all([
           client.readContract({
             address: tokenAddress,
             abi: ERC20_ABI,
             functionName: 'name',
-          }).catch(() => 'Unknown'),
+          }).catch(() => null),
           client.readContract({
             address: tokenAddress,
             abi: ERC20_ABI,
             functionName: 'symbol',
-          }).catch(() => 'UNKNOWN'),
+          }).catch(() => null),
           client.readContract({
             address: tokenAddress,
             abi: ERC20_ABI,
             functionName: 'decimals',
-          }).catch(() => 18),
+          }).catch(() => null),
         ]);
+
+        // Use local metadata as fallback if on-chain calls fail
+        const name = getTokenName(tokenAddress, onChainName as string | null);
+        const symbol = getTokenSymbol(tokenAddress, onChainSymbol as string | null);
+        const decimals = getTokenDecimals(tokenAddress, onChainDecimals as number | null);
 
         return {
           address: tokenAddress,
-          name: name as string,
-          symbol: symbol as string,
-          decimals: decimals as number,
+          name,
+          symbol,
+          decimals,
           aTokenAddress,
           isActive: true,
         } as AaveTokenInfo;

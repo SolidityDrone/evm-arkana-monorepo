@@ -40,7 +40,7 @@ export default function AaveTokensPage() {
             Each entry represents a token that has been consecrated in the arcane liquidity pools.
           </p>
           <p className="text-xs font-mono text-muted-foreground/60">
-            Pool Address: <span className="text-primary/80">{poolAddress}</span>
+            Aave Pool Address: <span className="text-primary/80">{poolAddress}</span>
           </p>
         </div>
 
@@ -51,10 +51,10 @@ export default function AaveTokensPage() {
               Blessed Tokens
             </CardTitle>
             <CardDescription className="text-center font-mono text-sm">
-              {isLoading ? 'Reading the grimoire...' : 
-               error ? 'The grimoire is sealed' :
-               tokens.length === 0 ? 'No entries found in the grimoire' :
-               `${tokens.length} sacred token${tokens.length !== 1 ? 's' : ''} inscribed`}
+              {isLoading ? 'Reading the grimoire...' :
+                error ? 'The grimoire is sealed' :
+                  tokens.length === 0 ? 'No entries found in the grimoire' :
+                    `${tokens.length} sacred token${tokens.length !== 1 ? 's' : ''} inscribed`}
             </CardDescription>
           </CardHeader>
           <CardContent className="p-6">
@@ -75,7 +75,7 @@ export default function AaveTokensPage() {
                     {error}
                   </p>
                   <p className="text-xs font-mono text-muted-foreground max-w-md">
-                    The grimoire is sealed. Ensure you're connected to the correct network 
+                    The grimoire is sealed. Ensure you're connected to the correct network
                     and the Aave Pool address is correct. The arcane connection may be severed.
                   </p>
                 </div>

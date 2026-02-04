@@ -7,6 +7,7 @@ import { AccountProvider } from '@/context/AccountProvider'
 import { AccountStateProvider } from '@/context/AccountStateProvider'
 import { BufferInit } from '@/components/BufferInit'
 import { ArcaneHeader } from '@/components/arcane-header'
+import { ToastContainer } from '@/components/Toast'
 
 const pressStart2P = Press_Start_2P({
   weight: '400',
@@ -60,6 +61,7 @@ export default async function RootLayout({
             <AccountStateProvider>
               <ArcaneHeader />
               <main className="relative z-10">{children}</main>
+              <ToastContainer />
             </AccountStateProvider>
           </AccountProvider>
         </ContextProvider>
