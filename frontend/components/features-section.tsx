@@ -119,8 +119,8 @@ const features = [
   },
   {
     icon: <LockIcon />,
-    title: "Quantum Wards",
-    description: "Post-quantum cryptographic barriers protect your assets from future computational sorcerers.",
+    title: "Cryptographic Wards",
+    description: "Ancient cryptographic barriers protect your assets with proven mathematical sorcery.",
     runeSymbol: "ᛗ"
   },
   {

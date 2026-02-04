@@ -18,7 +18,7 @@ export function ArcaneHeader() {
 
     const navLinks = [
         { label: "Protocol", href: "#protocol" },
-        { label: "Grimoire", href: "#docs" },
+        { label: "Grimoire", href: "/aave-tokens" },
         { label: "Rituals", href: "#features" },
         { label: "Coven", href: "#community" },
     ]
