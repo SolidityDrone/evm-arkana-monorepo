@@ -491,13 +491,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @param publicInputs The public inputs for verification (contains pub params + pub outputs)
     /// @dev publicInputs structure: [token_address, amount, chain_id, balance_commitment_x, balance_commitment_y, new_nonce_commitment, nonce_discovery_entry_x, nonce_discovery_entry_y]
     /// @return The new root after adding the commitment
-    function initialize(
-        bytes calldata,
-        /* proof */
-        bytes32[] calldata publicInputs,
-        uint256 amountIn,
-        uint256 lockDuration
-    )
+    function initialize(bytes calldata proof, bytes32[] calldata publicInputs, uint256 amountIn, uint256 lockDuration)
         public
         returns (uint256)
     {
@@ -1167,5 +1161,69 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
         // Vault withdraws from Aave and sends underlying tokens to recipient (TLswapRegister)
         vault.withdrawFromAave(withdrawalAssets, recipient);
+    }
+
+    /// @notice Default initial nonce discovery point
+    /// @dev This is the initial point used when a token has no nonce discovery entries yet
+    uint256 private constant DEFAULT_NONCE_DISCOVERY_X =
+        0x098b60b4fb636ed774329d8bb20eb1f9bd2f1b53445e991de219b50739e95c16;
+    uint256 private constant DEFAULT_NONCE_DISCOVERY_Y =
+        0x1b82bb29393d7897d102bc412ca1b3353e78ecc738baf483fed847ef9e212997;
+    uint256 private constant DEFAULT_NONCE_DISCOVERY_M = 1;
+    uint256 private constant DEFAULT_NONCE_DISCOVERY_R = 1;
+
+    /// @notice Get all information for a nonceCommitment
+    /// @param nonceCommitment The nonce commitment bytes32
+    /// @return operationType The type of operation (Initialize, Deposit, Send, Withdraw, Absorb)
+    /// @return sharesMinted The shares minted for this operation (only for Initialize/Deposit, 0 otherwise)
+    /// @return tokenAddress The token address for this operation
+    /// @return encryptedBalance The encrypted balance (bytes32)
+    /// @return encryptedNullifier The encrypted nullifier (bytes32)
+    function getNonceCommitmentInfo(bytes32 nonceCommitment)
+        public
+        view
+        returns (
+            OperationType operationType,
+            uint256 sharesMinted,
+            address tokenAddress,
+            bytes32 encryptedBalance,
+            bytes32 encryptedNullifier
+        )
+    {
+        OperationInfo memory info = operationInfo[nonceCommitment];
+        EncryptedStateDetails memory state = encryptedStateDetails[nonceCommitment];
+
+        return
+            (info.operationType, info.sharesMinted, info.tokenAddress, state.encryptedBalance, state.encryptedNullifier);
+    }
+
+    /// @notice Get nonce discovery info for a token (consolidated getter)
+    /// @param tokenAddress The token address
+    /// @return x The x coordinate of the nonce discovery point (or default if empty)
+    /// @return y The y coordinate of the nonce discovery point (or default if empty)
+    /// @return m The aggregated M value (or default 1 if empty)
+    /// @return r The aggregated R value (or default 1 if empty)
+    function getNonceDiscoveryInfo(address tokenAddress)
+        public
+        view
+        returns (uint256 x, uint256 y, uint256 m, uint256 r)
+    {
+        CurvePoint memory point = tokenNonceDiscoveryPoint[tokenAddress];
+        uint256 storedM = tokenNonceDiscoveryM[tokenAddress];
+        uint256 storedR = tokenNonceDiscoveryR[tokenAddress];
+
+        // Check if empty (point is (0,0) and M is 0)
+        bool isEmpty = point.x == 0 && point.y == 0 && storedM == 0;
+
+        if (isEmpty) {
+            return (
+                DEFAULT_NONCE_DISCOVERY_X,
+                DEFAULT_NONCE_DISCOVERY_Y,
+                DEFAULT_NONCE_DISCOVERY_M,
+                DEFAULT_NONCE_DISCOVERY_R
+            );
+        }
+
+        return (point.x, point.y, storedM, storedR);
     }
 }

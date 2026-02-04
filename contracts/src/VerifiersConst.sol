@@ -2,9 +2,9 @@
 pragma solidity ^0.8.13;
 
 library VerifiersConst {
-    address public constant ENTRY_VERIFIER = 0xd91d0433c10291448a8DC00C3ba14Af8b94c7656;
-    address public constant SEND_VERIFIER = 0x8d56f39e73B0e17671A0eCDce277A9cdeEb665cc;
-    address public constant ABSORB_VERIFIER = 0x26c13B3900bf570d9830678D2e22C439778627EA;
-    address public constant DEPOSIT_VERIFIER = 0xb9Dc81280065098338EA7E358243943b41127660;
-    address public constant WITHDRAW_VERIFIER = 0xae6D0f561c4907D211Ed69cBCc2fd0A0e03A2AaE;
+    address public constant ENTRY_VERIFIER = 0xf5dC296F38B10cF65E2702a69E1d56d55d520e91;
+    address public constant SEND_VERIFIER = 0xC7D02Ae80f0ECb64543176EDBDD1153d34dFA622;
+    address public constant ABSORB_VERIFIER = 0x731c8103f5e39e7241f6833F68617c4da4ec31Cb;
+    address public constant DEPOSIT_VERIFIER = 0x2A12E7beEC60808b4e0a5340544947D56429430a;
+    address public constant WITHDRAW_VERIFIER = 0xc1ec8B65bb137602963f88eb063fa7236f4744f2;
 }

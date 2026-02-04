@@ -5,3 +5,6 @@ node_modules/
 .yarn/
 .yarnrc.yml
 yarn.lock
+
+# External project symlink (separate Git repo)
+ArkanaSpellsSdk
