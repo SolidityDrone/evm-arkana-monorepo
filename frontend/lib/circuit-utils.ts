@@ -1,9 +1,3 @@
-/**
- * Shared utilities for circuit operations across all pages
- */
-
-// VIEW_STRING constant used for computing view keys
-export const VIEW_STRING = BigInt('0x76696577696e675f6b6579');
 
 /**
  * Compute private key (user_key) from signature
@@ -55,13 +49,20 @@ export async function computePrivateKeyFromSignature(signatureValue: string): Pr
 }
 
 /**
+ * Shared utilities for circuit operations across all pages
+ */
+
+// VIEW_STRING constant used for computing view keys
+export const VIEW_STRING = BigInt('0x76696577696e675f6b6579');
+
+/**
  * Compute view key from user key hash
  * view_key = hash([VIEW_STRING, user_key_hash])
  */
 export async function getViewKey(userKeyHash: bigint): Promise<bigint> {
   const { poseidon2Hash } = await import('@aztec/foundation/crypto');
   const viewKey = await poseidon2Hash([VIEW_STRING, userKeyHash]);
-  
+
   // Convert to bigint
   if (typeof viewKey === 'bigint') {
     return viewKey;
@@ -81,7 +82,7 @@ export async function getViewKey(userKeyHash: bigint): Promise<bigint> {
 export async function getViewKeyFromUserKey(userKey: bigint): Promise<bigint> {
   const { poseidon2Hash } = await import('@aztec/foundation/crypto');
   const viewKey = await poseidon2Hash([VIEW_STRING, userKey]);
-  
+
   // Convert to bigint
   if (typeof viewKey === 'bigint') {
     return viewKey;

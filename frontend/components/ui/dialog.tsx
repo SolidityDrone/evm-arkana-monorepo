@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -11,6 +12,12 @@ interface DialogProps {
 }
 
 const Dialog = ({ open, onOpenChange, children }: DialogProps) => {
+  const [mounted, setMounted] = React.useState(false);
+
+  React.useEffect(() => {
+    setMounted(true);
+  }, []);
+
   React.useEffect(() => {
     if (open) {
       document.body.style.overflow = 'hidden';
@@ -22,24 +29,41 @@ const Dialog = ({ open, onOpenChange, children }: DialogProps) => {
     };
   }, [open]);
 
-  if (!open) return null;
+  if (!open || !mounted) return null;
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
+      className="fixed inset-0 z-[9999] flex items-center justify-center"
       onClick={() => onOpenChange?.(false)}
+      style={{ 
+        position: 'fixed', 
+        top: 0, 
+        left: 0, 
+        right: 0, 
+        bottom: 0,
+        margin: 0,
+        padding: '1rem'
+      }}
     >
       {/* Backdrop */}
       <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" />
       
-      {/* Dialog content wrapper */}
+      {/* Dialog content wrapper - perfectly centered using transform */}
       <div
-        className="relative z-50"
+        className="relative z-[10000] w-full max-w-lg"
         onClick={(e) => e.stopPropagation()}
+        style={{
+          position: 'relative',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          width: '100%',
+          maxWidth: '32rem'
+        }}
       >
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
 
@@ -53,7 +77,7 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
       <div
         ref={ref}
         className={cn(
-          'relative w-full max-w-lg p-6 mx-4',
+          'relative w-full p-6',
           'bg-background border border-primary/30 rounded-lg shadow-lg',
           'animate-in fade-in-0 zoom-in-95',
           className

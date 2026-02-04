@@ -1,0 +1,10 @@
+import { parseAbi } from 'viem';
+
+export const ERC20_ABI = parseAbi([
+  'function allowance(address owner, address spender) view returns (uint256)',
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function decimals() view returns (uint8)',
+  'function balanceOf(address account) view returns (uint256)',
+  'function name() view returns (string)',
+  'function symbol() view returns (string)',
+]);

@@ -1,6 +1,12 @@
 import type { Metadata } from 'next'
 import { Press_Start_2P, VT323 } from 'next/font/google'
+import { headers } from 'next/headers'
 import './globals.css'
+import ContextProvider from '@/context'
+import { AccountProvider } from '@/context/AccountProvider'
+import { AccountStateProvider } from '@/context/AccountStateProvider'
+import { BufferInit } from '@/components/BufferInit'
+import { ArcaneHeader } from '@/components/arcane-header'
 
 const pressStart2P = Press_Start_2P({
   weight: '400',
@@ -21,11 +27,14 @@ export const metadata: Metadata = {
   description: 'Private and verifiable computing platform',
 }
 
-export default function RootLayout({
+export default async function RootLayout({
   children
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  const headersObj = await headers()
+  const cookies = headersObj.get('cookie')
+
   return (
     <html lang="en">
       <body className={`${pressStart2P.variable} ${vt323.variable} font-sans text-foreground`}>
@@ -45,7 +54,15 @@ export default function RootLayout({
           }}
         />
 
-        <main className="relative z-10">{children}</main>
+        <BufferInit />
+        <ContextProvider cookies={cookies}>
+          <AccountProvider>
+            <AccountStateProvider>
+              <ArcaneHeader />
+              <main className="relative z-10">{children}</main>
+            </AccountStateProvider>
+          </AccountProvider>
+        </ContextProvider>
       </body>
     </html>
   )

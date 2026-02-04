@@ -1,159 +1,36 @@
-// Note: keccak256 no longer needed - we use signature bytes directly
+/**
+ * Zero-knowledge address computation and utilities
+ * 
+ * The zkAddress is derived from an Ethereum signature using:
+ * 1. Poseidon2 hash of signature chunks → private key
+ * 2. Baby Jubjub public key derivation → zkAddress
+ */
 
-export const ARKANA_MESSAGE = "Welcome to the Arkana! \n\nThis signature on this message will be used to access the Arkana network. This signature is your access key to the network and needed for clientside proving. \nMake sure you don't pass this signature to someone else! \n\nCaution: Please make sure that the domain you are connected to is correct.";
+import { ensureBufferPolyfill, polyfillBufferBigIntMethods } from './buffer-polyfill';
+import { generatePublicKey } from './crypto-keys';
 
 /**
- * Generate public key from private key using Baby Jubjub curve
- * Same as in dh-utils.ts
+ * The sacred incantation that binds your Ethereum signature to the Arkana network.
+ * This signature becomes your arcane key, unlocking the cryptographic rituals
+ * that shield your transactions in the void.
+ * 
+ * ⚠️ WARNING: This signature is your access key to the network and required for client-side proving.
+ * Guard it as you would guard the most powerful spell in your grimoire.
+ * Never share this signature with others, lest they gain access to your arcane identity.
+ * 
+ * 🔮 VERIFICATION: Ensure the domain you are connected to is correct before signing.
+ * The void is vast, and malicious entities may attempt to intercept your arcane key.
  */
-async function generatePublicKey(privateKey: bigint): Promise<{ x: bigint; y: bigint }> {
-    // Dynamic import to avoid SSR issues
-    const { babyjubjub } = await import('@noble/curves/misc.js');
+export const ARKANA_MESSAGE = `By signing this message, you invoke the ancient cryptographic rituals of Arkana.
 
-    // Use BASE8 (also called Base8), which is the standard base point for Baby Jubjub
-    // BASE8 = 8 * Generator
-    // Coordinates from: https://eips.ethereum.org/EIPS/eip-2494
-    const BASE8_X = BigInt('5299619240641551281634865583518297030282874472190772894086521144482721001553');
-    const BASE8_Y = BigInt('16950150798460657717958625567821834550301663161624707787222815936182638968203');
+This signature shall become your arcane key—a binding seal that grants you access to the privacy magery network.
+Through this signature, your transactions shall be shrouded in cryptographic sorcery, invisible to prying eyes.
 
-    const BASE8 = babyjubjub.Point.fromAffine({ x: BASE8_X, y: BASE8_Y });
-    const publicKeyPoint = BASE8.multiply(privateKey);
+This signature is required for client-side proving and must remain in your possession.
+Do not share this signature with others, for it is the key to your arcane identity.
 
-    return { x: publicKeyPoint.x, y: publicKeyPoint.y };
-}
-
-/**
- * Polyfill for Buffer.writeBigUInt64BE if it doesn't exist
- * This is needed because the buffer package v6.0.3 doesn't include BigInt write methods
- */
-export function polyfillBufferBigIntMethods(Buffer: typeof globalThis.Buffer) {
-    if (!Buffer.prototype.writeBigUInt64BE) {
-        Buffer.prototype.writeBigUInt64BE = function (value: bigint, offset: number = 0): number {
-            // Write bigint as 64-bit big-endian using DataView
-            const view = new DataView(new ArrayBuffer(8));
-            view.setBigUint64(0, value, false); // false = big-endian
-            const bytes = new Uint8Array(view.buffer);
-            // Copy bytes into this Buffer
-            for (let i = 0; i < 8; i++) {
-                this[offset + i] = bytes[i];
-            }
-            return offset + 8;
-        };
-    }
-
-    if (!Buffer.prototype.writeBigUInt64LE) {
-        Buffer.prototype.writeBigUInt64LE = function (value: bigint, offset: number = 0): number {
-            // Write bigint as 64-bit little-endian using DataView
-            const view = new DataView(new ArrayBuffer(8));
-            view.setBigUint64(0, value, true); // true = little-endian
-            const bytes = new Uint8Array(view.buffer);
-            // Copy bytes into this Buffer
-            for (let i = 0; i < 8; i++) {
-                this[offset + i] = bytes[i];
-            }
-            return offset + 8;
-        };
-    }
-
-    if (!Buffer.prototype.readBigUInt64BE) {
-        Buffer.prototype.readBigUInt64BE = function (offset: number = 0): bigint {
-            // Create a view over this Buffer's underlying buffer
-            const view = new DataView(
-                this.buffer || this,
-                this.byteOffset !== undefined ? this.byteOffset + offset : offset,
-                8
-            );
-            return view.getBigUint64(0, false); // false = big-endian
-        };
-    }
-
-    if (!Buffer.prototype.readBigUInt64LE) {
-        Buffer.prototype.readBigUInt64LE = function (offset: number = 0): bigint {
-            // Create a view over this Buffer's underlying buffer
-            const view = new DataView(
-                this.buffer || this,
-                this.byteOffset !== undefined ? this.byteOffset + offset : offset,
-                8
-            );
-            return view.getBigUint64(0, true); // true = little-endian
-        };
-    }
-}
-
-/**
- * Initialize Buffer polyfill if needed
- * Waits for Buffer to be available with retries
- */
-export async function ensureBufferPolyfill(maxRetries = 20, delay = 200): Promise<void> {
-    if (typeof window === 'undefined') {
-        return; // Server-side, skip
-    }
-
-    // If Buffer is already available and has the required methods, return immediately
-    if (globalThis.Buffer &&
-        typeof globalThis.Buffer.from === 'function' &&
-        typeof globalThis.Buffer.prototype.writeBigUInt64BE === 'function') {
-        return;
-    }
-
-    // Try to load Buffer immediately
-    try {
-        const { Buffer } = await import('buffer');
-        globalThis.Buffer = Buffer;
-        // @ts-ignore
-        window.Buffer = Buffer;
-        if (typeof global !== 'undefined') {
-            // @ts-ignore
-            global.Buffer = Buffer;
-        }
-
-        // Polyfill BigInt methods if they don't exist
-        polyfillBufferBigIntMethods(Buffer);
-
-        // Verify it has the required methods
-        if (typeof Buffer.from === 'function' &&
-            typeof Buffer.prototype.writeBigUInt64BE === 'function') {
-            return;
-        }
-    } catch (error) {
-        console.error('Failed to import buffer:', error);
-    }
-
-    // Wait and retry if BufferInit component is still loading it
-    for (let i = 0; i < maxRetries; i++) {
-        if (globalThis.Buffer &&
-            typeof globalThis.Buffer.from === 'function' &&
-            typeof globalThis.Buffer.prototype.writeBigUInt64BE === 'function') {
-            return;
-        }
-        await new Promise(resolve => setTimeout(resolve, delay));
-    }
-
-    // Final attempt to load
-    if (!globalThis.Buffer ||
-        typeof globalThis.Buffer.from !== 'function' ||
-        typeof globalThis.Buffer.prototype.writeBigUInt64BE !== 'function') {
-        try {
-            const { Buffer } = await import('buffer');
-            globalThis.Buffer = Buffer;
-            // @ts-ignore
-            window.Buffer = Buffer;
-            if (typeof global !== 'undefined') {
-                // @ts-ignore
-                global.Buffer = Buffer;
-            }
-            // Polyfill BigInt methods if they don't exist
-            polyfillBufferBigIntMethods(Buffer);
-
-            if (typeof Buffer.from !== 'function' ||
-                typeof Buffer.prototype.writeBigUInt64BE !== 'function') {
-                throw new Error('Buffer polyfill loaded but missing required methods (writeBigUInt64BE)');
-            }
-        } catch (error) {
-            throw new Error('Failed to load Buffer polyfill: ' + (error as Error).message);
-        }
-    }
-}
+⚠️  CAUTION: Verify that the domain you are connected to is correct before proceeding.
+The void is vast, and only the true Arkana domain can safely bind your arcane key.`;
 
 /**
  * Compute zkAddress from an Ethereum signature
@@ -164,10 +41,8 @@ export async function ensureBufferPolyfill(maxRetries = 20, delay = 200): Promis
  * 3. Derive Baby Jubjub public key from private key using BASE8 generator
  * 4. Format as zk+{pubkey_x}{pubkey_y} (concatenated hex coordinates)
  * 
- * The public key is derived on Baby Jubjub (BJJ) using the Poseidon2 hash
+ * The public key is derived on Baby Jubjub using the Poseidon2 hash
  * of the Ethereum signature chunks as the private key.
- * 
- * Uses dynamic import to avoid server-side execution issues
  */
 export async function computeZkAddress(signature: string): Promise<string> {
     try {
@@ -181,7 +56,6 @@ export async function computeZkAddress(signature: string): Promise<string> {
         }
 
         // Ensure Buffer is available in ALL possible scopes where @aztec/bb.js might look
-        // This mimics how require() works in Node.js where Buffer is globally available
         if (typeof window !== 'undefined') {
             // @ts-ignore
             window.Buffer = globalThis.Buffer;
@@ -225,9 +99,7 @@ export async function computeZkAddress(signature: string): Promise<string> {
             );
         }
 
-        // Now import @aztec/foundation/crypto
-        // This uses the same path as dh-utils.ts but with dynamic import for browser
-        // dh-utils.ts: const { poseidon2Hash } = require('@aztec/foundation/crypto');
+        // Now import @aztec/foundation/crypto for Poseidon2 hashing
         const cryptoModule = await import('@aztec/foundation/crypto');
         const { poseidon2Hash } = cryptoModule;
 
@@ -267,7 +139,7 @@ export async function computeZkAddress(signature: string): Promise<string> {
             privateKey = BigInt((poseidonHash as any).toString());
         }
 
-        // Derive public key from private key using Baby Jubjub (like in dh-utils.ts)
+        // Derive public key from private key using Baby Jubjub
         const publicKey = await generatePublicKey(privateKey);
 
         // Format public key as hex string: concatenate x and y coordinates
@@ -346,4 +218,3 @@ export function constructZkAddress(x: bigint | string, y: bigint | string): stri
     // Concatenate and add "zk" prefix
     return 'zk' + pubKeyXHex + pubKeyYHex;
 }
-

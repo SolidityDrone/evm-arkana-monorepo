@@ -2,11 +2,19 @@
 
 import { useState } from "react"
 import { PixelLogo } from "./pixel-logo"
-import { SpellButton } from "./spell-button"
+import { useAccount } from 'wagmi'
+import { useZkAddress } from '@/context/AccountProvider'
+import { useAccountSigning } from '@/hooks/useAccountSigning'
+import AppKitButtonWrapper from './AppKitButtonWrapper'
+import { Button } from './ui/button'
+import ZkAddressDisplay from './ZkAddressDisplay'
 import Link from "next/link"
 
 export function ArcaneHeader() {
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+    const { isConnected, address } = useAccount()
+    const zkAddress = useZkAddress()
+    const { handleSign, isSigning, isLoading } = useAccountSigning()
 
     const navLinks = [
         { label: "Protocol", href: "#protocol" },
@@ -16,7 +24,7 @@ export function ArcaneHeader() {
     ]
 
     return (
-        <header className="fixed top-0 left-0 right-0 z-50 bg-background/70 backdrop-blur-sm border-b border-border/30">
+        <header className="fixed top-0 left-0 right-0 z-50 bg-background/50 backdrop-blur-md border-b border-border/30">
             <nav className="max-w-7xl mx-auto px-4 md:px-8">
                 <div className="flex items-center justify-between h-16 md:h-20">
                     {/* Logo */}
@@ -51,11 +59,25 @@ export function ArcaneHeader() {
                         ))}
                     </div>
 
-                    {/* CTA Button */}
-                    <div className="hidden md:block">
-                        <Link href="/initialize">
-                            <SpellButton>Enter the Void</SpellButton>
-                        </Link>
+                    {/* Wallet & Sign Buttons */}
+                    <div className="hidden md:flex items-center space-x-3">
+                        <AppKitButtonWrapper />
+                        {isConnected && address && (
+                            <>
+                                {zkAddress ? (
+                                    <ZkAddressDisplay zkAddress={zkAddress} variant="desktop" />
+                                ) : (
+                                    <Button
+                                        onClick={handleSign}
+                                        disabled={isSigning || isLoading}
+                                        size="sm"
+                                        className="text-xs md:text-sm bg-primary hover:bg-primary/90 text-primary-foreground font-mono font-bold uppercase tracking-wider transition-colors disabled:opacity-50 shadow-[0_0_14px_rgba(196,181,253,0.45)]"
+                                    >
+                                        {isSigning || isLoading ? 'SIGNING...' : 'SIGN SIGIL'}
+                                    </Button>
+                                )}
+                            </>
+                        )}
                     </div>
 
                     {/* Mobile Menu Button */}
@@ -86,9 +108,28 @@ export function ArcaneHeader() {
                                     {link.label}
                                 </a>
                             ))}
-                            <Link href="/initialize">
-                                <SpellButton className="mt-4">Enter the Void</SpellButton>
-                            </Link>
+                        </div>
+
+                        {/* Mobile Wallet & Sign */}
+                        <div className="mt-4 pt-4 border-t border-zinc-800 space-y-2">
+                            <div className="w-full">
+                                <AppKitButtonWrapper />
+                            </div>
+                            {isConnected && address && (
+                                <>
+                                    {zkAddress ? (
+                                        <ZkAddressDisplay zkAddress={zkAddress} variant="mobile" />
+                                    ) : (
+                                        <Button
+                                            onClick={handleSign}
+                                            disabled={isSigning || isLoading}
+                                            className="w-full text-sm bg-primary hover:bg-primary/90 text-primary-foreground font-mono font-bold uppercase tracking-wider transition-colors disabled:opacity-50 shadow-[0_0_14px_rgba(196,181,253,0.45)]"
+                                        >
+                                            {isSigning || isLoading ? 'SIGNING...' : 'SIGN SIGIL'}
+                                        </Button>
+                                    )}
+                                </>
+                            )}
                         </div>
                     </div>
                 )}

@@ -87,4 +87,3 @@ export async function loadAccountData(zkAddress: string): Promise<AccountData | 
     return null;
   }
 }
-
