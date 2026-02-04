@@ -34,18 +34,6 @@ fn test_receiver_address() -> Field { 0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6
 /// Get test receiver fee amount
 fn test_relayer_fee_amount() -> Field { 0x01 as Field }
 
-/// Get dummy timelock values for tests (not testing timelock functionality)
-fn test_timelock_target_round() -> Field { 14161727 as Field }
-fn test_timelock_H_x() -> Field { 17110099886125304497835776545713209504691977157583709568477924270886121681512 as Field }
-fn test_timelock_H_y() -> Field { 5005500472356267329961646875240392899498427164717219254104199314237179071237 as Field }
-fn test_timelock_V_x() -> Field { 3398840740332052120597358755822620527412520723655025502452048074494690937474 as Field }
-fn test_timelock_V_y() -> Field { 6423875908450528297073249687018185515808147274469491506877998757626431453411 as Field }
-fn test_timelock_C1_x0() -> Field { 4134213916343724931760970732975602250786076528375749075160172169169044486969 as Field }
-fn test_timelock_C1_x1() -> Field { 21558308526502507855325166439008393966717643700102272257425778227652387758205 as Field }
-fn test_timelock_C1_y0() -> Field { 891189877208105314331199145787525421844052589013600536797344575232083382042 as Field }
-fn test_timelock_C1_y1() -> Field { 2653326632600946096894137479864389653965751602244102699043300532605270979831 as Field }
-fn test_timelock_pairing_result() -> Field { 7454982161247114942090419709036621238296894275792563520607667729655177239595 as Field }
-
 // === TEST HELPER FUNCTIONS ===
 // Note: simulate_entry_circuit, simulate_lean_imt_insert, and generate_merkle_proof
 // are imported from dep::lean_imt_verify
@@ -106,16 +94,6 @@ fn print_prover_toml_format(
     arbitrary_calldata_hash: Field,
     receiver_address: Field,
     relayer_fee_amount: Field,
-    target_round: Field,
-    H_x: Field,
-    H_y: Field,
-    V_x: Field,
-    V_y: Field,
-    C1_x0: Field,
-    C1_x1: Field,
-    C1_y0: Field,
-    C1_y1: Field,
-    pairing_result: Field,
     is_tl_swap: bool,
     tl_swap_shares_amounts: [Field; 10]
 ) {
@@ -218,59 +196,8 @@ fn print_prover_toml_format(
     std::println("\"");
     std::println("");
     
-    // Timelock encryption parameters
-    std::print("target_round = \"");
-    std::print(target_round);
-    std::println("\"");
-    std::println("");
-    
-    std::print("H_x = \"");
-    std::print(H_x);
-    std::println("\"");
-    std::println("");
-    
-    std::print("H_y = \"");
-    std::print(H_y);
-    std::println("\"");
-    std::println("");
-    
-    std::print("V_x = \"");
-    std::print(V_x);
-    std::println("\"");
-    std::println("");
-    
-    std::print("V_y = \"");
-    std::print(V_y);
-    std::println("\"");
-    std::println("");
-    
-    std::print("C1_x0 = \"");
-    std::print(C1_x0);
-    std::println("\"");
-    std::println("");
-    
-    std::print("C1_x1 = \"");
-    std::print(C1_x1);
-    std::println("\"");
-    std::println("");
-    
-    std::print("C1_y0 = \"");
-    std::print(C1_y0);
-    std::println("\"");
-    std::println("");
-    
-    std::print("C1_y1 = \"");
-    std::print(C1_y1);
-    std::println("\"");
-    std::println("");
-    
-    std::print("pairing_result = \"");
-    std::print(pairing_result);
-    std::println("\"");
-    std::println("");
-    
     std::print("is_tl_swap = \"");
-    std::print(if is_tl_swap { 1 as Field } else { 0 as Field });
+    std::print(is_tl_swap);
     std::println("\"");
     std::println("");
     
@@ -453,7 +380,7 @@ fn test_withdraw_flow() {
     let chain_id = 1 as Field; // Mainnet chain ID
     let previous_unlocks_at = 0 as Field; // No lock initially
     let declared_time_reference = 1000000 as Field; // Time reference for withdrawal validation
-    let withdraw1_result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field, Field) = main(
+    let withdraw1_result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field) = main(
         user_key,
         token_address,
         test_withdrawal_amount(),
@@ -471,16 +398,6 @@ fn test_withdraw_flow() {
         0x1234567890abcdef as Field,
         test_receiver_address(),
         test_relayer_fee_amount(),
-        test_timelock_target_round(),
-        test_timelock_H_x(),
-        test_timelock_H_y(),
-        test_timelock_V_x(),
-        test_timelock_V_y(),
-        test_timelock_C1_x0(),
-        test_timelock_C1_x1(),
-        test_timelock_C1_y0(),
-        test_timelock_C1_y1(),
-        test_timelock_pairing_result(),
         false, // is_tl_swap
         [0 as Field; 10] // tl_swap_shares_amounts (empty for normal withdraw)
     );
@@ -563,16 +480,6 @@ fn test_withdraw_flow() {
         0x1234567890abcdef as Field,
         test_receiver_address(),
         test_relayer_fee_amount(),
-        test_timelock_target_round(),
-        test_timelock_H_x(),
-        test_timelock_H_y(),
-        test_timelock_V_x(),
-        test_timelock_V_y(),
-        test_timelock_C1_x0(),
-        test_timelock_C1_x1(),
-        test_timelock_C1_y0(),
-        test_timelock_C1_y1(),
-        test_timelock_pairing_result(),
         false, // is_tl_swap
         [0 as Field; 10] // tl_swap_shares_amounts (empty for normal withdraw)
     );
@@ -621,7 +528,7 @@ fn test_withdraw_exact_balance() {
     // This should pass - tests the circuit structure
     let previous_unlocks_at = 0 as Field; // No lock initially
     let declared_time_reference = 1000000 as Field; // Time reference for withdrawal validation
-    let result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field, Field) = main(
+    let result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field) = main(
         user_key,
         token_address,
         withdraw_amount,
@@ -639,16 +546,6 @@ fn test_withdraw_exact_balance() {
         arbitrary_calldata_hash,
         receiver_address,
         relayer_fee_amount,
-        test_timelock_target_round(),
-        test_timelock_H_x(),
-        test_timelock_H_y(),
-        test_timelock_V_x(),
-        test_timelock_V_y(),
-        test_timelock_C1_x0(),
-        test_timelock_C1_x1(),
-        test_timelock_C1_y0(),
-        test_timelock_C1_y1(),
-        test_timelock_pairing_result(),
         false, // is_tl_swap
         [0 as Field; 10] // tl_swap_shares_amounts (empty for normal withdraw)
     );
@@ -697,7 +594,7 @@ fn test_withdraw_time_constraint_validation() {
     std::println("  Previous unlocks_at: 0 (no lock)");
     std::println("  Declared time reference: 1000000");
     
-    let result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field, Field) = main(
+    let result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field) = main(
         user_key,
         token_address,
         withdraw_amount,
@@ -715,16 +612,6 @@ fn test_withdraw_time_constraint_validation() {
         arbitrary_calldata_hash,
         receiver_address,
         relayer_fee_amount,
-        test_timelock_target_round(),
-        test_timelock_H_x(),
-        test_timelock_H_y(),
-        test_timelock_V_x(),
-        test_timelock_V_y(),
-        test_timelock_C1_x0(),
-        test_timelock_C1_x1(),
-        test_timelock_C1_y0(),
-        test_timelock_C1_y1(),
-        test_timelock_pairing_result(),
         false, // is_tl_swap
         [0 as Field; 10] // tl_swap_shares_amounts (empty for normal withdraw)
     );
@@ -913,7 +800,7 @@ fn test_entry_then_withdraw_integration() {
     std::print("  Arbitrary calldata hash: "); std::println(arbitrary_calldata_hash);
     std::println("");
     
-    let withdraw_result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field, Field) = main(
+    let withdraw_result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field) = main(
         user_key,
         token_address,
         withdraw_amount,
@@ -931,16 +818,6 @@ fn test_entry_then_withdraw_integration() {
         arbitrary_calldata_hash,
         receiver_address,
         relayer_fee_amount,
-        test_timelock_target_round(),
-        test_timelock_H_x(),
-        test_timelock_H_y(),
-        test_timelock_V_x(),
-        test_timelock_V_y(),
-        test_timelock_C1_x0(),
-        test_timelock_C1_x1(),
-        test_timelock_C1_y0(),
-        test_timelock_C1_y1(),
-        test_timelock_pairing_result(),
         false, // is_tl_swap
         [0 as Field; 10] // tl_swap_shares_amounts (empty for normal withdraw)
     );
@@ -963,8 +840,10 @@ fn test_entry_then_withdraw_integration() {
     std::print(", ");
     std::print(withdraw_result.3[1]);
     std::println("]");
-    std::print("  Timelock ciphertext: ");
+    std::print("  TL Hashchain: ");
     std::println(withdraw_result.4);
+    std::print("  Final amount: ");
+    std::println(withdraw_result.5);
     std::println("");
     
     // Hash the new commitment point to get the leaf
@@ -1015,9 +894,9 @@ fn test_entry_then_withdraw_integration() {
     std::println("");
     
     std::println("=== PUBLIC INPUTS FOR withdraw() FUNCTION ===");
-    std::println("publicInputs array (27 elements):");
+    std::println("publicInputs array (17 elements):");
     std::println("");
-    std::println("// Public inputs (17 elements) - NOTE: amount is now private:");
+    std::println("// Public inputs (8 elements):");
     std::print("publicInputs[0] = bytes32(uint256(uint160(tokenAddress))); // token_address = ");
     std::println(token_address);
     std::print("publicInputs[1] = bytes32(chainId); // chain_id = ");
@@ -1032,48 +911,30 @@ fn test_entry_then_withdraw_integration() {
     std::println(receiver_address);
     std::print("publicInputs[6] = bytes32(relayerFeeShares); // relayer_fee_amount (in shares) = ");
     std::println(relayer_fee_amount);
-    std::print("publicInputs[7] = bytes32(targetRound); // target_round (drand) = ");
-    std::println(test_timelock_target_round());
-    std::print("publicInputs[8] = bytes32(H_x); // H_x (G1 point) = ");
-    std::println(test_timelock_H_x());
-    std::print("publicInputs[9] = bytes32(H_y); // H_y (G1 point) = ");
-    std::println(test_timelock_H_y());
-    std::print("publicInputs[10] = bytes32(V_x); // V_x (G1 point) = ");
-    std::println(test_timelock_V_x());
-    std::print("publicInputs[11] = bytes32(V_y); // V_y (G1 point) = ");
-    std::println(test_timelock_V_y());
-    std::print("publicInputs[12] = bytes32(C1_x0); // C1_x0 (G2 point) = ");
-    std::println(test_timelock_C1_x0());
-    std::print("publicInputs[13] = bytes32(C1_x1); // C1_x1 (G2 point) = ");
-    std::println(test_timelock_C1_x1());
-    std::print("publicInputs[14] = bytes32(C1_y0); // C1_y0 (G2 point) = ");
-    std::println(test_timelock_C1_y0());
-    std::print("publicInputs[15] = bytes32(C1_y1); // C1_y1 (G2 point) = ");
-    std::println(test_timelock_C1_y1());
-    std::print("publicInputs[16] = bytes32(isTlSwap); // is_tl_swap (0 = false, 1 = true) = ");
-    std::println(if false { 1 as Field } else { 0 as Field }); // false for normal withdraw
+    std::print("publicInputs[7] = bytes32(isTlSwap ? 1 : 0); // is_tl_swap = ");
+    std::println(false);
     std::println("");
-    std::println("// Public outputs (10 elements):");
-    std::print("publicInputs[17] = bytes32(pedersenCommitmentX); // pedersen_commitment.x = ");
+    std::println("// Note: amount is now private, so it's not in publicInputs");
+    std::println("");
+    std::println("// Public outputs (11 elements):");
+    std::print("publicInputs[8] = bytes32(pedersenCommitmentX); // pedersen_commitment.x = ");
     std::println(withdraw_result.0[0]);
-    std::print("publicInputs[18] = bytes32(pedersenCommitmentY); // pedersen_commitment.y = ");
+    std::print("publicInputs[9] = bytes32(pedersenCommitmentY); // pedersen_commitment.y = ");
     std::println(withdraw_result.0[1]);
-    std::print("publicInputs[19] = bytes32(newNonceCommitment); // new_nonce_commitment = ");
+    std::print("publicInputs[10] = bytes32(newNonceCommitment); // new_nonce_commitment = ");
     std::println(withdraw_result.1);
-    std::print("publicInputs[20] = bytes32(encryptedBalance); // encrypted_state_details[0] = ");
+    std::print("publicInputs[11] = bytes32(encryptedBalance); // encrypted_state_details[0] = ");
     std::println(withdraw_result.2[0]);
-    std::print("publicInputs[21] = bytes32(encryptedNullifier); // encrypted_state_details[1] = ");
+    std::print("publicInputs[12] = bytes32(encryptedNullifier); // encrypted_state_details[1] = ");
     std::println(withdraw_result.2[1]);
-    std::print("publicInputs[22] = bytes32(nonceDiscoveryEntryX); // nonce_discovery_entry.x = ");
+    std::print("publicInputs[13] = bytes32(nonceDiscoveryEntryX); // nonce_discovery_entry.x = ");
     std::println(withdraw_result.3[0]);
-    std::print("publicInputs[23] = bytes32(nonceDiscoveryEntryY); // nonce_discovery_entry.y = ");
+    std::print("publicInputs[14] = bytes32(nonceDiscoveryEntryY); // nonce_discovery_entry.y = ");
     std::println(withdraw_result.3[1]);
-    std::print("publicInputs[24] = bytes32(timelockCiphertext); // timelock_ciphertext = ");
+    std::print("publicInputs[15] = bytes32(tlHashchain); // tl_hashchain = ");
     std::println(withdraw_result.4);
-    std::print("publicInputs[25] = bytes32(tlHashchain); // tl_hashchain = ");
+    std::print("publicInputs[16] = bytes32(finalAmount); // final_amount = ");
     std::println(withdraw_result.5);
-    std::print("publicInputs[26] = bytes32(finalAmount); // final_amount (0 if TL swap, else amount) = ");
-    std::println(withdraw_result.6);
     std::println("");
     std::println("// Additional parameter for withdraw():");
     std::println("// call: bytes calldata (empty bytes for this test)");
@@ -1081,338 +942,6 @@ fn test_entry_then_withdraw_integration() {
     
     std::println("✅ Integration test completed successfully!");
     std::println("   Use the publicInputs values above to test the Solidity withdraw() function");
-}
-
-#[test]
-fn test_entry_then_withdraw_integration_tlswap() {
-    std::println("╔══════════════════════════════════════════════════════════════╗");
-    std::println("║      INTEGRATION TEST: Entry + Withdraw (TL Swap)            ║");
-    std::println("╚══════════════════════════════════════════════════════════════╝");
-    std::println("");
-    
-    // === SETUP ===
-    let user_key = test_user_key();
-    let token_address = test_token_address();
-    let chain_id = 11155111 as Field; // Sepolia chain ID
-    let nullifier = 0 as Field; // Entry uses nullifier = 0
-    
-    // Entry parameters
-    let entry_amount = 1000000 as Field; // 1,000,000 shares
-    
-    // Withdraw parameters - total amount to be split into 3 chunks
-    let withdraw_amount = 500000 as Field; // Total: 500,000 shares
-    let previous_shares = entry_amount; // After entry, we have entry_amount shares
-    let relayer_fee_amount = test_relayer_fee_amount();
-    let receiver_address = test_receiver_address();
-    let arbitrary_calldata_hash = 0 as Field; // No calldata for this test
-    let declared_time_reference = 1000000 as Field; // Time reference for withdrawal
-    
-    // TL Swap parameters: 3 chunks that sum to withdraw_amount
-    let chunk1 = 100000 as Field;  // 100,000 shares
-    let chunk2 = 150000 as Field;  // 150,000 shares
-    let chunk3 = 250000 as Field;  // 250,000 shares
-    // Total: 500,000 shares
-    
-    let mut tl_swap_shares_amounts: [Field; 10] = [0; 10];
-    tl_swap_shares_amounts[0] = chunk1;
-    tl_swap_shares_amounts[1] = chunk2;
-    tl_swap_shares_amounts[2] = chunk3;
-    // Rest are 0
-    
-    std::println("═══════════════════════════════════════════════════════════════");
-    std::println("SETUP: Entry + TL Swap Withdraw");
-    std::println("═══════════════════════════════════════════════════════════════");
-    std::println("");
-    std::println("TL Swap Configuration:");
-    std::print("  Total withdraw amount: ");
-    std::println(withdraw_amount);
-    std::println("  Chunks:");
-    std::print("    Chunk 1: ");
-    std::println(chunk1);
-    std::print("    Chunk 2: ");
-    std::println(chunk2);
-    std::print("    Chunk 3: ");
-    std::println(chunk3);
-    std::print("    Sum: ");
-    std::println(chunk1 + chunk2 + chunk3);
-    std::println("");
-    
-    std::println("═══════════════════════════════════════════════════════════════");
-    std::println("STEP 1: EXECUTE ENTRY CIRCUIT");
-    std::println("═══════════════════════════════════════════════════════════════");
-    std::println("");
-    
-    // Simulate entry circuit
-    let (entry_commitment_point, entry_nonce_commitment, entry_nonce_discovery) = simulate_entry_circuit(
-        user_key,
-        token_address,
-        chain_id
-    );
-    
-    std::println("Entry circuit outputs:");
-    std::print("  Commitment point: [");
-    std::print(entry_commitment_point[0]);
-    std::print(", ");
-    std::print(entry_commitment_point[1]);
-    std::println("]");
-    std::print("  Nonce commitment: ");
-    std::println(entry_nonce_commitment);
-    std::print("  Nonce discovery entry: [");
-    std::print(entry_nonce_discovery[0]);
-    std::print(", ");
-    std::print(entry_nonce_discovery[1]);
-    std::println("]");
-    std::println("");
-    
-    // Contract will add shares*G and unlocks_at*K to the commitment
-    let generators: [EmbeddedCurvePoint; 5] =
-        std::hash::derive_generators("PEDERSEN_COMMITMENT_5".as_bytes(), 0);
-    let G = generators[0];  // Generator for shares
-    let K = generators[3];   // Generator for unlocks_at
-    
-    // Convert entry commitment point to EmbeddedCurvePoint
-    let entry_commitment_embedded = EmbeddedCurvePoint {
-        x: entry_commitment_point[0],
-        y: entry_commitment_point[1],
-        is_infinite: false
-    };
-    
-    // Calculate shares*G
-    let shares_scalar = from_field_scalar(entry_amount);
-    let shares_commitment = multi_scalar_mul([G], [shares_scalar]);
-    
-    // Calculate unlocks_at*K (0 in this case)
-    let unlocks_at = 0 as Field;
-    let unlocks_at_scalar = from_field_scalar(unlocks_at);
-    let unlocks_at_commitment = multi_scalar_mul([K], [unlocks_at_scalar]);
-    
-    // Add: entry_commitment + shares*G + unlocks_at*K
-    let final_entry_commitment = entry_commitment_embedded + shares_commitment + unlocks_at_commitment;
-    
-    // Hash to get the leaf (as contract does)
-    let entry_commitment_leaf = Poseidon2::hash([final_entry_commitment.x, final_entry_commitment.y], 2);
-    
-    std::println("After contract adds shares and unlocks_at:");
-    std::print("  Final commitment point: [");
-    std::print(final_entry_commitment.x);
-    std::print(", ");
-    std::print(final_entry_commitment.y);
-    std::println("]");
-    std::print("  Entry commitment leaf: ");
-    std::println(entry_commitment_leaf);
-    std::println("");
-    
-    std::println("═══════════════════════════════════════════════════════════════");
-    std::println("STEP 2: BUILD MERKLE TREE WITH ENTRY");
-    std::println("═══════════════════════════════════════════════════════════════");
-    std::println("");
-    
-    // Build merkle tree with entry
-    let mut tree_size = 0 as Field;
-    let mut tree_depth = 1 as Field;
-    let mut side_nodes: [Field; 32] = [0; 32];
-    let mut all_leaves: [Field; 256] = [0; 256];
-    
-    let (root_after_entry, depth_after_entry, side_nodes_after_entry) = simulate_lean_imt_insert(
-        entry_commitment_leaf,
-        tree_size,
-        tree_depth,
-        side_nodes
-    );
-    all_leaves[0] = entry_commitment_leaf;
-    tree_size = 1;
-    tree_depth = depth_after_entry;
-    side_nodes = side_nodes_after_entry;
-    
-    std::println("Tree after entry:");
-    std::print("  Root: ");
-    std::println(root_after_entry);
-    std::print("  Depth: ");
-    std::println(tree_depth);
-    std::print("  Size: ");
-    std::println(tree_size);
-    std::println("");
-    
-    std::println("═══════════════════════════════════════════════════════════════");
-    std::println("STEP 3: GENERATE MERKLE PROOF FOR ENTRY");
-    std::println("═══════════════════════════════════════════════════════════════");
-    std::println("");
-    
-    // Generate merkle proof for entry (index 0)
-    let commitment_index = 0 as Field;
-    let merkle_proof = generate_merkle_proof(
-        entry_commitment_leaf,
-        commitment_index,
-        tree_depth,
-        all_leaves,
-        tree_size
-    );
-    
-    std::println("Merkle proof generated for entry (index 0)");
-    std::println("");
-    
-    std::println("═══════════════════════════════════════════════════════════════");
-    std::println("STEP 4: EXECUTE WITHDRAW CIRCUIT (TL Swap Mode)");
-    std::println("═══════════════════════════════════════════════════════════════");
-    std::println("");
-    
-    // Execute withdraw circuit
-    let previous_nonce = 0 as Field; // Entry nonce is 0
-    let previous_unlocks_at = 0 as Field; // Entry has no lock
-    
-    std::println("Calling withdraw circuit with inputs:");
-    std::print("  User key: "); std::println(user_key);
-    std::print("  Token address: "); std::println(token_address);
-    std::print("  Withdraw amount: "); std::println(withdraw_amount);
-    std::print("  Previous shares: "); std::println(previous_shares);
-    std::print("  Previous unlocks_at: "); std::println(previous_unlocks_at);
-    std::print("  Declared time reference: "); std::println(declared_time_reference);
-    std::print("  Relayer fee amount: "); std::println(relayer_fee_amount);
-    std::print("  Arbitrary calldata hash: "); std::println(arbitrary_calldata_hash);
-    std::print("  Is TL Swap: true");
-    std::println("");
-    std::println("  TL Swap chunks:");
-    std::print("    [");
-    std::print(tl_swap_shares_amounts[0]);
-    std::print(", ");
-    std::print(tl_swap_shares_amounts[1]);
-    std::print(", ");
-    std::print(tl_swap_shares_amounts[2]);
-    std::println(", ...]");
-    std::println("");
-    
-    let withdraw_result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field, Field) = main(
-        user_key,
-        token_address,
-        withdraw_amount,
-        chain_id,
-        previous_nonce,
-        previous_shares,
-        nullifier,
-        previous_unlocks_at,
-        declared_time_reference,
-        entry_commitment_leaf,
-        commitment_index,
-        tree_depth,
-        root_after_entry,
-        merkle_proof,
-        arbitrary_calldata_hash,
-        receiver_address,
-        relayer_fee_amount,
-        test_timelock_target_round(),
-        test_timelock_H_x(),
-        test_timelock_H_y(),
-        test_timelock_V_x(),
-        test_timelock_V_y(),
-        test_timelock_C1_x0(),
-        test_timelock_C1_x1(),
-        test_timelock_C1_y0(),
-        test_timelock_C1_y1(),
-        test_timelock_pairing_result(),
-        true, // is_tl_swap = true
-        tl_swap_shares_amounts
-    );
-    
-    let commitment_point: [Field; 2] = withdraw_result.0;
-    let new_nonce_commitment: Field = withdraw_result.1;
-    let encrypted_state_details: [Field; 2] = withdraw_result.2;
-    let nonce_discovery_entry: [Field; 2] = withdraw_result.3;
-    let timelock_ciphertext: Field = withdraw_result.4;
-    let tl_hashchain: Field = withdraw_result.5;
-    
-    std::println("Withdraw circuit outputs:");
-    std::print("  Commitment point: [");
-    std::print(commitment_point[0]);
-    std::print(", ");
-    std::print(commitment_point[1]);
-    std::println("]");
-    std::print("  New nonce commitment: ");
-    std::println(new_nonce_commitment);
-    std::print("  Encrypted state details: [");
-    std::print(encrypted_state_details[0]);
-    std::print(", ");
-    std::print(encrypted_state_details[1]);
-    std::println("]");
-    std::print("  Nonce discovery entry: [");
-    std::print(nonce_discovery_entry[0]);
-    std::print(", ");
-    std::print(nonce_discovery_entry[1]);
-    std::println("]");
-    std::print("  Timelock ciphertext: ");
-    std::println(timelock_ciphertext);
-    std::print("  TL Hashchain: ");
-    std::println(tl_hashchain);
-    std::println("");
-    
-    std::println("═══════════════════════════════════════════════════════════════");
-    std::println("PUBLIC INPUTS FOR withdraw() FUNCTION (TL Swap Mode)");
-    std::println("═══════════════════════════════════════════════════════════════");
-    std::println("");
-    std::println("publicInputs array (27 elements):");
-    std::println("");
-    std::println("// Public inputs (17 elements) - NOTE: amount is now private:");
-    std::print("publicInputs[0] = bytes32(uint256(uint160(tokenAddress))); // token_address = ");
-    std::println(token_address);
-    std::print("publicInputs[1] = bytes32(chainId); // chain_id = ");
-    std::println(chain_id);
-    std::print("publicInputs[2] = bytes32(declaredTimeReference); // declared_time_reference = ");
-    std::println(declared_time_reference);
-    std::print("publicInputs[3] = bytes32(expectedRoot); // expected_root = ");
-    std::println(root_after_entry);
-    std::print("publicInputs[4] = bytes32(arbitraryCalldataHash); // arbitrary_calldata_hash = ");
-    std::println(arbitrary_calldata_hash);
-    std::print("publicInputs[5] = bytes32(uint256(uint160(receiverAddress))); // receiver_address = ");
-    std::println(receiver_address);
-    std::print("publicInputs[6] = bytes32(relayerFeeAmount); // relayer_fee_amount = ");
-    std::println(relayer_fee_amount);
-    std::print("publicInputs[7] = bytes32(targetRound); // target_round = ");
-    std::println(test_timelock_target_round());
-    std::print("publicInputs[8] = bytes32(H_x); // H_x (G1 point) = ");
-    std::println(test_timelock_H_x());
-    std::print("publicInputs[9] = bytes32(H_y); // H_y (G1 point) = ");
-    std::println(test_timelock_H_y());
-    std::print("publicInputs[10] = bytes32(V_x); // V_x (G1 point) = ");
-    std::println(test_timelock_V_x());
-    std::print("publicInputs[11] = bytes32(V_y); // V_y (G1 point) = ");
-    std::println(test_timelock_V_y());
-    std::print("publicInputs[13] = bytes32(C1_x0); // C1_x0 (G2 point) = ");
-    std::println(test_timelock_C1_x0());
-    std::print("publicInputs[14] = bytes32(C1_x1); // C1_x1 (G2 point) = ");
-    std::println(test_timelock_C1_x1());
-    std::print("publicInputs[15] = bytes32(C1_y0); // C1_y0 (G2 point) = ");
-    std::println(test_timelock_C1_y0());
-    std::print("publicInputs[16] = bytes32(C1_y1); // C1_y1 (G2 point) = ");
-    std::println(test_timelock_C1_y1());
-    std::println("");
-    std::println("// Public outputs (9 elements):");
-    std::print("publicInputs[17] = bytes32(pedersenCommitmentX); // pedersen_commitment.x = ");
-    std::println(commitment_point[0]);
-    std::print("publicInputs[18] = bytes32(pedersenCommitmentY); // pedersen_commitment.y = ");
-    std::println(commitment_point[1]);
-    std::print("publicInputs[19] = bytes32(newNonceCommitment); // new_nonce_commitment = ");
-    std::println(new_nonce_commitment);
-    std::print("publicInputs[20] = bytes32(encryptedBalance); // encrypted_state_details[0] = ");
-    std::println(encrypted_state_details[0]);
-    std::print("publicInputs[21] = bytes32(encryptedNullifier); // encrypted_state_details[1] = ");
-    std::println(encrypted_state_details[1]);
-    std::print("publicInputs[22] = bytes32(nonceDiscoveryEntryX); // nonce_discovery_entry.x = ");
-    std::println(nonce_discovery_entry[0]);
-    std::print("publicInputs[23] = bytes32(nonceDiscoveryEntryY); // nonce_discovery_entry.y = ");
-    std::println(nonce_discovery_entry[1]);
-    std::print("publicInputs[24] = bytes32(timelockCiphertext); // timelock_ciphertext = ");
-    std::println(timelock_ciphertext);
-    std::print("publicInputs[25] = bytes32(tlHashchain); // tl_hashchain = ");
-    std::println(tl_hashchain);
-    let final_amount = withdraw_result.6;
-    std::print("publicInputs[26] = bytes32(finalAmount); // final_amount (0 if TL swap, else amount) = ");
-    std::println(final_amount);
-    std::println("");
-    std::println("// Additional parameter for withdraw():");
-    std::println("// call: bytes calldata (encrypted order for TL swap)");
-    std::println("");
-    
-    std::println("✅ TL Swap Integration test completed successfully!");
-    std::println("   Use the publicInputs values above to test the Solidity withdraw() function with TL Swap");
 }
 
 #[test]
@@ -1539,7 +1068,7 @@ fn test_withdraw_tl_swap_3_chunks() {
     let previous_nonce = 0 as Field;
     let previous_unlocks_at = 0 as Field;
     
-    let withdraw_result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field, Field) = main(
+    let withdraw_result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field) = main(
         user_key,
         token_address,
         total_withdraw_amount,
@@ -1557,21 +1086,11 @@ fn test_withdraw_tl_swap_3_chunks() {
         arbitrary_calldata_hash,
         receiver_address,
         relayer_fee_amount,
-        test_timelock_target_round(),
-        test_timelock_H_x(),
-        test_timelock_H_y(),
-        test_timelock_V_x(),
-        test_timelock_V_y(),
-        test_timelock_C1_x0(),
-        test_timelock_C1_x1(),
-        test_timelock_C1_y0(),
-        test_timelock_C1_y1(),
-        test_timelock_pairing_result(),
         true, // is_tl_swap = true
         tl_swap_shares_amounts
     );
     
-    let tl_hashchain = withdraw_result.5;
+    let tl_hashchain = withdraw_result.4;
     
     std::println("Withdraw circuit outputs:");
     std::print("  TL Hashchain: ");
@@ -1608,16 +1127,6 @@ fn test_withdraw_tl_swap_3_chunks() {
         arbitrary_calldata_hash,
         receiver_address,
         relayer_fee_amount,
-        test_timelock_target_round(),
-        test_timelock_H_x(),
-        test_timelock_H_y(),
-        test_timelock_V_x(),
-        test_timelock_V_y(),
-        test_timelock_C1_x0(),
-        test_timelock_C1_x1(),
-        test_timelock_C1_y0(),
-        test_timelock_C1_y1(),
-        test_timelock_pairing_result(),
         true, // is_tl_swap
         tl_swap_shares_amounts
     );

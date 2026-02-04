@@ -11,7 +11,6 @@ mod test;
 
 global VIEW_STRING: Field = 0x76696577696e675f6b6579 as Field;
 
-/// Deposit circuit for adding funds to an existing note in the Arkana system
 
 fn main(
     user_key: Field,

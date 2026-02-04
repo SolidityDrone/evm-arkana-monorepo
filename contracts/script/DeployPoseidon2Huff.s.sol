@@ -29,7 +29,7 @@ contract DeployPoseidon2Huff is Script {
             deployedAddress := create(0, add(bytecode, 0x20), mload(bytecode))
         }
         vm.stopBroadcast();
-        
+
         require(deployedAddress != address(0), "Failed to deploy Huff Poseidon2");
 
         // Verify the contract actually exists on-chain (has code)

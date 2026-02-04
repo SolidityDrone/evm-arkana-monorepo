@@ -12,7 +12,6 @@ import "./ArkanaVault.sol";
 import {Field} from "../lib/poseidon2-evm/src/Field.sol";
 import {Grumpkin} from "./crypto-utils/Grumpkin.sol";
 import {Generators} from "./crypto-utils/Generators.sol";
-import {PairingPrecompileVerifier} from "./crypto-utils/PairingPrecompileVerifier.sol";
 import {ReentrancyGuard} from "@oz/contracts/utils/ReentrancyGuard.sol";
 
 // Noir Verifier interface
@@ -151,19 +150,6 @@ contract Arkana is AccessControl, ReentrancyGuard {
         CurvePoint senderPublicKey;
     }
 
-    /// @notice Timelock proof parameters
-    struct TimelockParams {
-        uint256 targetRound;
-        uint256 H_x;
-        uint256 H_y;
-        uint256 V_x;
-        uint256 V_y;
-        uint256 C1_x0;
-        uint256 C1_x1;
-        uint256 C1_y0;
-        uint256 C1_y1;
-    }
-
     /// @notice Withdrawal output parameters
     struct WithdrawOutputs {
         uint256 pedersenCommitmentX;
@@ -173,7 +159,6 @@ contract Arkana is AccessControl, ReentrancyGuard {
         bytes32 encryptedNullifier;
         uint256 nonceDiscoveryEntryX;
         uint256 nonceDiscoveryEntryY;
-        uint256 timelockCiphertext;
         uint256 tlHashchain; // Hash chain for TL swap chunks (0 if is_tl_swap = false)
     }
 
@@ -200,17 +185,11 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @param index The index in the historical states array
     event RootSaved(address indexed token, uint256 indexed root, uint256 depth, uint256 size, uint256 index);
 
-    /// @notice Event emitted when a new drand timelock is created
-    /// @param targetRound The target round for the drand timelock
-    /// @param timelockCiphertext The ciphertext of the drand timelock
-    event DrandTlock(uint256 targetRound, uint256 timelockCiphertext);
-
     error InvalidChainId();
     error InvalidRoot();
     error CommitmentAlreadyUsed();
     error InvalidPublicInputs();
     error InvalidTimeReference();
-    error InvalidTimelockProof();
     error VaultNotInitialized(address token);
     error InsufficientShares(uint256 available, uint256 required);
     error NoteAlreadyUsed();
@@ -717,31 +696,19 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @notice Withdraw function - withdraws funds from balance
     /// @param publicInputs The public inputs for verification (contains pub params + pub outputs)
     /// @return newRoot The new root after adding the commitment
-    /// @dev publicInputs structure: [token_address, amount (in shares), chain_id, declared_time_reference, expected_root, arbitrary_calldata_hash, receiver_address, relayer_fee_amount (in shares), target_round, H_x, H_y, V_x, V_y, C1_x0, C1_x1, C1_y0, C1_y1, pedersen_commitment[2], new_nonce_commitment, encrypted_state_details[2], nonce_discovery_entry[2], timelock_ciphertext]
+    /// @dev publicInputs structure: [token_address, chain_id, declared_time_reference, expected_root, arbitrary_calldata_hash, receiver_address, relayer_fee_amount, is_tl_swap, pedersen_commitment[2], new_nonce_commitment, encrypted_state_details[2], nonce_discovery_entry[2], tl_hashchain, final_amount]
     function withdraw(bytes calldata proof, bytes32[] calldata publicInputs, bytes calldata call)
         public
         nonReentrant
         returns (uint256 newRoot)
     {
         // Verify proof using Withdraw verifier (index 3)
-        //require(IVerifier(verifiersByIndex[3]).verify(proof, publicInputs), "Invalid proof");
+        //require(IVerifier(verifiersByIndex[3]).verify(proof, publicInputs), "Invalid proof")
 
-        // Validate publicInputs array length (requires 27 elements: 17 public inputs + 10 public outputs)
-        // Public inputs: token_address, chain_id, declared_time_reference, expected_root,
-        //                arbitrary_calldata_hash, receiver_address, relayer_fee_amount,
-        //                target_round, H_x, H_y, V_x, V_y, C1_x0, C1_x1, C1_y0, C1_y1, is_tl_swap
-        // Note: amount is now private, so it's not in publicInputs
-        // Public outputs: pedersen_commitment[2], new_nonce_commitment, encrypted_state_details[2],
-        //                 nonce_discovery_entry[2], timelock_ciphertext, tl_hashchain, final_amount
-        if (publicInputs.length < 27) {
+        if (publicInputs.length < 17) {
             revert InvalidPublicInputs();
         }
 
-        // Parse public inputs in correct order
-        // Note: amount is now private, so it's not in publicInputs
-        // Public inputs order: token_address, chain_id, declared_time_reference, expected_root,
-        //                      arbitrary_calldata_hash, receiver_address, relayer_fee_amount,
-        //                      target_round, H_x, H_y, V_x, V_y, C1_x0, C1_x1, C1_y0, C1_y1, is_tl_swap
         address tokenAddress = address(uint160(uint256(publicInputs[0]))); // token_address
         uint256 declaredTimeReference = uint256(publicInputs[2]); // declared_time_reference (index 2, chain_id is at 1)
         uint256 expectedRoot = uint256(publicInputs[3]); // expected_root (index 3)
@@ -749,37 +716,23 @@ contract Arkana is AccessControl, ReentrancyGuard {
         address receiverAddress = address(uint160(uint256(publicInputs[5]))); // receiver_address (index 5)
         uint256 relayerFeeShares = uint256(publicInputs[6]); // relayer_fee_amount (index 6)
 
-        // Timelock parameters (grouped in struct to reduce stack depth)
-        TimelockParams memory timelock = TimelockParams({
-            targetRound: uint256(publicInputs[7]), // index 7
-            H_x: uint256(publicInputs[8]), // index 8
-            H_y: uint256(publicInputs[9]), // index 9
-            V_x: uint256(publicInputs[10]), // index 10
-            V_y: uint256(publicInputs[11]), // index 11
-            C1_x0: uint256(publicInputs[12]), // index 12
-            C1_x1: uint256(publicInputs[13]), // index 13
-            C1_y0: uint256(publicInputs[14]), // index 14
-            C1_y1: uint256(publicInputs[15]) // index 15
-        });
-
         // Parse is_tl_swap (bool encoded as Field: 0 = false, 1 = true)
-        bool isTlSwap = uint256(publicInputs[16]) != 0; // index 16
+        bool isTlSwap = uint256(publicInputs[7]) != 0; // index 7
 
         // Parse public outputs (grouped in struct to reduce stack depth)
         WithdrawOutputs memory outputs = WithdrawOutputs({
-            pedersenCommitmentX: uint256(publicInputs[17]), // index 17
-            pedersenCommitmentY: uint256(publicInputs[18]), // index 18
-            newNonceCommitment: uint256(publicInputs[19]), // index 19
-            encryptedBalance: bytes32(publicInputs[20]), // index 20
-            encryptedNullifier: bytes32(publicInputs[21]), // index 21
-            nonceDiscoveryEntryX: uint256(publicInputs[22]), // index 22
-            nonceDiscoveryEntryY: uint256(publicInputs[23]), // index 23
-            timelockCiphertext: uint256(publicInputs[24]), // index 24
-            tlHashchain: uint256(publicInputs[25]) // index 25
+            pedersenCommitmentX: uint256(publicInputs[8]), // index 8
+            pedersenCommitmentY: uint256(publicInputs[9]), // index 9
+            newNonceCommitment: uint256(publicInputs[10]), // index 10
+            encryptedBalance: bytes32(publicInputs[11]), // index 11
+            encryptedNullifier: bytes32(publicInputs[12]), // index 12
+            nonceDiscoveryEntryX: uint256(publicInputs[13]), // index 13
+            nonceDiscoveryEntryY: uint256(publicInputs[14]), // index 14
+            tlHashchain: uint256(publicInputs[15]) // index 15
         });
 
         // Parse final_amount (0 if TL swap, else actual withdrawal amount)
-        uint256 finalAmount = uint256(publicInputs[26]); // index 26
+        uint256 finalAmount = uint256(publicInputs[16]); // index 16
 
         // Parse chain_id (index 1, after token_address)
         uint256 chainId = uint256(publicInputs[1]);
@@ -798,21 +751,6 @@ contract Arkana is AccessControl, ReentrancyGuard {
                 if (timeDifference > TIME_TOLERANCE) {
                     revert InvalidTimeReference();
                 } */
-
-        // Verify timelock pairing: e(V, G2_gen) * e(-H, C1) == 1
-        // This proves V = r*H and C1 = r*G2 for the same r, ensuring correct drand pubkey was used
-        if (!PairingPrecompileVerifier.verifyPairingBeforeRound(
-                timelock.H_x,
-                timelock.H_y,
-                timelock.V_x,
-                timelock.V_y,
-                timelock.C1_x0,
-                timelock.C1_x1,
-                timelock.C1_y0,
-                timelock.C1_y1
-            )) {
-            revert InvalidTimelockProof();
-        }
 
         // Get Pedersen commitment point from circuit
         // Circuit already calculates: new_shares_balance = previous_shares - (amount + relayer_fee_amount)
@@ -1225,5 +1163,13 @@ contract Arkana is AccessControl, ReentrancyGuard {
         }
 
         return (point.x, point.y, storedM, storedR);
+    }
+
+    // @dev this is used just as utility, ideally this fucntion isnt needed on contract
+    function computeCommitmentLeaf(uint256 x, uint256 y) public view returns (uint256) {
+        Field.Type xField = Field.toField(x);
+        Field.Type yField = Field.toField(y);
+        Field.Type leafField = poseidon2Hasher.hash_2(xField, yField);
+        return Field.toUint256(leafField);
     }
 }
