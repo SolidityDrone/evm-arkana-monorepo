@@ -46,8 +46,8 @@ export function Slider({
         className="absolute top-1/2 -translate-y-1/2 w-5 h-5 rounded-full pointer-events-none"
         style={{ 
           left: `calc(${percentage}% - 10px)`,
-          backgroundColor: '#a78bfa',
-          border: '2px solid #c4b5fd',
+          backgroundColor: '#7c3aed',
+          border: '2px solid #8b5cf6',
           boxShadow: '0 0 15px rgba(139, 92, 246, 0.8)'
         }}
       />

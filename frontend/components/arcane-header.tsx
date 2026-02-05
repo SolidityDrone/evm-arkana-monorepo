@@ -30,9 +30,10 @@ export function ArcaneHeader() {
         <header className="fixed top-0 left-0 right-0 z-50 bg-background/50 backdrop-blur-md border-b border-border/30 w-full overflow-visible">
             <nav className="max-w-7xl mx-auto px-4 md:px-8 w-full">
                 <div className="flex items-center justify-between h-16 md:h-20 relative">
-                    {/* Logo - Overflowing outside navbar */}
+                    {/* Logo - Overflowing outside navbar on desktop, normal on mobile */}
                     <Link href="/" className="group relative z-10">
-                        <div className="absolute -top-8 -left-4 md:-top-10 md:-left-6 w-32 h-32 md:w-40 md:h-40">
+                        {/* Mobile: Normal positioning, smaller size */}
+                        <div className="relative w-16 h-16 md:absolute md:-top-10 md:-left-6 md:w-40 md:h-40">
                             <Image
                                 src="/logo.webp"
                                 alt="Arkana Logo"
@@ -49,7 +50,7 @@ export function ArcaneHeader() {
                             <a
                                 key={link.label}
                                 href={link.href}
-                                className="font-mono text-xs text-muted-foreground/80 hover:text-foreground/90 transition-all duration-300 tracking-wider uppercase relative group"
+                                className="font-mono text-sm text-muted-foreground/80 hover:text-foreground/90 transition-all duration-300 tracking-wider uppercase relative group"
                             >
                                 {link.label}
                                 <span
@@ -78,7 +79,7 @@ export function ArcaneHeader() {
                                             onClick={() => setAccountModalOpen(true)}
                                             size="sm"
                                             variant="outline"
-                                            className="text-xs md:text-sm font-mono font-bold uppercase tracking-wider transition-colors border-primary/50 hover:bg-primary/10 hover:border-primary"
+                                            className="text-sm md:text-base font-mono font-bold uppercase tracking-wider transition-colors border-primary/50 hover:bg-primary/10 hover:border-primary"
                                         >
                                             ACCOUNT
                                         </Button>
@@ -88,7 +89,7 @@ export function ArcaneHeader() {
                                         onClick={handleSign}
                                         disabled={isSigning || isLoading}
                                         size="sm"
-                                        className="text-xs md:text-sm bg-primary hover:bg-primary/90 text-primary-foreground font-mono font-bold uppercase tracking-wider transition-colors disabled:opacity-50 shadow-[0_0_14px_rgba(196,181,253,0.45)]"
+                                        className="text-sm md:text-base bg-primary hover:bg-primary/90 text-primary-foreground font-mono font-bold uppercase tracking-wider transition-colors disabled:opacity-50 shadow-[0_0_14px_rgba(196,181,253,0.45)]"
                                     >
                                         {isSigning || isLoading ? 'SIGNING...' : 'SIGN SIGIL'}
                                     </Button>
@@ -119,7 +120,7 @@ export function ArcaneHeader() {
                                 <a
                                     key={link.label}
                                     href={link.href}
-                                    className="font-mono text-xs text-muted-foreground hover:text-foreground transition-colors tracking-wider uppercase py-2"
+                                    className="font-mono text-sm text-muted-foreground hover:text-foreground transition-colors tracking-wider uppercase py-2"
                                     onClick={() => setMobileMenuOpen(false)}
                                 >
                                     {link.label}
@@ -150,7 +151,7 @@ export function ArcaneHeader() {
                                                     setMobileMenuOpen(false)
                                                 }}
                                                 variant="outline"
-                                                className="w-full text-sm font-mono font-bold uppercase tracking-wider transition-colors border-primary/50 hover:bg-primary/10 hover:border-primary"
+                                                className="w-full text-base font-mono font-bold uppercase tracking-wider transition-colors border-primary/50 hover:bg-primary/10 hover:border-primary"
                                             >
                                                 ACCOUNT
                                             </Button>
@@ -159,7 +160,7 @@ export function ArcaneHeader() {
                                         <Button
                                             onClick={handleSign}
                                             disabled={isSigning || isLoading}
-                                            className="w-full text-sm bg-primary hover:bg-primary/90 text-primary-foreground font-mono font-bold uppercase tracking-wider transition-colors disabled:opacity-50 shadow-[0_0_14px_rgba(196,181,253,0.45)]"
+                                            className="w-full text-base bg-primary hover:bg-primary/90 text-primary-foreground font-mono font-bold uppercase tracking-wider transition-colors disabled:opacity-50 shadow-[0_0_14px_rgba(196,181,253,0.45)]"
                                         >
                                             {isSigning || isLoading ? 'SIGNING...' : 'SIGN SIGIL'}
                                         </Button>

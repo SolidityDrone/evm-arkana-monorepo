@@ -9,7 +9,7 @@ import Image from "next/image"
 export function HeroSection() {
     const [typedText, setTypedText] = useState("")
     const [showCursor, setShowCursor] = useState(true)
-    const fullText = "Your transactions, shrouded in ancient cryptographic sorcery"
+    const fullText = "Your DeFi transactions, shrouded in ancient cryptographic sorcery"
 
     useEffect(() => {
         let index = 0
@@ -138,7 +138,7 @@ export function HeroSection() {
 
                 {/* CTA Buttons */}
                 <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-                    <Link href="/initialize">
+                    <Link href="/rituals">
                         <SpellButton variant="primary">
                             Begin the Ritual
                         </SpellButton>
@@ -150,7 +150,6 @@ export function HeroSection() {
 
                 {/* Scroll indicator */}
                 <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex flex-col items-center gap-3">
-                    <span className="font-mono text-xs md:text-sm text-muted-foreground/60 tracking-[0.3em] uppercase">Descend</span>
                     <div className="w-px h-10 bg-gradient-to-b from-primary/30 to-transparent animate-pulse" />
                 </div>
             </div>

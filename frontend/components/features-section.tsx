@@ -114,7 +114,7 @@ const features = [
   {
     icon: <EyeIcon />,
     title: "All-Seeing Blindness",
-    description: "Validators verify without seeing. The network confirms without knowing. True privacy through cryptographic paradox.",
+    description: "Execute your DeFi transaction avoiding information leakage and adversarial MeV mages",
     runeSymbol: "ᛞ"
   },
   {
@@ -126,7 +126,7 @@ const features = [
   {
     icon: <GhostIcon />,
     title: "Phantom Mixing",
-    description: "Your transactions dissolve into the void, emerging untraceable. Origin and destination become myth.",
+    description: "Accumulate aura while meditating in the Aave chamber of spirit and time",
     runeSymbol: "ᛚ"
   },
   {
@@ -170,8 +170,7 @@ export function FeaturesSection() {
             PRIVACY INCANTATIONS
           </h2>
           <p className="font-mono text-base md:text-lg text-muted-foreground max-w-xl mx-auto leading-relaxed">
-            Each spell in our grimoire has been crafted by master cryptographers,
-            tested in the fires of adversarial networks.
+            Cast your DeFi spells with arcane crypto magic incantations
           </p>
         </div>
       </div>
