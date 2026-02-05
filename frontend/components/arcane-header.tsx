@@ -22,6 +22,8 @@ export function ArcaneHeader() {
         { label: "Protocol", href: "#protocol" },
         { label: "Grimoire", href: "/aave-tokens" },
         { label: "Basic Spells", href: "/basic-spells" },
+        { label: "Deposit", href: "/deposit" },
+        { label: "Withdraw", href: "/withdraw" },
         { label: "Rituals", href: "#features" },
         { label: "Coven", href: "#community" },
     ]

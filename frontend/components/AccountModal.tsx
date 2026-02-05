@@ -274,15 +274,6 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                         <>
                             <Card>
                                 <CardHeader>
-                                    <CardTitle className="text-sm">ZK Address</CardTitle>
-                                </CardHeader>
-                                <CardContent>
-                                    <p className="text-xs font-mono break-all">{zkAddress}</p>
-                                </CardContent>
-                            </Card>
-
-                            <Card>
-                                <CardHeader>
                                     <CardTitle className="text-sm">Token Balances</CardTitle>
                                 </CardHeader>
                                 <CardContent>
@@ -298,43 +289,58 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                         {Array.from(tokenDataMap.entries()).length === 0 && !isDiscoveringTokens.size && !isLoadingSavedData && (
                                             <p className="text-xs text-muted-foreground">No tokens discovered yet. Discovery will start automatically.</p>
                                         )}
-                                        {Array.from(tokenDataMap.entries()).map(([tokenAddress, tokenData]) => (
-                                            <div key={tokenAddress} className="border rounded p-3">
-                                                <div className="flex justify-between items-start">
-                                                    <div className="flex-1">
-                                                        <p className="text-xs font-mono break-all">{tokenAddress}</p>
-                                                        <p className="text-xs text-muted-foreground mt-1">
-                                                            Nonce: {tokenData.currentNonce?.toString() || 'N/A'}
-                                                        </p>
-                                                        <p className="text-xs text-muted-foreground">
-                                                            Balance Entries: {tokenData.balanceEntries.length}
-                                                        </p>
-                                                        {tokenData.balanceEntries.length > 0 && (
-                                                            <div className="mt-2 space-y-1">
-                                                                {tokenData.balanceEntries.map((entry, idx) => (
-                                                                    <div key={idx} className="text-xs">
-                                                                        Nonce {entry.nonce.toString()}: {entry.amount.toString()} shares
-                                                                    </div>
-                                                                ))}
-                                                            </div>
-                                                        )}
+                                        {Array.from(tokenDataMap.entries()).map(([tokenAddress, tokenData]) => {
+                                            // Find token info from aaveTokens
+                                            const tokenInfo = aaveTokens.find(t => t.address.toLowerCase() === tokenAddress.toLowerCase());
+                                            const tokenName = tokenInfo?.name || 'Unknown Token';
+                                            const tokenSymbol = tokenInfo?.symbol || tokenAddress.slice(0, 6) + '...' + tokenAddress.slice(-4);
+                                            
+                                            return (
+                                                <div key={tokenAddress} className="border rounded p-3">
+                                                    <div className="flex justify-between items-start">
+                                                        <div className="flex-1">
+                                                            <p className="text-sm font-sans font-bold text-foreground uppercase tracking-wider">
+                                                                {tokenSymbol}
+                                                            </p>
+                                                            <p className="text-xs font-mono text-muted-foreground">
+                                                                {tokenName}
+                                                            </p>
+                                                            <p className="text-[10px] font-mono text-muted-foreground/60 mt-1 break-all">
+                                                                {tokenAddress}
+                                                            </p>
+                                                            <p className="text-xs text-muted-foreground mt-2">
+                                                                Nonce: {tokenData.currentNonce?.toString() || 'N/A'}
+                                                            </p>
+                                                            <p className="text-xs text-muted-foreground">
+                                                                Balance Entries: {tokenData.balanceEntries.length}
+                                                            </p>
+                                                            {tokenData.balanceEntries.length > 0 && (
+                                                                <div className="mt-2 space-y-1">
+                                                                    {tokenData.balanceEntries.map((entry, idx) => (
+                                                                        <div key={idx} className="text-xs">
+                                                                            Nonce {entry.nonce.toString()}: {entry.amount.toString()} shares
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline"
+                                                            onClick={() => handleDiscoverToken(tokenAddress)}
+                                                            disabled={isDiscoveringTokens.has(tokenAddress)}
+                                                        >
+                                                            {isDiscoveringTokens.has(tokenAddress) ? 'Discovering...' : 'Refresh'}
+                                                        </Button>
                                                     </div>
-                                                    <Button
-                                                        size="sm"
-                                                        variant="outline"
-                                                        onClick={() => handleDiscoverToken(tokenAddress)}
-                                                        disabled={isDiscoveringTokens.has(tokenAddress)}
-                                                    >
-                                                        {isDiscoveringTokens.has(tokenAddress) ? 'Discovering...' : 'Refresh'}
-                                                    </Button>
+                                                    {discoveryErrors.has(tokenAddress) && (
+                                                        <p className="text-xs text-red-500 mt-2">
+                                                            {discoveryErrors.get(tokenAddress)}
+                                                        </p>
+                                                    )}
                                                 </div>
-                                                {discoveryErrors.has(tokenAddress) && (
-                                                    <p className="text-xs text-red-500 mt-2">
-                                                        {discoveryErrors.get(tokenAddress)}
-                                                    </p>
-                                                )}
-                                            </div>
-                                        ))}
+                                            );
+                                        })}
                                     </div>
                                 </CardContent>
                             </Card>

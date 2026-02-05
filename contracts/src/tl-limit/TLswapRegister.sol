@@ -55,7 +55,7 @@ contract TLswapRegister is ReentrancyGuard {
     }
 
     /// @notice Events
-    event EncryptedOrderRegistered(bytes32 indexed orderId, address indexed registrant, bytes ciphertext);
+    event EncryptedOrderRegistered(bytes32 indexed orderId, bytes ciphertext);
 
     event SwapIntentExecuted(
         bytes32 indexed intentId,
@@ -127,7 +127,7 @@ contract TLswapRegister is ReentrancyGuard {
      * @param ciphertext The encrypted order data (AES-128 encrypted JSON)
      * @return orderId The orderId (same as newNonceCommitment)
      */
-    function registerEncryptedOrder(bytes32 newNonceCommitment, bytes calldata ciphertext)
+    function registerEncryptedOrder(bytes32 newNonceCommitment, bytes calldata ciphertextIpfs)
         external
         returns (bytes32 orderId)
     {
@@ -135,7 +135,7 @@ contract TLswapRegister is ReentrancyGuard {
             revert OnlyArkana();
         }
 
-        if (ciphertext.length == 0) {
+        if (ciphertextIpfs.length == 0) {
             revert InvalidCiphertext();
         }
 
@@ -143,9 +143,9 @@ contract TLswapRegister is ReentrancyGuard {
         orderId = newNonceCommitment;
 
         // Store encrypted order by nonce commitment
-        encryptedOrdersByNonce[orderId] = ciphertext;
+        encryptedOrdersByNonce[orderId] = ciphertextIpfs;
 
-        emit EncryptedOrderRegistered(orderId, msg.sender, ciphertext);
+        emit EncryptedOrderRegistered(orderId, ciphertextIpfs);
 
         return orderId;
     }
