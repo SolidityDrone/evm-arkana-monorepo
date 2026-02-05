@@ -24,6 +24,7 @@ import { loadAccountData, saveTokenAccountData, TokenAccountData } from '@/lib/i
 import { loadAccountDataOnSign } from '@/lib/loadAccountDataOnSign';
 import { convertAssetsToShares } from '@/lib/shares-to-assets';
 import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
+import { getCurrentRound, getRoundTimestamp, type Order } from '@/lib/timelock-order';
 
 const ERC20_ABI = parseAbi([
     'function decimals() view returns (uint8)',
@@ -72,6 +73,26 @@ export default function WithdrawPage() {
     const [arbitraryCalldataHash, setArbitraryCalldataHash] = useState<string>('0x0');
     const [isTlSwap, setIsTlSwap] = useState(false);
     const [tlSwapSharesAmounts, setTlSwapSharesAmounts] = useState<string[]>(Array(10).fill('0'));
+    const [numOrders, setNumOrders] = useState<number>(1);
+    const [tlOrders, setTlOrders] = useState<Array<{
+        sharesAmount: string;
+        amountOutMin: string;
+        targetRound: string;
+        deadline: string;
+        recipient: string;
+        tokenOut: string;
+        slippageBps: string;
+        executionFeeBps: string;
+    }>>([{
+        sharesAmount: '',
+        amountOutMin: '',
+        targetRound: '',
+        deadline: '',
+        recipient: address || '',
+        tokenOut: '',
+        slippageBps: '50',
+        executionFeeBps: '10'
+    }]);
     const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
     const [tokenName, setTokenName] = useState<string>('');
     const [tokenSymbol, setTokenSymbol] = useState<string>('');
@@ -763,9 +784,14 @@ export default function WithdrawPage() {
 
             const userKeyForCircuit = '0x' + userKeyToUse.toString(16);
 
-            // Format tl_swap_shares_amounts array (convert to shares if needed, or use as-is)
+            // Format tl_swap_shares_amounts array from tlOrders (convert to shares if needed, or use as-is)
+            // Use tlOrders if available, otherwise fall back to tlSwapSharesAmounts for backward compatibility
+            const ordersToUse = isTlSwap && tlOrders.length > 0 && tlOrders[0].sharesAmount
+                ? tlOrders.slice(0, numOrders).map(o => o.sharesAmount)
+                : tlSwapSharesAmounts;
+
             const formattedTlSwapSharesAmounts = await Promise.all(
-                tlSwapSharesAmounts.map(async (amountStr, index) => {
+                ordersToUse.map(async (amountStr, index) => {
                     if (!amountStr || amountStr === '0' || amountStr === '') {
                         return '0';
                     }
@@ -792,6 +818,11 @@ export default function WithdrawPage() {
                     return shares !== null ? shares.toString() : amountInRawUnits.toString();
                 })
             );
+
+            // Pad to 10 elements for circuit
+            while (formattedTlSwapSharesAmounts.length < 10) {
+                formattedTlSwapSharesAmounts.push('0');
+            }
 
             // Calculate circuit inputs
             const inputs = {
@@ -835,6 +866,50 @@ export default function WithdrawPage() {
         if (!tokenAddress || !amount || !receiverAddress || !receiverFeeAmount) {
             setProofError('Please fill in all required fields');
             return;
+        }
+
+        // Validate TL Swap: sum of order shares must equal withdrawal amount
+        if (isTlSwap) {
+            const totalShares = tlOrders.slice(0, numOrders).reduce((sum, order) => {
+                const shares = parseFloat(order.sharesAmount || '0');
+                return sum + (isNaN(shares) ? 0 : shares);
+            }, 0);
+            const withdrawalAmount = parseFloat(amount || '0');
+            const difference = Math.abs(totalShares - withdrawalAmount);
+
+            if (difference >= 0.0001) {
+                setProofError(`TL Swap validation failed: Sum of order shares (${totalShares.toFixed(6)}) does not equal withdrawal amount (${withdrawalAmount.toFixed(6)}). Difference: ${difference.toFixed(6)}`);
+                return;
+            }
+
+            // Validate that all orders have required fields
+            for (let i = 0; i < numOrders; i++) {
+                const order = tlOrders[i];
+                if (!order.sharesAmount || parseFloat(order.sharesAmount) <= 0) {
+                    setProofError(`Order ${i + 1}: Shares amount is required and must be greater than 0`);
+                    return;
+                }
+                if (!order.amountOutMin || parseFloat(order.amountOutMin) <= 0) {
+                    setProofError(`Order ${i + 1}: Amount Out Min is required and must be greater than 0`);
+                    return;
+                }
+                if (!order.targetRound || parseInt(order.targetRound) <= 0) {
+                    setProofError(`Order ${i + 1}: Target Round is required and must be greater than 0`);
+                    return;
+                }
+                if (!order.deadline || parseInt(order.deadline) <= 0) {
+                    setProofError(`Order ${i + 1}: Deadline is required and must be greater than 0`);
+                    return;
+                }
+                if (!order.recipient || !order.recipient.startsWith('0x')) {
+                    setProofError(`Order ${i + 1}: Valid recipient address is required`);
+                    return;
+                }
+                if (!order.tokenOut || !order.tokenOut.startsWith('0x')) {
+                    setProofError(`Order ${i + 1}: Valid token out address is required`);
+                    return;
+                }
+            }
         }
 
         if (isDiscoveringToken) {
@@ -1467,24 +1542,26 @@ export default function WithdrawPage() {
                                                         />
                                                     </div>
 
-                                                    {/* Arbitrary Calldata Input */}
-                                                    <div>
-                                                        <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider mb-1 sm:mb-2">
-                                                            ARBITRARY CALLDATA (HEX, OPTIONAL)
-                                                        </label>
-                                                        <Input
-                                                            type="text"
-                                                            value={arbitraryCalldata}
-                                                            onChange={(e) => setArbitraryCalldata(e.target.value)}
-                                                            placeholder="0x..."
-                                                            className="text-xs sm:text-sm w-full"
-                                                        />
-                                                        {arbitraryCalldata && arbitraryCalldata.trim() !== '' && (
-                                                            <p className="text-[10px] font-mono text-muted-foreground/60 mt-1">
-                                                                Hash (31 bytes): {arbitraryCalldataHash}
-                                                            </p>
-                                                        )}
-                                                    </div>
+                                                    {/* Arbitrary Calldata Input - Hide when TL Swap is enabled */}
+                                                    {!isTlSwap && (
+                                                        <div>
+                                                            <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider mb-1 sm:mb-2">
+                                                                ARBITRARY CALLDATA (HEX, OPTIONAL)
+                                                            </label>
+                                                            <Input
+                                                                type="text"
+                                                                value={arbitraryCalldata}
+                                                                onChange={(e) => setArbitraryCalldata(e.target.value)}
+                                                                placeholder="0x..."
+                                                                className="text-xs sm:text-sm w-full"
+                                                            />
+                                                            {arbitraryCalldata && arbitraryCalldata.trim() !== '' && (
+                                                                <p className="text-[10px] font-mono text-muted-foreground/60 mt-1">
+                                                                    Hash (31 bytes): {arbitraryCalldataHash}
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                    )}
 
                                                     {/* TL Swap Checkbox */}
                                                     <div className="flex items-center gap-2">
@@ -1492,7 +1569,15 @@ export default function WithdrawPage() {
                                                             type="checkbox"
                                                             id="isTlSwap"
                                                             checked={isTlSwap}
-                                                            onChange={(e) => setIsTlSwap(e.target.checked)}
+                                                            onChange={(e) => {
+                                                                const checked = e.target.checked;
+                                                                setIsTlSwap(checked);
+                                                                // Clear arbitrary calldata when TL Swap is enabled
+                                                                if (checked) {
+                                                                    setArbitraryCalldata('');
+                                                                    setArbitraryCalldataHash('0x0');
+                                                                }
+                                                            }}
                                                             className="w-4 h-4 rounded border-primary/50 bg-card/40 text-primary focus:ring-primary/50"
                                                         />
                                                         <label htmlFor="isTlSwap" className="text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider cursor-pointer">
@@ -1500,71 +1585,281 @@ export default function WithdrawPage() {
                                                         </label>
                                                     </div>
 
-                                                    {/* TL Swap Shares Amounts (only show if isTlSwap is true) */}
+                                                    {/* TL Swap Order Composition (only show if isTlSwap is true) */}
                                                     {isTlSwap && (
-                                                        <div className="space-y-2 border border-primary/20 bg-card/20 backdrop-blur-sm p-3 rounded-sm">
-                                                            <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider mb-2">
-                                                                TL SWAP SHARES AMOUNTS (MAX 10) {tokenDecimals !== null ? `(${tokenDecimals} decimals)` : ''}
-                                                            </label>
-                                                            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                                                                {tlSwapSharesAmounts.map((amount, index) => (
-                                                                    <div key={index}>
-                                                                        <label className="block text-[10px] font-mono text-muted-foreground mb-1">
-                                                                            Chunk {index + 1}
-                                                                        </label>
-                                                                        <Input
-                                                                            type="text"
-                                                                            value={amount}
-                                                                            onChange={(e) => {
-                                                                                const value = e.target.value;
-                                                                                if (value === '') {
-                                                                                    const newAmounts = [...tlSwapSharesAmounts];
-                                                                                    newAmounts[index] = '0';
-                                                                                    setTlSwapSharesAmounts(newAmounts);
-                                                                                    return;
+                                                        <div className="space-y-4 border border-primary/20 bg-card/20 backdrop-blur-sm p-4 rounded-sm">
+                                                            <div className="flex items-center justify-between mb-3">
+                                                                <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider">
+                                                                    COMPOSE TIMELOCK ORDERS
+                                                                </label>
+                                                                <div className="flex items-center gap-2">
+                                                                    <label className="text-[10px] font-mono text-muted-foreground">
+                                                                        Number of Orders:
+                                                                    </label>
+                                                                    <select
+                                                                        value={numOrders}
+                                                                        onChange={(e) => {
+                                                                            const newNum = parseInt(e.target.value);
+                                                                            setNumOrders(newNum);
+                                                                            // Adjust tlOrders array
+                                                                            const newOrders = [...tlOrders];
+                                                                            if (newNum > tlOrders.length) {
+                                                                                // Add new orders
+                                                                                for (let i = tlOrders.length; i < newNum; i++) {
+                                                                                    newOrders.push({
+                                                                                        sharesAmount: '',
+                                                                                        amountOutMin: '',
+                                                                                        targetRound: '',
+                                                                                        deadline: '',
+                                                                                        recipient: address || '',
+                                                                                        tokenOut: '',
+                                                                                        slippageBps: '50',
+                                                                                        executionFeeBps: '10'
+                                                                                    });
                                                                                 }
-                                                                                const normalizedValue = value.replace(',', '.');
-                                                                                if (tokenDecimals !== null && tokenDecimals >= 0) {
-                                                                                    const parts = normalizedValue.split('.');
-                                                                                    if (parts.length === 1) {
-                                                                                        if (/^\d+$/.test(parts[0]) || parts[0] === '') {
-                                                                                            const newAmounts = [...tlSwapSharesAmounts];
-                                                                                            newAmounts[index] = normalizedValue;
-                                                                                            setTlSwapSharesAmounts(newAmounts);
-                                                                                        }
-                                                                                    } else if (parts.length === 2) {
-                                                                                        const integerPart = parts[0];
-                                                                                        const decimalPart = parts[1];
-                                                                                        if ((integerPart === '' || /^\d+$/.test(integerPart)) &&
-                                                                                            (decimalPart === '' || /^\d+$/.test(decimalPart))) {
-                                                                                            if (decimalPart.length <= tokenDecimals) {
-                                                                                                const newAmounts = [...tlSwapSharesAmounts];
-                                                                                                newAmounts[index] = normalizedValue;
-                                                                                                setTlSwapSharesAmounts(newAmounts);
-                                                                                            } else {
-                                                                                                const truncatedDecimal = decimalPart.slice(0, tokenDecimals);
-                                                                                                const newAmounts = [...tlSwapSharesAmounts];
-                                                                                                newAmounts[index] = integerPart + '.' + truncatedDecimal;
-                                                                                                setTlSwapSharesAmounts(newAmounts);
-                                                                                            }
-                                                                                        }
-                                                                                    }
-                                                                                } else {
-                                                                                    if (/^\d*\.?\d*$/.test(normalizedValue)) {
-                                                                                        const newAmounts = [...tlSwapSharesAmounts];
-                                                                                        newAmounts[index] = normalizedValue;
-                                                                                        setTlSwapSharesAmounts(newAmounts);
-                                                                                    }
-                                                                                }
-                                                                            }}
-                                                                            placeholder="0"
-                                                                            className="text-xs w-full"
-                                                                        />
+                                                                            } else {
+                                                                                // Remove excess orders
+                                                                                newOrders.splice(newNum);
+                                                                            }
+                                                                            setTlOrders(newOrders);
+                                                                        }}
+                                                                        className="text-xs bg-card/60 border border-primary/30 rounded px-2 py-1 text-foreground"
+                                                                    >
+                                                                        {Array.from({ length: 10 }, (_, i) => i + 1).map(n => (
+                                                                            <option key={n} value={n}>{n}</option>
+                                                                        ))}
+                                                                    </select>
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Current Round Info */}
+                                                            <div className="bg-primary/10 border border-primary/20 p-2 rounded text-[10px] font-mono text-muted-foreground">
+                                                                Current dRand Round: {getCurrentRound()} | Round Period: 3 seconds
+                                                            </div>
+
+                                                            {/* Order Forms */}
+                                                            <div className="space-y-4">
+                                                                {tlOrders.slice(0, numOrders).map((order, index) => (
+                                                                    <div key={index} className="border border-primary/10 bg-card/40 p-3 rounded-sm space-y-2">
+                                                                        <div className="flex items-center justify-between mb-2">
+                                                                            <h4 className="text-xs font-sans font-bold text-foreground uppercase tracking-wider">
+                                                                                Order {index + 1}
+                                                                            </h4>
+                                                                            {order.targetRound && (
+                                                                                <span className="text-[10px] font-mono text-muted-foreground">
+                                                                                    Unlocks: {new Date(getRoundTimestamp(parseInt(order.targetRound)) * 1000).toLocaleString()}
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
+
+                                                                        <div className="space-y-3">
+                                                                            {/* Shares Amount - Full width */}
+                                                                            <div>
+                                                                                <label className="block text-[10px] font-mono text-muted-foreground mb-1">
+                                                                                    Shares Amount {tokenDecimals !== null ? `(${tokenDecimals} decimals)` : ''}
+                                                                                </label>
+                                                                                <Input
+                                                                                    type="text"
+                                                                                    value={order.sharesAmount}
+                                                                                    onChange={(e) => {
+                                                                                        const newOrders = [...tlOrders];
+                                                                                        newOrders[index].sharesAmount = e.target.value;
+                                                                                        setTlOrders(newOrders);
+                                                                                    }}
+                                                                                    placeholder="0"
+                                                                                    className="text-xs w-full"
+                                                                                />
+                                                                            </div>
+
+                                                                            {/* Token Out and Min Amount Out - Same line */}
+                                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                                                <div>
+                                                                                    <label className="block text-[10px] font-mono text-muted-foreground mb-1">
+                                                                                        Token Out Address
+                                                                                    </label>
+                                                                                    <Input
+                                                                                        type="text"
+                                                                                        value={order.tokenOut}
+                                                                                        onChange={(e) => {
+                                                                                            const newOrders = [...tlOrders];
+                                                                                            newOrders[index].tokenOut = e.target.value;
+                                                                                            setTlOrders(newOrders);
+                                                                                        }}
+                                                                                        placeholder="0x..."
+                                                                                        className="text-xs w-full font-mono"
+                                                                                    />
+                                                                                </div>
+                                                                                <div>
+                                                                                    <label className="block text-[10px] font-mono text-muted-foreground mb-1">
+                                                                                        Min Amount Out
+                                                                                    </label>
+                                                                                    <Input
+                                                                                        type="text"
+                                                                                        value={order.amountOutMin}
+                                                                                        onChange={(e) => {
+                                                                                            const newOrders = [...tlOrders];
+                                                                                            newOrders[index].amountOutMin = e.target.value;
+                                                                                            setTlOrders(newOrders);
+                                                                                        }}
+                                                                                        placeholder="0"
+                                                                                        className="text-xs w-full"
+                                                                                    />
+                                                                                    <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                        Minimum tokens to receive
+                                                                                    </p>
+                                                                                </div>
+                                                                            </div>
+
+                                                                            {/* Round Drand and Deadline - Same line */}
+                                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                                                <div>
+                                                                                    <label className="block text-[10px] font-mono text-muted-foreground mb-1">
+                                                                                        Round Drand
+                                                                                    </label>
+                                                                                    <Input
+                                                                                        type="number"
+                                                                                        value={order.targetRound}
+                                                                                        onChange={(e) => {
+                                                                                            const newOrders = [...tlOrders];
+                                                                                            newOrders[index].targetRound = e.target.value;
+                                                                                            setTlOrders(newOrders);
+                                                                                        }}
+                                                                                        placeholder={`${getCurrentRound() + 1000}`}
+                                                                                        className="text-xs w-full"
+                                                                                    />
+                                                                                    <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                        Current: {getCurrentRound()}
+                                                                                    </p>
+                                                                                </div>
+                                                                                <div>
+                                                                                    <label className="block text-[10px] font-mono text-muted-foreground mb-1">
+                                                                                        Deadline (Unix timestamp)
+                                                                                    </label>
+                                                                                    <Input
+                                                                                        type="number"
+                                                                                        value={order.deadline}
+                                                                                        onChange={(e) => {
+                                                                                            const newOrders = [...tlOrders];
+                                                                                            newOrders[index].deadline = e.target.value;
+                                                                                            setTlOrders(newOrders);
+                                                                                        }}
+                                                                                        placeholder={`${Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60)}`}
+                                                                                        className="text-xs w-full"
+                                                                                    />
+                                                                                    {order.deadline && (
+                                                                                        <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                            {new Date(parseInt(order.deadline) * 1000).toLocaleString()}
+                                                                                        </p>
+                                                                                    )}
+                                                                                </div>
+                                                                            </div>
+
+                                                                            {/* Slippage and Pool Fee - Same line */}
+                                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                                                <div>
+                                                                                    <label className="block text-[10px] font-mono text-muted-foreground mb-1">
+                                                                                        Slippage (basis points)
+                                                                                    </label>
+                                                                                    <Input
+                                                                                        type="number"
+                                                                                        value={order.slippageBps}
+                                                                                        onChange={(e) => {
+                                                                                            const newOrders = [...tlOrders];
+                                                                                            newOrders[index].slippageBps = e.target.value;
+                                                                                            setTlOrders(newOrders);
+                                                                                        }}
+                                                                                        placeholder="50"
+                                                                                        className="text-xs w-full"
+                                                                                    />
+                                                                                    <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                        {order.slippageBps ? `${(parseFloat(order.slippageBps) / 100).toFixed(2)}%` : '0.5% = 50 bps'}
+                                                                                    </p>
+                                                                                </div>
+                                                                                <div>
+                                                                                    <label className="block text-[10px] font-mono text-muted-foreground mb-1">
+                                                                                        Pool Fee (basis points)
+                                                                                    </label>
+                                                                                    <Input
+                                                                                        type="number"
+                                                                                        value={order.executionFeeBps}
+                                                                                        onChange={(e) => {
+                                                                                            const newOrders = [...tlOrders];
+                                                                                            newOrders[index].executionFeeBps = e.target.value;
+                                                                                            setTlOrders(newOrders);
+                                                                                        }}
+                                                                                        placeholder="10"
+                                                                                        className="text-xs w-full"
+                                                                                    />
+                                                                                    <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                        {order.executionFeeBps ? `${(parseFloat(order.executionFeeBps) / 100).toFixed(2)}%` : '0.1% = 10 bps'}
+                                                                                    </p>
+                                                                                </div>
+                                                                            </div>
+
+                                                                            {/* Recipient - Full width */}
+                                                                            <div>
+                                                                                <label className="block text-[10px] font-mono text-muted-foreground mb-1">
+                                                                                    Recipient Address
+                                                                                </label>
+                                                                                <Input
+                                                                                    type="text"
+                                                                                    value={order.recipient}
+                                                                                    onChange={(e) => {
+                                                                                        const newOrders = [...tlOrders];
+                                                                                        newOrders[index].recipient = e.target.value;
+                                                                                        setTlOrders(newOrders);
+                                                                                    }}
+                                                                                    placeholder="0x..."
+                                                                                    className="text-xs w-full font-mono"
+                                                                                />
+                                                                            </div>
+                                                                        </div>
                                                                     </div>
                                                                 ))}
                                                             </div>
+
+                                                            {/* Validation: Sum of shares amounts must equal withdrawal amount */}
+                                                            {isTlSwap && amount && (
+                                                                <div className="mt-3 p-2 rounded border border-primary/20 bg-card/40">
+                                                                    {(() => {
+                                                                        const totalShares = tlOrders.slice(0, numOrders).reduce((sum, order) => {
+                                                                            const shares = parseFloat(order.sharesAmount || '0');
+                                                                            return sum + (isNaN(shares) ? 0 : shares);
+                                                                        }, 0);
+                                                                        const withdrawalAmount = parseFloat(amount || '0');
+                                                                        const difference = Math.abs(totalShares - withdrawalAmount);
+                                                                        const isValid = difference < 0.0001; // Allow small floating point differences
+
+                                                                        return (
+                                                                            <div className="space-y-1">
+                                                                                <div className="flex items-center justify-between text-[10px] font-mono">
+                                                                                    <span className="text-muted-foreground">Total Shares (Orders):</span>
+                                                                                    <span className={isValid ? "text-green-400" : "text-destructive"}>{totalShares.toFixed(6)}</span>
+                                                                                </div>
+                                                                                <div className="flex items-center justify-between text-[10px] font-mono">
+                                                                                    <span className="text-muted-foreground">Withdrawal Amount:</span>
+                                                                                    <span>{withdrawalAmount.toFixed(6)}</span>
+                                                                                </div>
+                                                                                <div className="flex items-center justify-between text-[10px] font-mono">
+                                                                                    <span className="text-muted-foreground">Difference:</span>
+                                                                                    <span className={isValid ? "text-green-400" : "text-destructive"}>
+                                                                                        {difference < 0.0001 ? "✓ Match" : `${difference.toFixed(6)}`}
+                                                                                    </span>
+                                                                                </div>
+                                                                                {!isValid && (
+                                                                                    <p className="text-[9px] font-mono text-destructive mt-1">
+                                                                                        ⚠ Sum of order shares must equal withdrawal amount!
+                                                                                    </p>
+                                                                                )}
+                                                                            </div>
+                                                                        );
+                                                                    })()}
+                                                                </div>
+                                                            )}
+
                                                             <p className="text-[10px] font-mono text-muted-foreground/60 mt-2">
-                                                                Note: Sum of chunks must equal total withdraw amount. Leave unused chunks as 0.
+                                                                Note: Orders will be encrypted in a nested chain. The first order contains all subsequent orders.
+                                                                Sum of shares amounts must equal your total withdraw amount exactly.
                                                             </p>
                                                         </div>
                                                     )}

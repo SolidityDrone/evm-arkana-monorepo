@@ -5,10 +5,25 @@
 import { bn254 } from '@noble/curves/bn254.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { randomBytes } from '@noble/curves/utils.js';
-import { poseidon2Hash } from '@aztec/foundation/crypto';
+import { ensureBufferPolyfill } from './buffer-polyfill';
 
-// Ensure Buffer is available (from polyfill)
-declare const Buffer: typeof import('buffer').Buffer;
+// Helper to get Buffer safely
+async function getBuffer(): Promise<typeof import('buffer').Buffer> {
+    await ensureBufferPolyfill();
+    if (!globalThis.Buffer) {
+        const { Buffer } = await import('buffer');
+        globalThis.Buffer = Buffer;
+    }
+    return globalThis.Buffer;
+}
+
+// Helper to get poseidon2Hash - must be loaded AFTER Buffer is initialized
+async function getPoseidon2Hash() {
+    // Ensure Buffer is initialized before loading @aztec packages
+    await getBuffer();
+    const { poseidon2Hash } = await import('@aztec/foundation/crypto');
+    return poseidon2Hash;
+}
 
 // Drand beacon config (evmnet chain - uses BN254)
 const BEACON_ID = 'evmnet';
@@ -90,7 +105,8 @@ export function getRoundTimestamp(round: number): number {
  * Hash to G1 point (BN254) - simplified version using try-and-increment
  * In production, use proper hash-to-curve
  */
-function hashToG1(message: Uint8Array): typeof bn254.G1.Point {
+async function hashToG1(message: Uint8Array): Promise<typeof bn254.G1.Point> {
+    const Buffer = await getBuffer();
     const G1 = bn254.G1;
     const Fp = bn254.fields.Fp;
     const p = Fp.ORDER; // BN254 field modulus
@@ -155,6 +171,7 @@ function modPow(base: bigint, exp: bigint, mod: bigint): bigint {
  * Uses Poseidon2 to match Noir circuit implementation
  */
 async function kdf(pairingResult: any): Promise<bigint> {
+    const Buffer = await getBuffer();
     const pairingStr = JSON.stringify({
         c0: pairingResult.c0.toString(),
         c1: pairingResult.c1.toString()
@@ -167,6 +184,7 @@ async function kdf(pairingResult: any): Promise<bigint> {
     const pairingField = pairingFieldRaw % FR_MODULUS;
 
     // Use Poseidon2 hash (same as Noir circuit)
+    const poseidon2Hash = await getPoseidon2Hash();
     const fields = [pairingField];
     const kdfResult = await poseidon2Hash(fields);
     return kdfResult.toBigInt();
@@ -178,6 +196,7 @@ async function kdf(pairingResult: any): Promise<bigint> {
  * @returns AES-128 key (16 bytes)
  */
 async function deriveAESKey(pairingResult: any): Promise<Uint8Array> {
+    const Buffer = await getBuffer();
     // Use KDF to get a field value, then hash to 16 bytes
     const kdfValue = await kdf(pairingResult);
     const kdfBytes = Buffer.from(kdfValue.toString(16).padStart(64, '0'), 'hex');
@@ -192,6 +211,7 @@ async function deriveAESKey(pairingResult: any): Promise<Uint8Array> {
  * @returns {iv, ciphertext} as hex strings
  */
 async function encryptAES128(data: string, key: Uint8Array): Promise<AESEncryption> {
+    const Buffer = await getBuffer();
     // Generate random IV (16 bytes)
     const iv = new Uint8Array(16);
     crypto.getRandomValues(iv);
@@ -226,6 +246,7 @@ async function encryptAES128(data: string, key: Uint8Array): Promise<AESEncrypti
  * @returns Decrypted data as string
  */
 async function decryptAES128(ciphertext: string, key: Uint8Array, iv: string): Promise<string> {
+    const Buffer = await getBuffer();
     // Import key for Web Crypto API
     const cryptoKey = await crypto.subtle.importKey(
         'raw',
@@ -282,6 +303,7 @@ function parseDrandPubkey(): typeof bn254.G2.Point {
  * @returns {ciphertext, V, C1, H, pairingResult} for verification
  */
 async function createTimelockEncryption(plaintext: string, targetRound: number): Promise<TimelockEncryption> {
+    const Buffer = await getBuffer();
     const G2 = bn254.G2;
     const Fr = bn254.fields.Fr;
 
@@ -291,7 +313,7 @@ async function createTimelockEncryption(plaintext: string, targetRound: number):
 
     // Hash round to G1: H = hash_to_curve(round)
     const roundBytes = new TextEncoder().encode(targetRound.toString());
-    const H = hashToG1(roundBytes);
+    const H = await hashToG1(roundBytes);
 
     // V = r * H (on G1)
     const V = H.multiply(r);
@@ -344,6 +366,9 @@ export async function createOrderChain(
     const totalShares = orders.reduce((sum, order) => {
         return sum + BigInt(order.sharesAmount?.toString() || '0');
     }, 0n);
+
+    // Get poseidon2Hash after Buffer is initialized
+    const poseidon2Hash = await getPoseidon2Hash();
 
     // Calculate initial_hashchain = Poseidon2::hash([user_key, previous_nonce], 2)
     const initialHashchain = await poseidon2Hash([userKey, previousNonce]);

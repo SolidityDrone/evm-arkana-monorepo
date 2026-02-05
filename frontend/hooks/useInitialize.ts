@@ -526,12 +526,12 @@ export function useInitialize() {
             }
 
             try {
-                writeContract({
-                    address: ArkanaAddress as `0x${string}`,
-                    abi: ArkanaAbi,
-                    functionName: 'initialize',
-                    args: [proofBytes as `0x${string}`, publicInputsBytes32, amountIn, lockDurationBigInt],
-                });
+            writeContract({
+                address: ArkanaAddress as `0x${string}`,
+                abi: ArkanaAbi,
+                functionName: 'initialize',
+                args: [proofBytes as `0x${string}`, publicInputsBytes32, amountIn, lockDurationBigInt],
+            });
                 console.log('writeContract called successfully, waiting for wallet confirmation...');
             } catch (writeError) {
                 console.error('Error calling writeContract:', writeError);

@@ -166,7 +166,7 @@ export default function BasicSpellsPage() {
                     <div className="absolute -bottom-1.5 -right-1.5 w-3 h-3 border-b border-r border-primary/30 transition-all duration-500" />
 
                     {/* Ethereal border */}
-                    <div
+                    <div 
                         className="absolute inset-0 border border-primary/10 transition-all duration-700"
                         style={{
                             boxShadow: "0 0 20px rgba(139, 92, 246, 0.1)"

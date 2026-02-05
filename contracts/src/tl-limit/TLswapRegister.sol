@@ -55,7 +55,7 @@ contract TLswapRegister is ReentrancyGuard {
     }
 
     /// @notice Events
-    event EncryptedOrderRegistered(bytes32 indexed orderId, bytes ciphertext);
+    event EncryptedOrderRegistered(bytes32 indexed orderId, bytes ciphertextIpfs);
 
     event SwapIntentExecuted(
         bytes32 indexed intentId,
@@ -361,5 +361,10 @@ contract TLswapRegister is ReentrancyGuard {
      */
     function _isRoundAvailable(uint256 targetRound) internal view returns (bool) {
         return targetRound <= _getCurrentDrandRound();
+    }
+
+    //TODO: Important, to atcually have a method to withdraw from arkana the virtually-locked funds no one filled these ops
+    function withdrawVirtuallyLockedFunds(address tokenAddress, uint256 sharesAmount) external onlyOwner {
+        //
     }
 }

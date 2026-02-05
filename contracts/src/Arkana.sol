@@ -744,13 +744,12 @@ contract Arkana is AccessControl, ReentrancyGuard {
             revert InvalidRoot();
         }
 
-        /* //TODO UNCOMMENT THIS WHEN DEPLOYING
-                uint256 timeDifference = declaredTimeReference > block.timestamp
-                    ? declaredTimeReference - block.timestamp
-                    : block.timestamp - declaredTimeReference;
-                if (timeDifference > TIME_TOLERANCE) {
-                    revert InvalidTimeReference();
-                } */
+        uint256 timeDifference = declaredTimeReference > block.timestamp
+            ? declaredTimeReference - block.timestamp
+            : block.timestamp - declaredTimeReference;
+        if (timeDifference > TIME_TOLERANCE) {
+            revert InvalidTimeReference();
+        }
 
         // Get Pedersen commitment point from circuit
         // Circuit already calculates: new_shares_balance = previous_shares - (amount + relayer_fee_amount)
