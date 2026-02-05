@@ -503,7 +503,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         // Calculate upfront protocol fee based on lock duration
         // If lockDuration = 0: full fee applies
         // If lockDuration = discount_window: 0 fee (100% discount)
-        uint256 effective_fee_bps = _calculateDiscountedProtocolFee(lockDuration);
+        uint256 effective_fee_bps = calculateDiscountedProtocolFee(lockDuration);
 
         // Calculate fee amount: amountIn * effective_fee_bps / 10000
         uint256 feeAmount = (amountIn * effective_fee_bps) / 10000;

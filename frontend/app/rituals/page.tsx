@@ -399,8 +399,8 @@ export default function RitualsPage() {
 
                                                     {/* Amount Input */}
                                                     <div>
-                                                        <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider mb-1 sm:mb-2">
-                                                            {isDepositMode ? 'DEPOSIT' : 'INITIALIZE'} AMOUNT {tokenDecimals !== null ? `(${tokenDecimals} decimals)` : ''}
+                                                        <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider mb-1 sm:mb-2 h-5">
+                                                            {isDepositMode ? 'DEPOSIT' : 'INITIALIZE'} AMOUNT {tokenDecimals !== null && <span className="text-muted-foreground font-normal">({tokenDecimals} decimals)</span>}
                                                         </label>
                                                         <div className="flex gap-2">
                                                             <Input
@@ -459,11 +459,13 @@ export default function RitualsPage() {
                                                                 MAX
                                                             </Button>
                                                         </div>
-                                                        {tokenBalance !== null && tokenDecimals !== null && (
-                                                            <p className="text-[10px] font-mono text-muted-foreground mt-1 text-right">
-                                                                Balance: {formatBalance(tokenBalance, tokenDecimals)} {isLoadingBalance && <span className="text-muted-foreground/60">(loading...)</span>}
-                                                            </p>
-                                                        )}
+                                                        <p className="text-[10px] font-mono text-muted-foreground mt-1 text-right h-4">
+                                                            {tokenBalance !== null && tokenDecimals !== null ? (
+                                                                <>Balance: {formatBalance(tokenBalance, tokenDecimals)} {isLoadingBalance && <span className="text-muted-foreground/60">(loading...)</span>}</>
+                                                            ) : (
+                                                                <span className="opacity-0">Balance: 0</span>
+                                                            )}
+                                                        </p>
                                                     </div>
 
                                                     {/* Lock Duration Slider - Only for Initialize */}
@@ -578,8 +580,7 @@ export default function RitualsPage() {
                                                     )}
 
                                                     {/* Token Approval Section */}
-                                                    {isValidAmount && (
-                                                        <div className="mt-2 sm:mt-3 relative border border-border/30 bg-card/40 backdrop-blur-sm p-3 sm:pt-4 rounded-sm">
+                                                    <div className={`mt-2 sm:mt-3 relative border border-border/30 bg-card/40 backdrop-blur-sm p-3 sm:pt-4 rounded-sm transition-opacity duration-200 ${isValidAmount ? 'opacity-100' : 'opacity-0 h-0 p-0 m-0 border-0 overflow-hidden'}`}>
                                                             {(() => {
                                                                 console.log('🔍 Rendering approval section:', {
                                                                     isValidAmount,
@@ -632,8 +633,7 @@ export default function RitualsPage() {
                                                                     UNABLE TO CHECK ALLOWANCE
                                                                 </p>
                                                             )}
-                                                        </div>
-                                                    )}
+                                                    </div>
 
                                                     {/* Generate Proof / Send Transaction Button */}
                                                     <SpellButton
@@ -747,7 +747,7 @@ export default function RitualsPage() {
 
             {/* Token Selector Modal */}
             <Dialog open={showTokenSelector} onOpenChange={setShowTokenSelector}>
-                <DialogContent className="max-w-xl max-h-[80vh] overflow-hidden flex flex-col bg-card/95 backdrop-blur-sm border-primary/30 mx-auto">
+                <DialogContent className="max-w-sm w-[33vw] min-w-[320px] max-h-[80vh] overflow-hidden flex flex-col bg-card/95 backdrop-blur-sm border-primary/30 mx-auto">
                     <DialogHeader className="pb-3">
                         <DialogTitle className="text-center text-sm sm:text-base font-sans tracking-wider uppercase" style={{ textShadow: "0 0 20px rgba(139, 92, 246, 0.3)" }}>
                             SELECT TOKEN

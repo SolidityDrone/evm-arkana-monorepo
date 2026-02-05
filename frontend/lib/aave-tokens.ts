@@ -74,6 +74,11 @@ export interface AaveTokenInfo {
   decimals: number;
   aTokenAddress: Address;
   isActive: boolean;
+  // Arkana vault data
+  vaultAddress?: Address;
+  vaultTotalAssets?: bigint;
+  vaultTotalShares?: bigint;
+  hasVault?: boolean;
 }
 
 /**

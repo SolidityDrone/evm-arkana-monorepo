@@ -34,7 +34,7 @@ export default function ZkAddressModal({ isOpen, onClose }: ZkAddressModalProps)
 
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
-            <DialogContent className="max-w-md bg-card/95 backdrop-blur-md border-primary/30">
+            <DialogContent className="max-w-sm w-[33vw] min-w-[320px] bg-card/95 backdrop-blur-md border-primary/30">
                 <DialogHeader>
                     <DialogTitle className="font-sans text-xl uppercase tracking-wider text-center">
                         ZK Address
@@ -44,10 +44,10 @@ export default function ZkAddressModal({ isOpen, onClose }: ZkAddressModalProps)
                 <div className="space-y-6">
                     {/* QR Code */}
                     <div className="flex justify-center">
-                        <div className="p-4 bg-white rounded-lg">
+                        <div className="p-3 bg-white rounded-lg">
                             <QRCodeSVG
                                 value={zkAddress}
-                                size={200}
+                                size={180}
                                 level="H"
                                 includeMargin={true}
                             />
@@ -63,7 +63,7 @@ export default function ZkAddressModal({ isOpen, onClose }: ZkAddressModalProps)
                         </CardHeader>
                         <CardContent>
                             <div className="flex items-center gap-2">
-                                <p className="flex-1 font-mono text-sm text-foreground break-all">
+                                <p className="flex-1 font-mono text-xs text-foreground break-all">
                                     {zkAddress}
                                 </p>
                                 <Button

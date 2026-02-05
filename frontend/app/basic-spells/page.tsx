@@ -501,7 +501,7 @@ export default function BasicSpellsPage() {
 
             {/* Token Selector Modal */}
             <Dialog open={showTokenSelector} onOpenChange={setShowTokenSelector}>
-                <DialogContent className="max-w-xl max-h-[80vh] overflow-hidden flex flex-col bg-card/95 backdrop-blur-sm border-primary/30 mx-auto">
+                <DialogContent className="max-w-sm w-[33vw] min-w-[320px] max-h-[80vh] overflow-hidden flex flex-col bg-card/95 backdrop-blur-sm border-primary/30 mx-auto">
                     <DialogHeader className="pb-3">
                         <DialogTitle className="text-center text-sm sm:text-base font-sans tracking-wider uppercase" style={{ textShadow: "0 0 20px rgba(139, 92, 246, 0.3)" }}>
                             SELECT TOKEN

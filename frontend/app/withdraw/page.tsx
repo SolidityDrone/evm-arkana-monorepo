@@ -28,6 +28,7 @@ import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
 import { getCurrentRound, getRoundTimestamp, createOrderChain, type Order } from '@/lib/timelock-order';
 import { uploadCiphertextToIPFS, getIPFSGatewayURL } from '@/lib/ipfs';
 import { Copy, ExternalLink } from 'lucide-react';
+import Image from 'next/image';
 
 const ERC20_ABI = parseAbi([
     'function decimals() view returns (uint8)',
@@ -2132,6 +2133,13 @@ export default function WithdrawPage() {
                                                     {/* TL Swap Checkbox */}
                                                     <div className="space-y-2">
                                                         <div className="flex items-center gap-2">
+                                                            <Image
+                                                                src="/Uniswap_icon_pink.png"
+                                                                alt="Uniswap"
+                                                                width={24}
+                                                                height={24}
+                                                                className="flex-shrink-0"
+                                                            />
                                                             <input
                                                                 type="checkbox"
                                                                 id="isTlSwap"
@@ -2145,10 +2153,10 @@ export default function WithdrawPage() {
                                                                         setArbitraryCalldataHash('0x0');
                                                                     }
                                                                 }}
-                                                                className="w-4 h-4 rounded border-primary/50 bg-card/40 text-primary focus:ring-primary/50"
+                                                                className="w-4 h-4 rounded border-primary/50 bg-card/40 text-primary focus:ring-primary/50 flex-shrink-0"
                                                             />
                                                             <label htmlFor="isTlSwap" className="text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider cursor-pointer">
-                                                                TL SWAP MODE
+                                                                Timelocked Swap
                                                             </label>
                                                         </div>
                                                         {isTlSwap && (
@@ -2767,7 +2775,7 @@ export default function WithdrawPage() {
 
             {/* Token Selector Modal */}
             <Dialog open={showTokenSelector} onOpenChange={setShowTokenSelector}>
-                <DialogContent className="max-w-xl max-h-[80vh] overflow-hidden flex flex-col bg-card/95 backdrop-blur-sm border-primary/30 mx-auto">
+                <DialogContent className="max-w-sm w-[33vw] min-w-[320px] max-h-[80vh] overflow-hidden flex flex-col bg-card/95 backdrop-blur-sm border-primary/30 mx-auto">
                     <DialogHeader className="pb-3">
                         <DialogTitle className="text-center text-sm sm:text-base font-sans tracking-wider uppercase" style={{ textShadow: "0 0 20px rgba(139, 92, 246, 0.3)" }}>
                             SELECT TOKEN

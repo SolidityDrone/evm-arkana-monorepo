@@ -78,25 +78,38 @@ export function useNonceDiscovery() {
   }, []);
 
   const readNonceDiscoveryFromContract = useCallback(async (tokenAddress: `0x${string}`) => {
-    if (!publicClient || !address) {
-      throw new Error('Public client or address not available');
+    if (!publicClient) {
+      throw new Error('Public client not available');
     }
 
-    const result = await publicClient.readContract({
-      address: ArkanaAddress,
-      abi: ArkanaAbi,
-      functionName: 'getNonceDiscoveryInfo',
-      args: [tokenAddress],
-    }) as [bigint, bigint, bigint, bigint];
+    try {
+      const result = await publicClient.readContract({
+        address: ArkanaAddress,
+        abi: ArkanaAbi,
+        functionName: 'getNonceDiscoveryInfo',
+        args: [tokenAddress],
+      }) as [bigint, bigint, bigint, bigint];
 
-    const [x, y, m, r] = result;
+      const [x, y, m, r] = result;
 
-    return {
-      point: { x, y } as GrumpkinPoint,
-      aggregatedM: m,
-      aggregatedR: r,
-    };
-  }, [publicClient, address]);
+      return {
+        point: { x, y } as GrumpkinPoint,
+        aggregatedM: m,
+        aggregatedR: r,
+      };
+    } catch (err) {
+      console.error('Error reading nonce discovery info:', err);
+      // Return default values if the contract call fails
+      return {
+        point: { 
+          x: BigInt('0x098b60b4fb636ed774329d8bb20eb1f9bd2f1b53445e991de219b50739e95c16'),
+          y: BigInt('0x1b82bb29393d7897d102bc412ca1b3353e78ecc738baf483fed847ef9e212997')
+        } as GrumpkinPoint,
+        aggregatedM: BigInt(1),
+        aggregatedR: BigInt(1),
+      };
+    }
+  }, [publicClient]);
 
   const decryptBalances = useCallback(async (highestNonce: bigint, userKey: bigint, lowestNonce: bigint = BigInt(0), tokenAddress: bigint) => {
     if (!publicClient || !account?.signature) {

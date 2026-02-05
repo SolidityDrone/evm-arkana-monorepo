@@ -5,3 +5,6 @@ NOW sure yet if this DeFi-Punk protocol is meant for humans or for agents o.o
 Changed my mind and shipping for humans, agent sdk is wip and paused as i have no clue of openclaw yet. 
 
 TempPrivacy is born -> Temp Privacy is dead
+
+
+Maybe TempPrivacy can be used for using multicall3, so you are incentivized to behave responsably. Taking for granted that this project shouldn't be permissionless or integrate PoI 
