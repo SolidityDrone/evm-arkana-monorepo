@@ -19,13 +19,9 @@ export function ArcaneHeader() {
     const { handleSign, isSigning, isLoading } = useAccountSigning()
 
     const navLinks = [
-        { label: "Protocol", href: "#protocol" },
         { label: "Grimoire", href: "/aave-tokens" },
-        { label: "Basic Spells", href: "/basic-spells" },
-        { label: "Deposit", href: "/deposit" },
-        { label: "Withdraw", href: "/withdraw" },
-        { label: "Rituals", href: "#features" },
-        { label: "Coven", href: "#community" },
+        { label: "Rituals", href: "/rituals" },
+        { label: "Spells", href: "/withdraw" }
     ]
 
     return (

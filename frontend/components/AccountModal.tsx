@@ -256,8 +256,8 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
 
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
-            <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto w-full min-w-0">
-                <DialogHeader>
+            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto w-full min-w-0">
+                <DialogHeader className="pb-4">
                     <DialogTitle>Account Management</DialogTitle>
                 </DialogHeader>
 
@@ -295,6 +295,14 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                             const tokenName = tokenInfo?.name || 'Unknown Token';
                                             const tokenSymbol = tokenInfo?.symbol || tokenAddress.slice(0, 6) + '...' + tokenAddress.slice(-4);
                                             
+                                            // Find the current balance (highest nonce entry)
+                                            const currentNonce = tokenData.currentNonce || BigInt(0);
+                                            const previousNonce = currentNonce > BigInt(0) ? currentNonce - BigInt(1) : BigInt(0);
+                                            const currentBalanceEntry = tokenData.balanceEntries.find(entry => {
+                                                const entryNonce = typeof entry.nonce === 'string' ? BigInt(entry.nonce) : entry.nonce;
+                                                return entryNonce === previousNonce;
+                                            });
+                                            
                                             return (
                                                 <div key={tokenAddress} className="border rounded p-3">
                                                     <div className="flex justify-between items-start">
@@ -309,18 +317,27 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                                                 {tokenAddress}
                                                             </p>
                                                             <p className="text-xs text-muted-foreground mt-2">
-                                                                Nonce: {tokenData.currentNonce?.toString() || 'N/A'}
+                                                                Current Nonce: {tokenData.currentNonce?.toString() || 'N/A'}
                                                             </p>
-                                                            <p className="text-xs text-muted-foreground">
+                                                            {currentBalanceEntry && (
+                                                                <p className="text-xs text-foreground font-semibold mt-1">
+                                                                    Current Balance: {currentBalanceEntry.amount.toString()} shares (at nonce {previousNonce.toString()})
+                                                                </p>
+                                                            )}
+                                                            <p className="text-xs text-muted-foreground mt-1">
                                                                 Balance Entries: {tokenData.balanceEntries.length}
                                                             </p>
                                                             {tokenData.balanceEntries.length > 0 && (
                                                                 <div className="mt-2 space-y-1">
-                                                                    {tokenData.balanceEntries.map((entry, idx) => (
-                                                                        <div key={idx} className="text-xs">
-                                                                            Nonce {entry.nonce.toString()}: {entry.amount.toString()} shares
-                                                                        </div>
-                                                                    ))}
+                                                                    {tokenData.balanceEntries.map((entry, idx) => {
+                                                                        const entryNonce = typeof entry.nonce === 'string' ? BigInt(entry.nonce) : entry.nonce;
+                                                                        const isCurrent = entryNonce === previousNonce;
+                                                                        return (
+                                                                            <div key={idx} className={`text-xs ${isCurrent ? 'font-semibold text-foreground' : 'text-muted-foreground'}`}>
+                                                                                Nonce {entry.nonce.toString()}: {entry.amount.toString()} shares {isCurrent && '(current)'}
+                                                                            </div>
+                                                                        );
+                                                                    })}
                                                                 </div>
                                                             )}
                                                         </div>

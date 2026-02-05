@@ -69,12 +69,23 @@ export async function POST(request: NextRequest) {
                 name: filename || 'arkana-tl-ciphertext.json',
             },
         });
-        const cid = result.IpfsHash || result.ipfsHash || result.cid;
 
+        // Extract CID and ensure it's a string (serializable)
+        const cid = String(result.IpfsHash || result.ipfsHash || result.cid || '');
+
+        if (!cid) {
+            throw new Error('Failed to get CID from Pinata response');
+        }
+
+        // Return only serializable data
         return NextResponse.json({
             success: true,
-            cid,
+            cid: String(cid),
             gatewayUrl: `https://gateway.pinata.cloud/ipfs/${cid}`,
+        }, {
+            headers: {
+                'Content-Type': 'application/json',
+            },
         });
     } catch (error) {
         console.error('IPFS upload error:', error);
@@ -100,16 +111,24 @@ export async function POST(request: NextRequest) {
             }
         }
 
+        // Return only serializable data
         return NextResponse.json(
             {
                 error: 'Failed to upload to IPFS',
-                message: errorMessage,
-                details: error instanceof Error ? {
-                    name: error.name,
-                    message: error.message,
-                } : undefined,
+                message: String(errorMessage),
+                ...(error instanceof Error ? {
+                    details: {
+                        name: String(error.name || 'Error'),
+                        message: String(error.message || 'Unknown error'),
+                    },
+                } : {}),
             },
-            { status: 500 }
+            {
+                status: 500,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            }
         );
     }
 }

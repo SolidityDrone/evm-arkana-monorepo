@@ -456,6 +456,17 @@ export function useDeposit() {
 
     // Calculate circuit inputs for deposit
     const calculateCircuitInputs = useCallback(async () => {
+        console.log('📊 DEPOSIT - CALCULATE CIRCUIT INPUTS - Starting calculation...');
+        console.log('  Token Address:', tokenAddress);
+        console.log('  Amount:', amount);
+        console.log('  ZK Address:', zkAddress);
+        console.log('  Token Current Nonce:', tokenCurrentNonce?.toString() || 'null');
+        console.log('  Balance Entries:', balanceEntries.map(e => ({
+            tokenAddress: e.tokenAddress.toString(),
+            nonce: e.nonce.toString(),
+            amount: e.amount?.toString() || 'null'
+        })));
+        
         if (!tokenAddress || !amount) {
             throw new Error('Missing required inputs: tokenAddress or amount');
         }
@@ -547,27 +558,57 @@ export function useDeposit() {
                 })
                 : [];
 
-            // Infer nonce from balanceEntries
+            // Use tokenCurrentNonce from state if available, otherwise infer from balanceEntries
             let tokenCurrentNonceValue: bigint;
-            if (entriesToUse.length > 0) {
+            console.log('📊 Nonce calculation - tokenCurrentNonce from state:', tokenCurrentNonce?.toString() || 'null');
+            console.log('📊 Nonce calculation - entriesToUse:', entriesToUse.map(e => ({
+                nonce: e.nonce.toString(),
+                amount: e.amount?.toString() || 'null'
+            })));
+            
+            if (tokenCurrentNonce !== null && tokenCurrentNonce !== undefined) {
+                // Use the nonce from state (discovered via AccountModal or nonce discovery)
+                tokenCurrentNonceValue = tokenCurrentNonce;
+                console.log('✅ Using tokenCurrentNonce from state:', tokenCurrentNonceValue.toString());
+            } else if (entriesToUse.length > 0) {
+                // Fallback: infer nonce from balanceEntries
                 const highestNonceInEntries = entriesToUse.reduce((max, entry) => {
                     const entryNonce = typeof entry.nonce === 'string' ? BigInt(entry.nonce) : entry.nonce;
                     return entryNonce > max ? entryNonce : max;
                 }, BigInt(-1));
 
                 tokenCurrentNonceValue = highestNonceInEntries >= BigInt(0) ? highestNonceInEntries + BigInt(1) : BigInt(0);
+                console.log('⚠️ WARNING: Inferring tokenCurrentNonce from balanceEntries (should use state!):', tokenCurrentNonceValue.toString());
+                console.log('   Highest nonce in entries:', highestNonceInEntries.toString());
+                setTokenCurrentNonce(tokenCurrentNonceValue);
             } else {
                 tokenCurrentNonceValue = BigInt(0);
+                console.log('⚠️ WARNING: No balance entries, using nonce 0');
+                setTokenCurrentNonce(tokenCurrentNonceValue);
             }
 
-            setTokenCurrentNonce(tokenCurrentNonceValue);
-
             const finalTokenPreviousNonce = tokenCurrentNonceValue > BigInt(0) ? tokenCurrentNonceValue - BigInt(1) : BigInt(0);
+
+            console.log('🔍 DEPOSIT PROOF - Nonce Information:');
+            console.log(`  Current Token Nonce: ${tokenCurrentNonceValue.toString()}`);
+            console.log(`  Previous Nonce (for deposit): ${finalTokenPreviousNonce.toString()}`);
+            console.log(`  Available Balance Entries:`, balanceEntries.filter(e => {
+                const entryTokenAddr = typeof e.tokenAddress === 'string' ? BigInt(e.tokenAddress) : e.tokenAddress;
+                return entryTokenAddr === tokenAddressBigInt;
+            }).map(e => ({
+                nonce: e.nonce.toString(),
+                amount: e.amount?.toString() || 'null'
+            })));
 
             // Find the balance entry for the finalTokenPreviousNonce
             const balanceEntryForPreviousNonce = balanceEntries.find(
                 entry => entry.tokenAddress === tokenAddressBigInt && entry.nonce === finalTokenPreviousNonce
             );
+            
+            console.log(`  Balance Entry for Previous Nonce ${finalTokenPreviousNonce.toString()}:`, balanceEntryForPreviousNonce ? {
+                nonce: balanceEntryForPreviousNonce.nonce.toString(),
+                amount: balanceEntryForPreviousNonce.amount?.toString() || 'null'
+            } : 'NOT FOUND');
 
             // For new token deposits, we need to ensure account is initialized
             if (!balanceEntryForPreviousNonce && finalTokenPreviousNonce > BigInt(0)) {
@@ -723,7 +764,14 @@ export function useDeposit() {
                         previousNonceCommitmentBigInt = BigInt((previousNonceCommitment as any).toString());
                     }
 
+                    console.log('🔍 DEPOSIT PROOF - Previous Nonce Commitment:');
+                    console.log(`  Current Nonce: ${tokenCurrentNonceValue.toString()}`);
+                    console.log(`  Previous Nonce: ${finalTokenPreviousNonce.toString()}`);
+                    console.log(`  Previous Nonce Commitment (BigInt): ${previousNonceCommitmentBigInt.toString()}`);
+                    console.log(`  Previous Nonce Commitment (Hex): 0x${previousNonceCommitmentBigInt.toString(16)}`);
+
                     const previousNonceCommitmentBytes32 = padHex(`0x${previousNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
+                    console.log(`  Previous Nonce Commitment (Bytes32): ${previousNonceCommitmentBytes32}`);
                     const [, , , , previousEncryptedNullifierBytes32] = await publicClient.readContract({
                         address: ArkanaAddress,
                         abi: ArkanaAbi,
@@ -903,10 +951,21 @@ export function useDeposit() {
         } finally {
             setIsCalculatingInputs(false);
         }
-    }, [tokenAddress, amount, tokenDecimals, contextUserKey, userKey, zkAddress, balanceEntries, publicClient, account?.signature, reconstructPersonalCommitmentState]);
+    }, [tokenAddress, amount, tokenDecimals, contextUserKey, userKey, zkAddress, balanceEntries, publicClient, account?.signature, reconstructPersonalCommitmentState, tokenCurrentNonce, chainId]);
 
     // Generate deposit proof
     const proveDeposit = useCallback(async () => {
+        console.log('🚀 DEPOSIT PROOF - Starting proof generation...');
+        console.log('  Token Address:', tokenAddress);
+        console.log('  Amount:', amount);
+        console.log('  Token Current Nonce:', tokenCurrentNonce?.toString() || 'null');
+        console.log('  Is Token Initialized:', isTokenInitialized);
+        console.log('  Balance Entries:', balanceEntries.map(e => ({
+            tokenAddress: e.tokenAddress.toString(),
+            nonce: e.nonce.toString(),
+            amount: e.amount?.toString() || 'null'
+        })));
+        
         // If token is not initialized, redirect to initialize
         if (isTokenInitialized === false) {
             setProofError('Token is not initialized. Please use the Initialize page first.');
@@ -1074,9 +1133,17 @@ export function useDeposit() {
                 return `0x${hex.padStart(64, '0')}` as `0x${string}`;
             });
 
+            console.log('📤 DEPOSIT TRANSACTION - Parameters:');
+            console.log('  Contract Address:', ArkanaAddress);
+            console.log('  Function: deposit');
+            console.log('  Public Inputs Count:', publicInputsBytes32.length);
+            console.log('  Public Inputs (all):', publicInputsBytes32.map((pi, idx) => `[${idx}] ${pi}`));
+            console.log('  Previous Nonce (from public inputs - should match):', tokenCurrentNonce ? (tokenCurrentNonce > BigInt(0) ? tokenCurrentNonce - BigInt(1) : BigInt(0)).toString() : 'null');
+
             // Simulate the transaction first to catch errors
             setIsSimulating(true);
             try {
+                console.log('🔄 Simulating deposit transaction...');
                 const simResult = await client.simulateContract({
                     account: address as `0x${string}`,
                     address: ArkanaAddress as `0x${string}`,

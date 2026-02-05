@@ -457,20 +457,83 @@ export function useNonceDiscovery() {
 
       let finalBalanceEntries: BalanceEntry[] = finalCachedBalanceEntries;
 
+      console.log('🔍 computeCurrentNonce - Balance Entries Calculation:');
+      console.log('  Current Nonce:', nonce.toString());
+      console.log('  Start Nonce:', startNonce.toString());
+      console.log('  Cached Balance Entries Count:', finalCachedBalanceEntries.length);
+      console.log('  Cached Balance Entries:', finalCachedBalanceEntries.map(e => ({
+        nonce: e.nonce.toString(),
+        amount: e.amount.toString(),
+        tokenAddress: e.tokenAddress.toString()
+      })));
+
       if (nonce > BigInt(0)) {
-        const highestNonceToDecrypt = nonce - BigInt(1);
-        const lastCachedUsedNonce = startNonce > BigInt(0) ? startNonce - BigInt(1) : BigInt(-1);
-        const lowestNonceToDecrypt = lastCachedUsedNonce + BigInt(1);
+        const highestNonceToDecrypt = nonce - BigInt(1); // Previous nonce (the one we need for withdraw)
+        
+        // Find the highest nonce we already have in cached entries
+        const highestCachedNonce = finalCachedBalanceEntries.length > 0
+          ? finalCachedBalanceEntries.reduce((max, entry) => {
+              const entryNonce = typeof entry.nonce === 'string' ? BigInt(entry.nonce) : entry.nonce;
+              return entryNonce > max ? entryNonce : max;
+            }, BigInt(-1))
+          : BigInt(-1);
+        
+        // We need to decrypt from the next nonce after the highest cached one, up to the previous nonce
+        const lowestNonceToDecrypt = highestCachedNonce >= BigInt(0) ? highestCachedNonce + BigInt(1) : BigInt(0);
+
+        console.log('  Highest Nonce To Decrypt (previous nonce):', highestNonceToDecrypt.toString());
+        console.log('  Highest Cached Nonce:', highestCachedNonce.toString());
+        console.log('  Lowest Nonce To Decrypt:', lowestNonceToDecrypt.toString());
 
         if (highestNonceToDecrypt >= lowestNonceToDecrypt && lowestNonceToDecrypt >= BigInt(0)) {
+          console.log('  ✅ Decrypting balances from nonce', lowestNonceToDecrypt.toString(), 'to', highestNonceToDecrypt.toString());
           const newEntries = await decryptBalances(highestNonceToDecrypt, userKey, lowestNonceToDecrypt, tokenAddressBigInt);
           const entriesToMerge = newEntries || [];
-          finalBalanceEntries = [...finalCachedBalanceEntries.filter(e => e.nonce < lowestNonceToDecrypt), ...entriesToMerge];
+          console.log('  Decrypted Entries Count:', entriesToMerge.length);
+          console.log('  Decrypted Entries:', entriesToMerge.map(e => ({
+            nonce: e.nonce.toString(),
+            amount: e.amount.toString(),
+            tokenAddress: e.tokenAddress.toString()
+          })));
+          
+          // Merge: keep cached entries with nonce < lowestNonceToDecrypt, then add all decrypted entries
+          const filteredCached = finalCachedBalanceEntries.filter(e => {
+            const entryNonce = typeof e.nonce === 'string' ? BigInt(e.nonce) : e.nonce;
+            return entryNonce < lowestNonceToDecrypt;
+          });
+          console.log('  Filtered Cached Entries (nonce <', lowestNonceToDecrypt.toString(), '):', filteredCached.length);
+          finalBalanceEntries = [...filteredCached, ...entriesToMerge];
+          console.log('  Final Balance Entries Count:', finalBalanceEntries.length);
+          console.log('  Final Balance Entries:', finalBalanceEntries.map(e => ({
+            nonce: e.nonce.toString(),
+            amount: e.amount.toString(),
+            tokenAddress: e.tokenAddress.toString()
+          })));
           setBalanceEntries(finalBalanceEntries);
         } else {
-          setBalanceEntries(finalCachedBalanceEntries);
+          console.log('  ⚠️ Skipping decryption (condition not met)');
+          // Even if we skip decryption, check if we have all needed entries
+          const hasAllEntries = finalCachedBalanceEntries.some(e => {
+            const entryNonce = typeof e.nonce === 'string' ? BigInt(e.nonce) : e.nonce;
+            return entryNonce === highestNonceToDecrypt;
+          });
+          if (!hasAllEntries && highestNonceToDecrypt >= BigInt(0)) {
+            console.log('  ⚠️ Missing balance entry for nonce', highestNonceToDecrypt.toString(), '- attempting full decryption');
+            // Try to decrypt all nonces from 0 to highestNonceToDecrypt
+            const allEntries = await decryptBalances(highestNonceToDecrypt, userKey, BigInt(0), tokenAddressBigInt);
+            if (allEntries && allEntries.length > 0) {
+              finalBalanceEntries = allEntries;
+              console.log('  ✅ Full decryption successful, entries count:', finalBalanceEntries.length);
+              setBalanceEntries(finalBalanceEntries);
+            } else {
+              setBalanceEntries(finalCachedBalanceEntries);
+            }
+          } else {
+            setBalanceEntries(finalCachedBalanceEntries);
+          }
         }
       } else {
+        console.log('  ⚠️ Nonce is 0, using cached balance entries only');
         setBalanceEntries(finalCachedBalanceEntries);
       }
 

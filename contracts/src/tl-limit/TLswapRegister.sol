@@ -124,7 +124,7 @@ contract TLswapRegister is ReentrancyGuard {
      *      The ciphertext contains encrypted order parameters (sharesAmount, amountOutMin, slippage, deadline, recipient, tokenOut)
      *      and optionally the next order's ciphertext in a nested encryption chain
      * @param newNonceCommitment The newNonceCommitment from withdraw circuit (used as orderId)
-     * @param ciphertext The encrypted order data (AES-128 encrypted JSON)
+     * @param ciphertextIpfs The encrypted order data (AES-128 encrypted JSON)
      * @return orderId The orderId (same as newNonceCommitment)
      */
     function registerEncryptedOrder(bytes32 newNonceCommitment, bytes calldata ciphertextIpfs)

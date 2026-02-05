@@ -1,11 +1,14 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { AaveTokenInfo, getTokenLogoUrl } from "@/lib/aave-tokens"
-import { Copy, Check, ExternalLink, TrendingUp } from "lucide-react"
+import { Copy, Check, ExternalLink, TrendingUp, Shield } from "lucide-react"
 import { Card, CardContent } from "./ui/card"
 import { Button } from "./ui/button"
 import { useAaveAPY } from "@/hooks/useAaveAPY"
+import { usePublicClient } from "wagmi"
+import { getAnonymityCoverage, formatAnonymityCoverage } from "@/lib/anonymity-coverage"
+import { Address } from "viem"
 
 interface AaveTokenCardProps {
   token: AaveTokenInfo
@@ -16,6 +19,35 @@ export function AaveTokenCard({ token }: AaveTokenCardProps) {
   const [copied, setCopied] = useState(false)
   const [logoError, setLogoError] = useState(false)
   const { currentAPY, isLoading: isLoadingAPY } = useAaveAPY(token.symbol)
+  const publicClient = usePublicClient()
+  const [anonymityCoverage, setAnonymityCoverage] = useState<bigint | null>(null)
+  const [isLoadingCoverage, setIsLoadingCoverage] = useState(false)
+
+  // Fetch anonymity coverage
+  useEffect(() => {
+    const fetchCoverage = async () => {
+      if (!publicClient || !token.address) {
+        setAnonymityCoverage(null)
+        return
+      }
+
+      setIsLoadingCoverage(true)
+      try {
+        const coverage = await getAnonymityCoverage(
+          publicClient,
+          token.address.toLowerCase() as Address
+        )
+        setAnonymityCoverage(coverage)
+      } catch (error) {
+        console.error('Error fetching anonymity coverage:', error)
+        setAnonymityCoverage(null)
+      } finally {
+        setIsLoadingCoverage(false)
+      }
+    }
+
+    fetchCoverage()
+  }, [publicClient, token.address])
 
   // Early return if token is invalid
   if (!token || !token.address) {
@@ -217,6 +249,29 @@ export function AaveTokenCard({ token }: AaveTokenCardProps) {
               ) : currentAPY ? (
                 <p className="text-xs font-mono text-accent font-bold bg-accent/10 px-2 py-1 rounded border border-accent/30 inline-block">
                   {currentAPY}%
+                </p>
+              ) : (
+                <p className="text-xs font-mono text-muted-foreground/60">
+                  N/A
+                </p>
+              )}
+            </div>
+
+            {/* Anonymity Coverage */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
+                  Anonymity Coverage
+                </p>
+                <Shield className="w-3 h-3 text-primary/60" />
+              </div>
+              {isLoadingCoverage ? (
+                <p className="text-xs font-mono text-muted-foreground/60 animate-pulse">
+                  Loading...
+                </p>
+              ) : anonymityCoverage !== null ? (
+                <p className="text-xs font-mono text-primary font-bold bg-primary/10 px-2 py-1 rounded border border-primary/30 inline-block">
+                  {formatAnonymityCoverage(anonymityCoverage, token.decimals)} {token.symbol}
                 </p>
               ) : (
                 <p className="text-xs font-mono text-muted-foreground/60">
