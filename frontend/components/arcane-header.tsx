@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { PixelLogo } from "./pixel-logo"
+import Image from "next/image"
 import { useAccount } from 'wagmi'
 import { useZkAddress } from '@/context/AccountProvider'
 import { useAccountSigning } from '@/hooks/useAccountSigning'
@@ -25,20 +25,20 @@ export function ArcaneHeader() {
     ]
 
     return (
-        <header className="fixed top-0 left-0 right-0 z-50 bg-background/50 backdrop-blur-md border-b border-border/30 w-full">
+        <header className="fixed top-0 left-0 right-0 z-50 bg-background/50 backdrop-blur-md border-b border-border/30 w-full overflow-visible">
             <nav className="max-w-7xl mx-auto px-4 md:px-8 w-full">
-                <div className="flex items-center justify-between h-16 md:h-20">
-                    {/* Logo */}
-                    <Link href="/" className="flex items-center gap-3 group">
-                        <PixelLogo className="w-8 h-8 md:w-9 md:h-9 text-primary/90 transition-all duration-500 group-hover:text-primary" />
-                        <span
-                            className="font-sans text-[8px] md:text-[9px] text-foreground/90 tracking-widest transition-all duration-500 group-hover:text-foreground"
-                            style={{
-                                textShadow: "0 0 20px rgba(139, 92, 246, 0.15)"
-                            }}
-                        >
-                            ARKANA
-                        </span>
+                <div className="flex items-center justify-between h-16 md:h-20 relative">
+                    {/* Logo - Overflowing outside navbar */}
+                    <Link href="/" className="group relative z-10">
+                        <div className="absolute -top-8 -left-4 md:-top-10 md:-left-6 w-32 h-32 md:w-40 md:h-40">
+                            <Image
+                                src="/logo.webp"
+                                alt="Arkana Logo"
+                                fill
+                                className="object-contain transition-all duration-500 group-hover:scale-110"
+                                priority
+                            />
+                        </div>
                     </Link>
 
                     {/* Desktop Navigation */}

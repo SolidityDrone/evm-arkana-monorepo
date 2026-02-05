@@ -11,6 +11,10 @@ import { useAaveTokens } from '@/hooks/useAaveTokens';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { reconstructTokenHistory, TransactionHistoryEntry } from '@/lib/transaction-history';
+import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
+import { ChevronDown, ChevronUp, Clock } from 'lucide-react';
+import { TokenIcon } from '@/lib/token-icons';
 
 interface AccountModalProps {
     isOpen: boolean;
@@ -43,6 +47,10 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
     const [discoveryErrors, setDiscoveryErrors] = useState<Map<string, string>>(new Map());
     const [dataLastSaved, setDataLastSaved] = useState<number | null>(null);
     const [isLoadingSavedData, setIsLoadingSavedData] = useState(false);
+    const [expandedHistoryToken, setExpandedHistoryToken] = useState<string | null>(null);
+    const [tokenHistoryMap, setTokenHistoryMap] = useState<Map<string, TransactionHistoryEntry[]>>(new Map());
+    const [loadingHistoryToken, setLoadingHistoryToken] = useState<string | null>(null);
+    const [historyErrors, setHistoryErrors] = useState<Map<string, string>>(new Map());
 
     const isModalClosedRef = useRef(false);
 
@@ -233,6 +241,76 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         }
     }, [zkAddress, publicClient, account?.signature, computeCurrentNonce, setCurrentNonce, setBalanceEntries]);
 
+    // Load transaction history for a specific token
+    const loadTokenHistory = useCallback(async (tokenAddress: string) => {
+        if (!publicClient || !account?.signature || !zkAddress || isModalClosedRef.current) {
+            return;
+        }
+
+        const normalizedTokenAddress = tokenAddress.toLowerCase();
+        setLoadingHistoryToken(normalizedTokenAddress);
+        setHistoryErrors(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(normalizedTokenAddress);
+            return newMap;
+        });
+
+        try {
+            // Get userKey
+            let userKey: bigint | null = contextUserKey;
+            if (!userKey && account?.signature) {
+                const userKeyHex = await computePrivateKeyFromSignature(account.signature);
+                userKey = BigInt(userKeyHex.startsWith('0x') ? userKeyHex : '0x' + userKeyHex);
+            }
+
+            if (!userKey) {
+                throw new Error('Failed to compute userKey');
+            }
+
+            // Get current nonce for this token
+            const tokenData = tokenDataMap.get(normalizedTokenAddress);
+            if (!tokenData || !tokenData.currentNonce) {
+                throw new Error('Token data not available');
+            }
+
+            const history = await reconstructTokenHistory(
+                publicClient,
+                userKey,
+                normalizedTokenAddress as Address,
+                tokenData.currentNonce
+            );
+
+            setTokenHistoryMap(prev => {
+                const newMap = new Map(prev);
+                newMap.set(normalizedTokenAddress, history);
+                return newMap;
+            });
+        } catch (error) {
+            console.error('Error loading token history:', error);
+            setHistoryErrors(prev => {
+                const newMap = new Map(prev);
+                newMap.set(normalizedTokenAddress, error instanceof Error ? error.message : 'Failed to load history');
+                return newMap;
+            });
+        } finally {
+            setLoadingHistoryToken(null);
+        }
+    }, [publicClient, account?.signature, zkAddress, contextUserKey, tokenDataMap]);
+
+    // Toggle history view for a token
+    const toggleHistory = useCallback((tokenAddress: string) => {
+        const normalizedTokenAddress = tokenAddress.toLowerCase();
+        if (expandedHistoryToken === normalizedTokenAddress) {
+            setExpandedHistoryToken(null);
+        } else {
+            setExpandedHistoryToken(normalizedTokenAddress);
+            // Load history if not already loaded
+            if (!tokenHistoryMap.has(normalizedTokenAddress)) {
+                loadTokenHistory(normalizedTokenAddress);
+            }
+        }
+    }, [expandedHistoryToken, tokenHistoryMap, loadTokenHistory]);
+
     // Auto-discover tokens when modal opens
     useEffect(() => {
         if (isOpen) {
@@ -307,11 +385,14 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                                 <div key={tokenAddress} className="border rounded p-3">
                                                     <div className="flex justify-between items-start">
                                                         <div className="flex-1">
-                                                            <p className="text-sm font-sans font-bold text-foreground uppercase tracking-wider">
-                                                                {tokenSymbol}
-                                                            </p>
+                                                            <div className="flex items-center gap-2 mb-1">
+                                                                <TokenIcon symbol={tokenSymbol} size={24} />
+                                                                <p className="text-sm font-sans font-bold text-foreground uppercase tracking-wider">
+                                                                    ${tokenSymbol}
+                                                                </p>
+                                                            </div>
                                                             <p className="text-xs font-mono text-muted-foreground">
-                                                                {tokenName}
+                                                                ${tokenName}
                                                             </p>
                                                             <p className="text-[10px] font-mono text-muted-foreground/60 mt-1 break-all">
                                                                 {tokenAddress}
@@ -327,33 +408,167 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                                             <p className="text-xs text-muted-foreground mt-1">
                                                                 Balance Entries: {tokenData.balanceEntries.length}
                                                             </p>
-                                                            {tokenData.balanceEntries.length > 0 && (
-                                                                <div className="mt-2 space-y-1">
-                                                                    {tokenData.balanceEntries.map((entry, idx) => {
-                                                                        const entryNonce = typeof entry.nonce === 'string' ? BigInt(entry.nonce) : entry.nonce;
-                                                                        const isCurrent = entryNonce === previousNonce;
-                                                                        return (
-                                                                            <div key={idx} className={`text-xs ${isCurrent ? 'font-semibold text-foreground' : 'text-muted-foreground'}`}>
-                                                                                Nonce {entry.nonce.toString()}: {entry.amount.toString()} shares {isCurrent && '(current)'}
-                                                                            </div>
-                                                                        );
-                                                                    })}
-                                                                </div>
-                                                            )}
+                                                            {tokenData.balanceEntries.length > 0 && (() => {
+                                                                // Remove duplicates by keeping the last entry for each nonce
+                                                                const uniqueEntries = new Map<string | bigint, typeof tokenData.balanceEntries[0]>();
+                                                                for (const entry of tokenData.balanceEntries) {
+                                                                    uniqueEntries.set(entry.nonce, entry);
+                                                                }
+                                                                
+                                                                // Convert to array and sort by nonce
+                                                                const sortedEntries = Array.from(uniqueEntries.values()).sort((a, b) => {
+                                                                    const nonceA = typeof a.nonce === 'string' ? BigInt(a.nonce) : a.nonce;
+                                                                    const nonceB = typeof b.nonce === 'string' ? BigInt(b.nonce) : b.nonce;
+                                                                    if (nonceA < nonceB) return -1;
+                                                                    if (nonceA > nonceB) return 1;
+                                                                    return 0;
+                                                                });
+                                                                
+                                                                return (
+                                                                    <div className="mt-2 space-y-1">
+                                                                        {sortedEntries.map((entry) => {
+                                                                            const entryNonce = typeof entry.nonce === 'string' ? BigInt(entry.nonce) : entry.nonce;
+                                                                            const isCurrent = entryNonce === previousNonce;
+                                                                            return (
+                                                                                <div 
+                                                                                    key={`${tokenAddress}-nonce-${entry.nonce.toString()}`} 
+                                                                                    className={`text-xs font-mono ${isCurrent ? 'font-semibold text-foreground bg-primary/10 px-2 py-1 rounded border border-primary/20' : 'text-muted-foreground'}`}
+                                                                                >
+                                                                                    <span className="inline-block w-16">Nonce {entry.nonce.toString()}:</span>
+                                                                                    <span className={isCurrent ? 'text-primary' : ''}>
+                                                                                        {entry.amount.toString()} shares
+                                                                                    </span>
+                                                                                    {isCurrent && <span className="ml-2 text-accent">(current)</span>}
+                                                                                </div>
+                                                                            );
+                                                                        })}
+                                                                    </div>
+                                                                );
+                                                            })()}
                                                         </div>
-                                                        <Button
-                                                            size="sm"
-                                                            variant="outline"
-                                                            onClick={() => handleDiscoverToken(tokenAddress)}
-                                                            disabled={isDiscoveringTokens.has(tokenAddress)}
-                                                        >
-                                                            {isDiscoveringTokens.has(tokenAddress) ? 'Discovering...' : 'Refresh'}
-                                                        </Button>
+                                                        <div className="flex gap-2">
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline"
+                                                                onClick={() => handleDiscoverToken(tokenAddress)}
+                                                                disabled={isDiscoveringTokens.has(tokenAddress)}
+                                                            >
+                                                                {isDiscoveringTokens.has(tokenAddress) ? 'Discovering...' : 'Refresh'}
+                                                            </Button>
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline"
+                                                                onClick={() => toggleHistory(tokenAddress)}
+                                                                disabled={loadingHistoryToken === tokenAddress}
+                                                            >
+                                                                {loadingHistoryToken === tokenAddress ? (
+                                                                    'Loading...'
+                                                                ) : expandedHistoryToken === tokenAddress.toLowerCase() ? (
+                                                                    <>
+                                                                        <ChevronUp className="w-3 h-3 mr-1" />
+                                                                        Hide History
+                                                                    </>
+                                                                ) : (
+                                                                    <>
+                                                                        <Clock className="w-3 h-3 mr-1" />
+                                                                        View History
+                                                                    </>
+                                                                )}
+                                                            </Button>
+                                                        </div>
                                                     </div>
                                                     {discoveryErrors.has(tokenAddress) && (
                                                         <p className="text-xs text-red-500 mt-2">
                                                             {discoveryErrors.get(tokenAddress)}
                                                         </p>
+                                                    )}
+                                                    
+                                                    {/* Transaction History */}
+                                                    {expandedHistoryToken === tokenAddress.toLowerCase() && (
+                                                        <div className="mt-4 pt-4 border-t border-border/30">
+                                                            <div className="flex items-center justify-between mb-2">
+                                                                <p className="text-xs font-sans font-bold text-foreground uppercase tracking-wider">
+                                                                    Transaction History
+                                                                </p>
+                                                                <Button
+                                                                    size="sm"
+                                                                    variant="ghost"
+                                                                    onClick={() => loadTokenHistory(tokenAddress)}
+                                                                    disabled={loadingHistoryToken === tokenAddress}
+                                                                    className="h-6 px-2 text-xs"
+                                                                >
+                                                                    {loadingHistoryToken === tokenAddress ? 'Loading...' : 'Refresh'}
+                                                                </Button>
+                                                            </div>
+                                                            
+                                                            {historyErrors.has(tokenAddress) && (
+                                                                <p className="text-xs text-red-500 mb-2">
+                                                                    {historyErrors.get(tokenAddress)}
+                                                                </p>
+                                                            )}
+                                                            
+                                                            {loadingHistoryToken === tokenAddress ? (
+                                                                <p className="text-xs text-muted-foreground">Loading history...</p>
+                                                            ) : (() => {
+                                                                const history = tokenHistoryMap.get(tokenAddress.toLowerCase()) || [];
+                                                                if (history.length === 0) {
+                                                                    return (
+                                                                        <p className="text-xs text-muted-foreground">
+                                                                            No transaction history found (only showing initialize/deposit/withdraw operations).
+                                                                        </p>
+                                                                    );
+                                                                }
+                                                                
+                                                                return (
+                                                                    <div className="space-y-2 max-h-64 overflow-y-auto">
+                                                                        {history.map((entry, idx) => {
+                                                                            const getTypeLabel = (type: string) => {
+                                                                                switch (type) {
+                                                                                    case 'initialize': return 'INITIALIZE';
+                                                                                    case 'deposit': return 'DEPOSIT';
+                                                                                    case 'withdraw': return 'WITHDRAW';
+                                                                                    default: return type.toUpperCase();
+                                                                                }
+                                                                            };
+                                                                            
+                                                                            return (
+                                                                                <div 
+                                                                                    key={idx} 
+                                                                                    className="text-xs font-mono border border-primary/20 bg-card/30 p-2 rounded"
+                                                                                >
+                                                                                    <div className="flex justify-between items-start mb-1">
+                                                                                        <span className="font-bold text-foreground">
+                                                                                            #{entry.nonce.toString()} - {getTypeLabel(entry.type)}
+                                                                                        </span>
+                                                                                        {entry.blockNumber > BigInt(0) && (
+                                                                                            <span className="text-muted-foreground text-[10px]">
+                                                                                                Block {entry.blockNumber.toString()}
+                                                                                            </span>
+                                                                                        )}
+                                                                                    </div>
+                                                                                    <div className="text-muted-foreground">
+                                                                                        <p>Amount: {entry.amount.toString()} shares</p>
+                                                                                        {entry.sharesMinted && entry.sharesMinted > BigInt(0) && (
+                                                                                            <p className="text-[10px]">+{entry.sharesMinted.toString()} minted</p>
+                                                                                        )}
+                                                                                        {entry.transactionHash && (
+                                                                                            <p className="text-[10px] break-all mt-1">
+                                                                                                TX: {entry.transactionHash.slice(0, 10)}...{entry.transactionHash.slice(-8)}
+                                                                                            </p>
+                                                                                        )}
+                                                                                        {entry.timestamp > BigInt(0) && (
+                                                                                            <p className="text-[10px] mt-1">
+                                                                                                {new Date(Number(entry.timestamp) * 1000).toLocaleString()}
+                                                                                            </p>
+                                                                                        )}
+                                                                                    </div>
+                                                                                </div>
+                                                                            );
+                                                                        })}
+                                                                    </div>
+                                                                );
+                                                            })()}
+                                                        </div>
                                                     )}
                                                 </div>
                                             );

@@ -50,16 +50,32 @@ export async function getAnonymityCoverage(
       return null;
     }
 
-    // Get the vault's balance of aTokens (this is the anonymity coverage)
-    // The vault holds aTokens, so we check the vault's balance of aTokens
-    const aTokenBalance = await publicClient.readContract({
-      address: aTokenAddress,
-      abi: ERC20_ABI,
-      functionName: 'balanceOf',
-      args: [vaultAddress],
-    }) as bigint;
+    // Get the vault's total assets (aTokens) - this is the anonymity coverage
+    // Use totalAssets() from the vault instead of balanceOf to avoid historical state issues
+    try {
+      const totalAssets = await publicClient.readContract({
+        address: vaultAddress,
+        abi: ARKANA_VAULT_ABI,
+        functionName: 'totalAssets',
+      }) as bigint;
 
-    return aTokenBalance;
+      return totalAssets;
+    } catch (error) {
+      // Fallback to balanceOf if totalAssets fails
+      try {
+        const aTokenBalance = await publicClient.readContract({
+          address: aTokenAddress,
+          abi: ERC20_ABI,
+          functionName: 'balanceOf',
+          args: [vaultAddress],
+        }) as bigint;
+
+        return aTokenBalance;
+      } catch (fallbackError) {
+        console.error('Error getting anonymity coverage (both methods failed):', fallbackError);
+        return null;
+      }
+    }
   } catch (error) {
     console.error('Error getting anonymity coverage:', error);
     return null;

@@ -63,7 +63,13 @@ const MAINNET_TOKEN_ADDRESSES: Record<string, string> = {
  */
 function getMainnetAddress(symbol: string): string | null {
   const upperSymbol = symbol.toUpperCase();
-  return MAINNET_TOKEN_ADDRESSES[upperSymbol] || null;
+  const address = MAINNET_TOKEN_ADDRESSES[upperSymbol];
+  if (address) {
+    console.log(`📊 APY: Found mainnet address for ${upperSymbol}: ${address}`);
+  } else {
+    console.warn(`⚠️ APY: No mainnet address found for token symbol: ${upperSymbol}`);
+  }
+  return address || null;
 }
 
 /**
@@ -79,9 +85,12 @@ export async function fetchSupplyAPYHistory(
   // Get mainnet address from symbol
   const mainnetAddress = getMainnetAddress(tokenSymbol);
   if (!mainnetAddress) {
-    console.warn(`No mainnet address found for token symbol: ${tokenSymbol}`);
+    console.warn(`⚠️ APY: No mainnet address found for token symbol: ${tokenSymbol}`);
     return [];
   }
+  
+  console.log(`📊 APY: Fetching APY for ${tokenSymbol} using mainnet address ${mainnetAddress}`);
+  
   const endTimestamp = Math.floor(Date.now() / 1000);
   const startTimestamp = endTimestamp - (days * 24 * 60 * 60);
 
@@ -105,6 +114,8 @@ export async function fetchSupplyAPYHistory(
   };
 
   try {
+    console.log(`📊 APY: Querying Aave GraphQL API with variables:`, variables);
+    
     const response = await fetch('https://api.v3.aave.com/graphql', {
       method: 'POST',
       headers: {
@@ -117,18 +128,24 @@ export async function fetchSupplyAPYHistory(
     });
 
     if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`❌ APY: HTTP error! status: ${response.status}, body: ${errorText}`);
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
     const result: SupplyAPYHistoryResponse = await response.json();
+    
+    console.log(`📊 APY: GraphQL response for ${tokenSymbol}:`, result);
 
     if (result.data?.supplyAPYHistory) {
+      console.log(`✅ APY: Found ${result.data.supplyAPYHistory.length} APY samples for ${tokenSymbol}`);
       return result.data.supplyAPYHistory;
     }
 
+    console.warn(`⚠️ APY: No APY history data in response for ${tokenSymbol}`);
     return [];
   } catch (error) {
-    console.error('Error fetching supply APY history:', error);
+    console.error(`❌ APY: Error fetching supply APY history for ${tokenSymbol}:`, error);
     throw error;
   }
 }

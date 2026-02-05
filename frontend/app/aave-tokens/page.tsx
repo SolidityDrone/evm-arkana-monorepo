@@ -32,14 +32,14 @@ export default function AaveTokensPage() {
             <span className="text-primary/50 text-sm">◈</span>
             <div className="w-8 h-px bg-gradient-to-l from-transparent to-primary/40" />
           </div>
-          <h1 className="font-sans text-2xl md:text-3xl lg:text-4xl text-foreground tracking-wider mb-4">
+          <h1 className="font-sans text-3xl md:text-4xl lg:text-5xl text-foreground tracking-wider mb-4">
             THE GRIMOIRE
           </h1>
-          <p className="font-mono text-base md:text-lg text-muted-foreground max-w-xl mx-auto leading-relaxed mb-4">
+          <p className="font-mono text-lg md:text-xl text-muted-foreground max-w-xl mx-auto leading-relaxed mb-4">
             The sacred tome containing all tokens blessed by the Aave v3 protocol.
             Each entry represents a token that has been consecrated in the arcane liquidity pools.
           </p>
-          <p className="text-xs font-mono text-muted-foreground/60">
+          <p className="text-sm font-mono text-muted-foreground/60">
             Aave Pool Address: <span className="text-primary/80">{poolAddress}</span>
           </p>
         </div>
@@ -47,10 +47,10 @@ export default function AaveTokensPage() {
         {/* Content Card */}
         <Card className="bg-card/60 backdrop-blur-sm border-primary/30">
           <CardHeader className="border-b border-primary/20">
-            <CardTitle className="text-center font-sans text-xl md:text-2xl tracking-wider uppercase">
+            <CardTitle className="text-center font-sans text-2xl md:text-3xl tracking-wider uppercase">
               Blessed Tokens
             </CardTitle>
-            <CardDescription className="text-center font-mono text-sm">
+            <CardDescription className="text-center font-mono text-base">
               {isLoading ? 'Reading the grimoire...' :
                 error ? 'The grimoire is sealed' :
                   tokens.length === 0 ? 'No entries found in the grimoire' :

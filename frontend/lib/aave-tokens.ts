@@ -196,4 +196,3 @@ export function getTokenLogoUrl(address: Address, chainId: number = 1): string {
   // For testnets or other chains, use a generic placeholder
   return `https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/${address.toLowerCase()}/logo.png`;
 }
-

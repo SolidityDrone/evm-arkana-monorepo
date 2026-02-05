@@ -13,6 +13,7 @@ import { SpellButton } from '@/components/spell-button';
 import TransactionModal from '@/components/TransactionModal';
 import { useToast } from '@/components/Toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { TokenIcon } from '@/lib/token-icons';
 
 export default function RitualsPage() {
     const { toast } = useToast();
@@ -582,9 +583,12 @@ export default function RitualsPage() {
                                         }}
                                     >
                                         <div className="flex items-center justify-between">
-                                            <div>
-                                                <p className="text-xs font-mono text-foreground font-bold">{token.symbol}</p>
-                                                <p className="text-[10px] font-mono text-muted-foreground">{token.name} ({token.decimals} decimals)</p>
+                                            <div className="flex items-center gap-2">
+                                                <TokenIcon symbol={token.symbol} size={20} />
+                                                <div>
+                                                    <p className="text-xs font-mono text-foreground font-bold">${token.symbol}</p>
+                                                    <p className="text-[10px] font-mono text-muted-foreground">${token.name} ({token.decimals} decimals)</p>
+                                                </div>
                                             </div>
                                             <p className="text-[10px] font-mono text-accent">{token.address.slice(0, 6)}...{token.address.slice(-4)}</p>
                                         </div>
