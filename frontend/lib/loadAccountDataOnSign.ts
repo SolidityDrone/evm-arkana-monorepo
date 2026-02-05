@@ -22,7 +22,7 @@ export async function loadAccountDataOnSign(
 ): Promise<void> {
   try {
     const savedData = await loadAccountData(zkAddress);
-    
+
     if (savedData) {
       // Update all state from saved data
       if (savedData.currentNonce !== null) {
@@ -37,7 +37,7 @@ export async function loadAccountDataOnSign(
       let userKeyToUse = savedData.userKey;
       if (!userKeyToUse && accountSignature) {
         try {
-          const { ensureBufferPolyfill } = await import('@/lib/buffer-polyfill');
+          const { ensureBufferPolyfill } = await import('@/lib/zk-address');
           await ensureBufferPolyfill();
 
           const sigHex = accountSignature.startsWith('0x') ? accountSignature.slice(2) : accountSignature;

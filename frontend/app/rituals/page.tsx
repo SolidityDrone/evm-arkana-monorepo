@@ -1,19 +1,22 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useInitialize } from '@/hooks/useInitialize';
 import { useDeposit } from '@/hooks/useDeposit';
 import { useAaveTokens } from '@/hooks/useAaveTokens';
 import { useZkAddress } from '@/context/AccountProvider';
 import { useAccountSigning } from '@/hooks/useAccountSigning';
+import { useReadContract } from 'wagmi';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Slider } from '@/components/ui/slider';
 import { SpellButton } from '@/components/spell-button';
 import TransactionModal from '@/components/TransactionModal';
 import { useToast } from '@/components/Toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { TokenIcon } from '@/lib/token-icons';
+import { ARKANA_ADDRESS, ARKANA_ABI } from '@/lib/abi/ArkanaConst';
 
 export default function RitualsPage() {
     const { toast } = useToast();
@@ -22,15 +25,72 @@ export default function RitualsPage() {
     const { tokens: aaveTokens, isLoading: isLoadingTokens } = useAaveTokens();
     const [showTokenSelector, setShowTokenSelector] = useState(false);
     const [showTransactionModal, setShowTransactionModal] = useState(false);
+    const [showLockInfo, setShowLockInfo] = useState(false);
 
     // Initialize hook
     const initializeHook = useInitialize();
     // Deposit hook
     const depositHook = useDeposit();
 
+    // Read protocol fee and discount window from contract
+    const { data: protocolFee } = useReadContract({
+        address: ARKANA_ADDRESS as `0x${string}`,
+        abi: ARKANA_ABI,
+        functionName: 'protocol_fee',
+    });
+
+    const { data: discountWindow } = useReadContract({
+        address: ARKANA_ADDRESS as `0x${string}`,
+        abi: ARKANA_ABI,
+        functionName: 'discount_window',
+    });
+
+    // Calculate discounted fee based on lock duration
+    const discountWindowSec = discountWindow ? Number(discountWindow) : 1000;
+    const useDays = discountWindowSec >= 86400; // Use days if window >= 1 day
+    
+    const feePreview = useMemo(() => {
+        const lockDurationNum = parseInt(initializeHook.lockDuration || '0') || 0;
+        const protocolFeeBps = protocolFee ? Number(protocolFee) : 0;
+
+        if (lockDurationNum === 0) {
+            return {
+                effectiveFeeBps: protocolFeeBps,
+                discountPercent: 0,
+                lockSeconds: 0,
+            };
+        }
+
+        if (lockDurationNum >= discountWindowSec) {
+            return {
+                effectiveFeeBps: 0,
+                discountPercent: 100,
+                lockSeconds: discountWindowSec,
+            };
+        }
+
+        // Linear interpolation: fee = protocol_fee * (1 - lockDuration / discount_window)
+        const effectiveFeeBps = Math.floor(protocolFeeBps * (discountWindowSec - lockDurationNum) / discountWindowSec);
+        const discountPercent = Math.floor((lockDurationNum / discountWindowSec) * 100);
+
+        return {
+            effectiveFeeBps,
+            discountPercent,
+            lockSeconds: lockDurationNum,
+        };
+    }, [initializeHook.lockDuration, protocolFee, discountWindowSec]);
+
+    // Helper to format duration
+    const formatDuration = (seconds: number) => {
+        if (seconds === 0) return '0';
+        if (seconds < 60) return `${seconds}s`;
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+        if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+        return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
+    };
+
     // Use tokenAddress from deposit hook (it auto-discovers nonce)
     const [tokenAddress, setTokenAddress] = useState('');
-    const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
     const [tokenName, setTokenName] = useState<string>('');
     const [tokenSymbol, setTokenSymbol] = useState<string>('');
 
@@ -43,6 +103,9 @@ export default function RitualsPage() {
     const activeHook = isTokenInitialized === true && tokenCurrentNonce !== null && tokenCurrentNonce > BigInt(0)
         ? depositHook
         : initializeHook;
+    
+    // Use tokenDecimals from the active hook instead of local state
+    const tokenDecimals = activeHook.tokenDecimals ?? null;
 
     // Sync tokenAddress between hooks
     useEffect(() => {
@@ -98,9 +161,12 @@ export default function RitualsPage() {
     // Get amount from active hook
     const amount = activeHook.amount || '';
     const setAmount = activeHook.setAmount || (() => {});
-    const tokenBalance = activeHook.tokenBalance || null;
+    const tokenBalance = activeHook.tokenBalance ?? null;
     const isLoadingBalance = activeHook.isLoadingBalance || false;
-    const allowance = activeHook.allowance || null;
+    // Use ?? instead of || to preserve BigInt(0), but also handle undefined explicitly
+    const allowance = activeHook.allowance !== undefined && activeHook.allowance !== null 
+        ? (typeof activeHook.allowance === 'bigint' ? activeHook.allowance : BigInt(activeHook.allowance))
+        : null;
     const isCheckingAllowance = activeHook.isCheckingAllowance || false;
     const isApproving = activeHook.isApproving || false;
     const isApprovalPending = activeHook.isApprovalPending || false;
@@ -122,22 +188,68 @@ export default function RitualsPage() {
 
     // Calculate required amount for allowance check
     const requiredAmount = React.useMemo(() => {
-        if (!amount || amount === '' || !tokenDecimals) return BigInt(0);
+        console.log('📊 Calculating requiredAmount:', { amount, tokenDecimals, activeHookTokenDecimals: activeHook.tokenDecimals });
+        if (!amount || amount === '' || !tokenDecimals) {
+            console.log('❌ requiredAmount: returning 0 (missing amount or tokenDecimals)', { amount, tokenDecimals });
+            return BigInt(0);
+        }
         const sanitizedAmount = amount.trim();
         const parts = sanitizedAmount.split('.');
         const finalDecimals = tokenDecimals;
+        let result: bigint;
         if (parts.length === 1) {
-            return BigInt(sanitizedAmount) * BigInt(10 ** finalDecimals);
+            result = BigInt(sanitizedAmount) * BigInt(10 ** finalDecimals);
         } else {
             const integerPart = parts[0] || '0';
             const decimalPart = parts[1] || '';
             const limitedDecimal = decimalPart.slice(0, finalDecimals);
             const paddedDecimal = limitedDecimal.padEnd(finalDecimals, '0');
-            return BigInt(integerPart) * BigInt(10 ** finalDecimals) + BigInt(paddedDecimal);
+            result = BigInt(integerPart) * BigInt(10 ** finalDecimals) + BigInt(paddedDecimal);
         }
+        console.log('✅ requiredAmount calculated:', result.toString());
+        return result;
     }, [amount, tokenDecimals]);
 
-    const needsApproval = allowance !== null && allowance < requiredAmount && requiredAmount > BigInt(0);
+    const needsApproval = React.useMemo(() => {
+        console.log('needsApproval calculation - inputs:', {
+            allowance,
+            allowanceType: typeof allowance,
+            allowanceIsNull: allowance === null,
+            allowanceIsUndefined: allowance === undefined,
+            requiredAmount,
+            requiredAmountType: typeof requiredAmount,
+        });
+        
+        // If allowance is null/undefined, we can't determine if approval is needed
+        if (allowance === null || allowance === undefined) {
+            console.log('needsApproval: returning false (allowance is null/undefined)');
+            return false;
+        }
+        
+        // If no amount is required, no approval needed
+        if (requiredAmount === BigInt(0)) {
+            console.log('needsApproval: returning false (requiredAmount is 0)');
+            return false;
+        }
+        
+        // Ensure both are BigInt for comparison
+        const allowanceBigInt = typeof allowance === 'bigint' ? allowance : BigInt(Number(allowance));
+        const requiredBigInt = typeof requiredAmount === 'bigint' ? requiredAmount : BigInt(Number(requiredAmount));
+        
+        // Approval needed if allowance is less than required amount
+        const result = allowanceBigInt < requiredBigInt;
+        
+        console.log('needsApproval check:', {
+            allowanceRaw: allowance,
+            allowanceBigInt: allowanceBigInt.toString(),
+            requiredAmountRaw: requiredAmount,
+            requiredBigInt: requiredBigInt.toString(),
+            comparison: `${allowanceBigInt.toString()} < ${requiredBigInt.toString()}`,
+            result
+        });
+        
+        return result;
+    }, [allowance, requiredAmount]);
 
     // Determine if we're in initialize or deposit mode
     const isDepositMode = isTokenInitialized === true && tokenCurrentNonce !== null && tokenCurrentNonce > BigInt(0);
@@ -354,25 +466,100 @@ export default function RitualsPage() {
                                                         )}
                                                     </div>
 
-                                                    {/* Lock Duration Input - Only for Initialize */}
+                                                    {/* Lock Duration Slider - Only for Initialize */}
                                                     {isInitializeMode && initializeHook.lockDuration !== undefined && (
-                                                        <div>
-                                                            <label htmlFor="lockDuration" className="block text-xs sm:text-sm font-sans font-bold text-foreground mb-1 sm:mb-2 uppercase tracking-wider">
-                                                                LOCK DURATION (SECONDS)
-                                                            </label>
-                                                            <Input
-                                                                type="text"
-                                                                id="lockDuration"
-                                                                value={initializeHook.lockDuration || ''}
-                                                                onChange={(e) => {
-                                                                    const value = e.target.value;
-                                                                    if (value === '' || /^\d+$/.test(value)) {
-                                                                        initializeHook.setLockDuration(value);
-                                                                    }
-                                                                }}
-                                                                placeholder="0 (for normal users) or lock duration in seconds"
-                                                                className="text-xs sm:text-sm bg-card/40 border-border/50 text-foreground font-mono placeholder:text-muted-foreground/50 focus:border-primary/50 focus:ring-primary/20"
-                                                            />
+                                                        <div className="space-y-3">
+                                                            <div className="flex items-center justify-between">
+                                                                <label htmlFor="lockDuration" className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider">
+                                                                    LOCK DURATION
+                                                                </label>
+                                                                <Button
+                                                                    type="button"
+                                                                    onClick={() => setShowLockInfo(!showLockInfo)}
+                                                                    className="text-[10px] px-2 py-1 h-auto bg-transparent hover:bg-primary/10 text-primary/70 border border-primary/30 font-mono uppercase transition-all duration-300"
+                                                                >
+                                                                    {showLockInfo ? 'HIDE INFO' : 'WHAT IS THIS?'}
+                                                                </Button>
+                                                            </div>
+                                                            
+                                                            {/* Lock Info Panel */}
+                                                            {showLockInfo && (
+                                                                <div className="relative border border-primary/20 bg-primary/5 backdrop-blur-sm p-3 sm:p-4 rounded-sm">
+                                                                    <div className="space-y-2">
+                                                                        <p className="text-xs font-mono text-foreground uppercase tracking-wider font-bold" style={{ textShadow: "0 0 8px rgba(139, 92, 246, 0.3)" }}>
+                                                                            ◈ FEE DISCOUNT MECHANISM
+                                                                        </p>
+                                                                        <p className="text-[11px] font-mono text-muted-foreground leading-relaxed">
+                                                                            Arkana uses a time-lock discount system for protocol fees. By locking your funds for a period of time, you receive a discount on the protocol fee:
+                                                                        </p>
+                                                                        <ul className="text-[11px] font-mono text-muted-foreground space-y-1 pl-3">
+                                                                            <li>• <span className="text-foreground">No lock (0)</span>: Full protocol fee ({protocolFee ? (Number(protocolFee) / 100).toFixed(2) : '?'}%)</li>
+                                                                            <li>• <span className="text-foreground">Partial lock</span>: Linear discount based on lock duration</li>
+                                                                            <li>• <span className="text-foreground">Full lock ({formatDuration(discountWindowSec)})</span>: 100% discount (0% fee)</li>
+                                                                        </ul>
+                                                                        <p className="text-[11px] font-mono text-muted-foreground leading-relaxed mt-2">
+                                                                            During the lock period, you cannot withdraw your funds. This mechanism incentivizes longer-term participation in the privacy pool.
+                                                                        </p>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+
+                                                            {/* Slider */}
+                                                            <div className="space-y-2">
+                                                                <Slider
+                                                                    value={parseInt(initializeHook.lockDuration || '0') || 0}
+                                                                    onChange={(value) => initializeHook.setLockDuration(value.toString())}
+                                                                    min={0}
+                                                                    max={discountWindowSec}
+                                                                    step={discountWindowSec >= 86400 ? 86400 : Math.max(1, Math.floor(discountWindowSec / 100))}
+                                                                />
+                                                                <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
+                                                                    <span>0</span>
+                                                                    <span className="text-primary font-bold">
+                                                                        {formatDuration(feePreview.lockSeconds)}
+                                                                    </span>
+                                                                    <span>{formatDuration(discountWindowSec)}</span>
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Fee Preview */}
+                                                            <div className="relative border border-border/30 bg-card/40 backdrop-blur-sm p-3 rounded-sm">
+                                                                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                                                                    <div className="space-y-1">
+                                                                        <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
+                                                                            PROTOCOL FEE
+                                                                        </p>
+                                                                        <p className="text-sm sm:text-base font-mono text-foreground font-bold">
+                                                                            {(feePreview.effectiveFeeBps / 100).toFixed(2)}%
+                                                                            {feePreview.discountPercent > 0 && (
+                                                                                <span className="text-accent ml-2 text-xs">
+                                                                                    (-{feePreview.discountPercent}% discount)
+                                                                                </span>
+                                                                            )}
+                                                                        </p>
+                                                                    </div>
+                                                                    {feePreview.lockSeconds > 0 && (
+                                                                        <div className="text-right">
+                                                                            <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
+                                                                                UNLOCKS AFTER
+                                                                            </p>
+                                                                            <p className="text-sm font-mono text-primary font-bold" style={{ textShadow: "0 0 8px rgba(139, 92, 246, 0.3)" }}>
+                                                                                {formatDuration(feePreview.lockSeconds)}
+                                                                            </p>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                {feePreview.lockSeconds === 0 && (
+                                                                    <p className="text-[10px] font-mono text-yellow-400/80 mt-2">
+                                                                        ⚠ No lock = full fee. Slide right to reduce fees.
+                                                                    </p>
+                                                                )}
+                                                                {feePreview.effectiveFeeBps === 0 && (
+                                                                    <p className="text-[10px] font-mono text-accent mt-2" style={{ textShadow: "0 0 8px rgba(0, 255, 136, 0.3)" }}>
+                                                                        ✓ Maximum discount achieved - 0% fee!
+                                                                    </p>
+                                                                )}
+                                                            </div>
                                                         </div>
                                                     )}
 
@@ -393,9 +580,20 @@ export default function RitualsPage() {
                                                     {/* Token Approval Section */}
                                                     {isValidAmount && (
                                                         <div className="mt-2 sm:mt-3 relative border border-border/30 bg-card/40 backdrop-blur-sm p-3 sm:pt-4 rounded-sm">
+                                                            {(() => {
+                                                                console.log('🔍 Rendering approval section:', {
+                                                                    isValidAmount,
+                                                                    isCheckingAllowance,
+                                                                    allowance,
+                                                                    allowanceType: typeof allowance,
+                                                                    needsApproval,
+                                                                    requiredAmount: requiredAmount?.toString(),
+                                                                });
+                                                                return null;
+                                                            })()}
                                                             {isCheckingAllowance ? (
                                                                 <p className="text-xs sm:text-sm font-mono text-foreground uppercase tracking-wider">CHECKING ALLOWANCE...</p>
-                                                            ) : allowance !== null ? (
+                                                            ) : allowance !== null && allowance !== undefined ? (
                                                                 <>
                                                                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1 sm:gap-0 mb-2">
                                                                         <span className="text-xs sm:text-sm font-mono text-muted-foreground uppercase tracking-wider">ALLOWANCE:</span>

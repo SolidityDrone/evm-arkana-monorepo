@@ -240,9 +240,22 @@ export function useInitialize() {
             return;
         }
 
+        if (!ArkanaAddress) {
+            console.error('ArkanaAddress is not defined');
+            setAllowance(null);
+            return;
+        }
+
         try {
             setIsCheckingAllowance(true);
             const tokenAddr = tokenAddress.startsWith('0x') ? tokenAddress as Address : `0x${tokenAddress}` as Address;
+
+            // Validate token address format
+            if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddr)) {
+                console.error('Invalid token address format:', tokenAddr);
+                setAllowance(null);
+                return;
+            }
 
             let amountIn: bigint;
             if (!amount || amount === '') {
@@ -272,20 +285,36 @@ export function useInitialize() {
                 return;
             }
 
+            console.log('Checking allowance:', {
+                tokenAddress: tokenAddr,
+                owner: address,
+                spender: ArkanaAddress,
+                amount: amountIn.toString()
+            });
+
             const currentAllowance = await publicClient.readContract({
                 address: tokenAddr,
                 abi: ERC20_ABI,
                 functionName: 'allowance',
                 args: [address as Address, ArkanaAddress as Address],
             });
+            
+            console.log('Allowance check successful:', currentAllowance.toString());
             setAllowance(currentAllowance);
         } catch (error) {
             console.error('Error checking allowance:', error);
+            if (error instanceof Error) {
+                console.error('Error details:', {
+                    message: error.message,
+                    name: error.name,
+                    stack: error.stack
+                });
+            }
             setAllowance(null);
         } finally {
             setIsCheckingAllowance(false);
         }
-    }, [tokenAddress, amount, address, publicClient, tokenDecimals]);
+    }, [tokenAddress, amount, address, publicClient, tokenDecimals, ArkanaAddress]);
 
     // Check allowance when relevant values change
     useEffect(() => {

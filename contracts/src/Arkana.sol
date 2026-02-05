@@ -951,7 +951,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @dev If lockDuration = 0: full fee applies (protocol_fee)
     /// @dev If lockDuration = discount_window: 0 fee (100% discount)
     /// @dev Linear interpolation between these two points
-    function _calculateDiscountedProtocolFee(uint256 lockDuration) internal view returns (uint256 effective_fee_bps) {
+    function calculateDiscountedProtocolFee(uint256 lockDuration) public view returns (uint256 effective_fee_bps) {
         if (lockDuration == 0) {
             return protocol_fee; // Full fee
         }

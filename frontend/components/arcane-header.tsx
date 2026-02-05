@@ -10,10 +10,12 @@ import { Button } from './ui/button'
 import ZkAddressDisplay from './ZkAddressDisplay'
 import Link from "next/link"
 import AccountModal from './AccountModal'
+import ZkAddressModal from './ZkAddressModal'
 
 export function ArcaneHeader() {
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
     const [accountModalOpen, setAccountModalOpen] = useState(false)
+    const [zkAddressModalOpen, setZkAddressModalOpen] = useState(false)
     const { isConnected, address } = useAccount()
     const zkAddress = useZkAddress()
     const { handleSign, isSigning, isLoading } = useAccountSigning()
@@ -67,7 +69,11 @@ export function ArcaneHeader() {
                             <>
                                 {zkAddress ? (
                                     <>
-                                        <ZkAddressDisplay zkAddress={zkAddress} variant="desktop" />
+                                        <ZkAddressDisplay 
+                                            zkAddress={zkAddress} 
+                                            variant="desktop" 
+                                            onClick={() => setZkAddressModalOpen(true)}
+                                        />
                                         <Button
                                             onClick={() => setAccountModalOpen(true)}
                                             size="sm"
@@ -130,7 +136,14 @@ export function ArcaneHeader() {
                                 <>
                                     {zkAddress ? (
                                         <>
-                                            <ZkAddressDisplay zkAddress={zkAddress} variant="mobile" />
+                                            <ZkAddressDisplay 
+                                                zkAddress={zkAddress} 
+                                                variant="mobile" 
+                                                onClick={() => {
+                                                    setZkAddressModalOpen(true)
+                                                    setMobileMenuOpen(false)
+                                                }}
+                                            />
                                             <Button
                                                 onClick={() => {
                                                     setAccountModalOpen(true)
@@ -158,6 +171,7 @@ export function ArcaneHeader() {
                 )}
             </nav>
             <AccountModal isOpen={accountModalOpen} onClose={() => setAccountModalOpen(false)} />
+            <ZkAddressModal isOpen={zkAddressModalOpen} onClose={() => setZkAddressModalOpen(false)} />
         </header>
     )
 }
