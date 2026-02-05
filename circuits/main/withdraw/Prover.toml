@@ -15,5 +15,5 @@ declared_time_reference = "0x0f4240"
 arbitrary_calldata_hash = "0x1234567890abcdef"
 receiver_address = "0x742d35cc6634c0532925a3b8d4c9db96c4b4d8b6"
 relayer_fee_amount = "0x01"
-is_tl_swap = "false"
+is_tl_swap = "0x00"
 tl_swap_shares_amounts = ["0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00", "0x00"]

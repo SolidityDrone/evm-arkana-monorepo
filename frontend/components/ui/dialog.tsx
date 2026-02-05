@@ -33,7 +33,7 @@ const Dialog = ({ open, onOpenChange, children }: DialogProps) => {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center"
+      className="fixed inset-0 z-[9999] flex items-center justify-center overflow-x-hidden"
       onClick={() => onOpenChange?.(false)}
       style={{ 
         position: 'fixed', 
@@ -42,22 +42,23 @@ const Dialog = ({ open, onOpenChange, children }: DialogProps) => {
         right: 0, 
         bottom: 0,
         margin: 0,
-        padding: '1rem'
+        padding: '1rem',
+        maxWidth: '100vw',
+        overflowX: 'hidden',
+        width: '100vw'
       }}
     >
       {/* Backdrop */}
       <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" />
       
-      {/* Dialog content wrapper - perfectly centered using transform */}
+      {/* Dialog content wrapper - centered using flexbox */}
       <div
-        className="relative z-[10000] w-full max-w-lg"
+        className="relative z-[10000] w-full min-w-0 mx-auto"
         onClick={(e) => e.stopPropagation()}
         style={{
-          position: 'relative',
-          left: '50%',
-          transform: 'translateX(-50%)',
           width: '100%',
-          maxWidth: '32rem'
+          maxWidth: '100%',
+          minWidth: 0
         }}
       >
         {children}
@@ -77,11 +78,15 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
       <div
         ref={ref}
         className={cn(
-          'relative w-full p-6',
+          'relative w-full min-w-0 p-6',
           'bg-background border border-primary/30 rounded-lg shadow-lg',
           'animate-in fade-in-0 zoom-in-95',
           className
         )}
+        style={{
+          maxWidth: '100%',
+          ...props.style
+        }}
         {...props}
       >
         {children}

@@ -23,7 +23,7 @@ const ERC20_ABI = parseAbi([
 ]);
 
 export function useInitialize() {
-    const { address } = useWagmiAccount();
+    const { address, isConnected } = useWagmiAccount();
     const { signMessageAsync, isPending: isSigning } = useSignMessage();
     const { setZkAddress, account } = useAccountContext();
     const zkAddress = useZkAddress();
@@ -438,10 +438,17 @@ export function useInitialize() {
             return;
         }
 
-        if (!address) {
+        if (!address || !isConnected) {
             setTxError('Please connect your wallet first');
             return;
         }
+
+        if (!publicClient) {
+            setTxError('Public client not available. Please check your wallet connection.');
+            return;
+        }
+
+        console.log('Wallet status:', { address, isConnected, chainId, publicClient: !!publicClient });
 
         let amountIn: bigint = BigInt(0);
         if (amount && amount !== '') {
@@ -494,12 +501,47 @@ export function useInitialize() {
 
             const lockDurationBigInt = lockDuration ? BigInt(lockDuration) : BigInt(0);
 
-            writeContract({
-                address: ArkanaAddress as `0x${string}`,
-                abi: ArkanaAbi,
+            console.log('Calling writeContract with:', {
+                address: ArkanaAddress,
                 functionName: 'initialize',
-                args: [proofBytes as `0x${string}`, publicInputsBytes32, amountIn, lockDurationBigInt],
+                proofLength: proofBytes.length,
+                publicInputsCount: publicInputsBytes32.length,
+                amountIn: amountIn.toString(),
+                lockDuration: lockDurationBigInt.toString(),
+                chainId: chainIdForTx,
+                userAddress: address,
             });
+
+            // Verify all required data is present
+            if (!proofBytes || proofBytes === '0x') {
+                setTxError('Invalid proof bytes');
+                setIsSubmitting(false);
+                return;
+            }
+
+            if (!publicInputsBytes32 || publicInputsBytes32.length === 0) {
+                setTxError('Invalid public inputs');
+                setIsSubmitting(false);
+                return;
+            }
+
+            try {
+                writeContract({
+                    address: ArkanaAddress as `0x${string}`,
+                    abi: ArkanaAbi,
+                    functionName: 'initialize',
+                    args: [proofBytes as `0x${string}`, publicInputsBytes32, amountIn, lockDurationBigInt],
+                });
+                console.log('writeContract called successfully, waiting for wallet confirmation...');
+            } catch (writeError) {
+                console.error('Error calling writeContract:', writeError);
+                setTxError(writeError instanceof Error ? writeError.message : 'Failed to send transaction');
+                setIsSubmitting(false);
+                return;
+            }
+
+            // Check if writeContract actually triggered (isPending should become true)
+            // We'll check this in a useEffect that watches isPending
         } catch (error) {
             console.error('Error in handleInitCommit:', error);
             setTxError(error instanceof Error ? error.message : 'Failed to process transaction');
@@ -517,10 +559,33 @@ export function useInitialize() {
     // Update error when writeError changes
     useEffect(() => {
         if (writeError) {
+            console.error('writeContract error:', writeError);
             setTxError(writeError.message || 'Transaction failed');
             setIsSubmitting(false);
         }
     }, [writeError]);
+
+    // Monitor isPending to verify transaction was sent
+    useEffect(() => {
+        if (isPending && isSubmitting) {
+            console.log('Transaction is pending - writeContract was successful');
+        }
+    }, [isPending, isSubmitting]);
+
+    // Timeout check: if isSubmitting is true but isPending doesn't become true within 5 seconds, there's likely an issue
+    useEffect(() => {
+        if (!isSubmitting) return;
+
+        const timeout = setTimeout(() => {
+            if (isSubmitting && !isPending && !hash && !writeError) {
+                console.error('Transaction timeout: writeContract was called but transaction was not sent');
+                setTxError('Transaction was not sent. Please check your wallet connection and try again.');
+                setIsSubmitting(false);
+            }
+        }, 5000);
+
+        return () => clearTimeout(timeout);
+    }, [isSubmitting, isPending, hash, writeError]);
 
     // Reset submitting state when transaction completes
     useEffect(() => {

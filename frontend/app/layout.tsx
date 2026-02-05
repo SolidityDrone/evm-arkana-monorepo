@@ -37,8 +37,8 @@ export default async function RootLayout({
   const cookies = headersObj.get('cookie')
 
   return (
-    <html lang="en">
-      <body className={`${pressStart2P.variable} ${vt323.variable} font-sans text-foreground`}>
+    <html lang="en" className="w-full overflow-x-hidden">
+      <body className={`${pressStart2P.variable} ${vt323.variable} font-sans text-foreground w-full overflow-x-hidden`}>
         {/* Subtle scanline overlay */}
         <div
           className="fixed inset-0 pointer-events-none z-50"
@@ -60,7 +60,7 @@ export default async function RootLayout({
           <AccountProvider>
             <AccountStateProvider>
               <ArcaneHeader />
-              <main className="relative z-10">{children}</main>
+              <main className="relative z-10 w-full min-w-0">{children}</main>
               <ToastContainer />
             </AccountStateProvider>
           </AccountProvider>

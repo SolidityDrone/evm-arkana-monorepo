@@ -1149,25 +1149,6 @@
   },
   {
     "type": "event",
-    "name": "DrandTlock",
-    "inputs": [
-      {
-        "name": "targetRound",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "timelockCiphertext",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
     "name": "LeafAdded",
     "inputs": [
       {
@@ -1385,11 +1366,6 @@
   {
     "type": "error",
     "name": "InvalidTimeReference",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "InvalidTimelockProof",
     "inputs": []
   },
   {

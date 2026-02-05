@@ -19,17 +19,27 @@ const ARKANA_ABI = [
                 "internalType": "address"
             },
             {
-                "name": "_protocol_fee",
+                "name": "_protocolFee",
                 "type": "uint256",
                 "internalType": "uint256"
             },
             {
-                "name": "_discount_window",
+                "name": "_discountWindow",
                 "type": "uint256",
                 "internalType": "uint256"
             },
             {
                 "name": "_poseidon2Huff",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_multicall3",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_tlswapRegister",
                 "type": "address",
                 "internalType": "address"
             }
@@ -51,6 +61,45 @@ const ARKANA_ABI = [
     },
     {
         "type": "function",
+        "name": "GENESIS_TIME",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "MIN_TREE_DEPTH",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "PERIOD",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
         "name": "TIME_TOLERANCE",
         "inputs": [],
         "outputs": [
@@ -58,6 +107,19 @@ const ARKANA_ABI = [
                 "name": "",
                 "type": "uint256",
                 "internalType": "uint256"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "TLSWAP_REGISTER_ROLE",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "bytes32",
+                "internalType": "bytes32"
             }
         ],
         "stateMutability": "view"
@@ -87,24 +149,6 @@ const ARKANA_ABI = [
             }
         ],
         "stateMutability": "view"
-    },
-    {
-        "type": "function",
-        "name": "absorb",
-        "inputs": [
-            {
-                "name": "proof",
-                "type": "bytes",
-                "internalType": "bytes"
-            },
-            {
-                "name": "publicInputs",
-                "type": "bytes32[]",
-                "internalType": "bytes32[]"
-            }
-        ],
-        "outputs": [],
-        "stateMutability": "nonpayable"
     },
     {
         "type": "function",
@@ -546,27 +590,11 @@ const ARKANA_ABI = [
     },
     {
         "type": "function",
-        "name": "operationInfo",
-        "inputs": [
-            {
-                "name": "nonceCommitment",
-                "type": "bytes32",
-                "internalType": "bytes32"
-            }
-        ],
+        "name": "multicall3Address",
+        "inputs": [],
         "outputs": [
             {
-                "name": "operationType",
-                "type": "uint8",
-                "internalType": "enum Arkana.OperationType"
-            },
-            {
-                "name": "sharesMinted",
-                "type": "uint256",
-                "internalType": "uint256"
-            },
-            {
-                "name": "tokenAddress",
+                "name": "",
                 "type": "address",
                 "internalType": "address"
             }
@@ -593,6 +621,35 @@ const ARKANA_ABI = [
                 "name": "y",
                 "type": "uint256",
                 "internalType": "uint256"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "operationInfo",
+        "inputs": [
+            {
+                "name": "nonceCommitment",
+                "type": "bytes32",
+                "internalType": "bytes32"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "operationType",
+                "type": "uint8",
+                "internalType": "enum Arkana.OperationType"
+            },
+            {
+                "name": "sharesMinted",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "tokenAddress",
+                "type": "address",
+                "internalType": "address"
             }
         ],
         "stateMutability": "view"
@@ -635,6 +692,24 @@ const ARKANA_ABI = [
             }
         ],
         "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "registerExternalVault",
+        "inputs": [
+            {
+                "name": "tokenAddress",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "vaultAddress",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable"
     },
     {
         "type": "function",
@@ -711,6 +786,32 @@ const ARKANA_ABI = [
                 "name": "",
                 "type": "bool",
                 "internalType": "bool"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "tlswapRegister",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "tlswapRegisterAddress",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
             }
         ],
         "stateMutability": "view"
@@ -959,25 +1060,6 @@ const ARKANA_ABI = [
     },
     {
         "type": "function",
-        "name": "totalAssets",
-        "inputs": [
-            {
-                "name": "tokenAddress",
-                "type": "address",
-                "internalType": "address"
-            }
-        ],
-        "outputs": [
-            {
-                "name": "",
-                "type": "uint256",
-                "internalType": "uint256"
-            }
-        ],
-        "stateMutability": "view"
-    },
-    {
-        "type": "function",
         "name": "usedCommitments",
         "inputs": [
             {
@@ -1044,6 +1126,29 @@ const ARKANA_ABI = [
         "stateMutability": "nonpayable"
     },
     {
+        "type": "function",
+        "name": "withdrawForSwap",
+        "inputs": [
+            {
+                "name": "tokenAddress",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "sharesAmount",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "recipient",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+    },
+    {
         "type": "event",
         "name": "LeafAdded",
         "inputs": [
@@ -1073,49 +1178,6 @@ const ARKANA_ABI = [
             },
             {
                 "name": "previousRoot",
-                "type": "uint256",
-                "indexed": false,
-                "internalType": "uint256"
-            }
-        ],
-        "anonymous": false
-    },
-    {
-        "type": "event",
-        "name": "NonceDiscoveryEntryAdded",
-        "inputs": [
-            {
-                "name": "token",
-                "type": "address",
-                "indexed": true,
-                "internalType": "address"
-            },
-            {
-                "name": "nonceCommitment",
-                "type": "uint256",
-                "indexed": false,
-                "internalType": "uint256"
-            },
-            {
-                "name": "newM",
-                "type": "uint256",
-                "indexed": false,
-                "internalType": "uint256"
-            },
-            {
-                "name": "newR",
-                "type": "uint256",
-                "indexed": false,
-                "internalType": "uint256"
-            },
-            {
-                "name": "newX",
-                "type": "uint256",
-                "indexed": false,
-                "internalType": "uint256"
-            },
-            {
-                "name": "newY",
                 "type": "uint256",
                 "indexed": false,
                 "internalType": "uint256"
@@ -1263,17 +1325,38 @@ const ARKANA_ABI = [
     },
     {
         "type": "error",
+        "name": "InsufficientShares",
+        "inputs": [
+            {
+                "name": "available",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "required",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ]
+    },
+    {
+        "type": "error",
+        "name": "InvalidAddress",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "InvalidCalldataHash",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "InvalidChainId",
         "inputs": []
     },
     {
         "type": "error",
         "name": "InvalidPublicInputs",
-        "inputs": []
-    },
-    {
-        "type": "error",
-        "name": "InvalidReference",
         "inputs": []
     },
     {
@@ -1288,7 +1371,17 @@ const ARKANA_ABI = [
     },
     {
         "type": "error",
+        "name": "Multicall3Failed",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "NoteAlreadyUsed",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "ReentrancyGuardReentrantCall",
         "inputs": []
     },
     {

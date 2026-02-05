@@ -1,7 +1,6 @@
 use dep::std;
 use dep::poseidon::poseidon2::Poseidon2;
 use dep::pedersen_commitments::pedersen_commitments::{
-    pedersen_commitment,
     pedersen_commitment_5
 };
 use dep::lean_imt_verify::{simulate_entry_circuit, simulate_lean_imt_insert, generate_merkle_proof};
@@ -197,7 +196,7 @@ fn print_prover_toml_format(
     std::println("");
     
     std::print("is_tl_swap = \"");
-    std::print(is_tl_swap);
+    std::print(if is_tl_swap { 1 } else { 0 });
     std::println("\"");
     std::println("");
     
@@ -912,7 +911,7 @@ fn test_entry_then_withdraw_integration() {
     std::print("publicInputs[6] = bytes32(relayerFeeShares); // relayer_fee_amount (in shares) = ");
     std::println(relayer_fee_amount);
     std::print("publicInputs[7] = bytes32(isTlSwap ? 1 : 0); // is_tl_swap = ");
-    std::println(false);
+    std::println(0);
     std::println("");
     std::println("// Note: amount is now private, so it's not in publicInputs");
     std::println("");

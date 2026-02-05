@@ -9,9 +9,11 @@ import AppKitButtonWrapper from './AppKitButtonWrapper'
 import { Button } from './ui/button'
 import ZkAddressDisplay from './ZkAddressDisplay'
 import Link from "next/link"
+import AccountModal from './AccountModal'
 
 export function ArcaneHeader() {
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+    const [accountModalOpen, setAccountModalOpen] = useState(false)
     const { isConnected, address } = useAccount()
     const zkAddress = useZkAddress()
     const { handleSign, isSigning, isLoading } = useAccountSigning()
@@ -25,8 +27,8 @@ export function ArcaneHeader() {
     ]
 
     return (
-        <header className="fixed top-0 left-0 right-0 z-50 bg-background/50 backdrop-blur-md border-b border-border/30">
-            <nav className="max-w-7xl mx-auto px-4 md:px-8">
+        <header className="fixed top-0 left-0 right-0 z-50 bg-background/50 backdrop-blur-md border-b border-border/30 w-full">
+            <nav className="max-w-7xl mx-auto px-4 md:px-8 w-full">
                 <div className="flex items-center justify-between h-16 md:h-20">
                     {/* Logo */}
                     <Link href="/" className="flex items-center gap-3 group">
@@ -66,7 +68,17 @@ export function ArcaneHeader() {
                         {isConnected && address && (
                             <>
                                 {zkAddress ? (
-                                    <ZkAddressDisplay zkAddress={zkAddress} variant="desktop" />
+                                    <>
+                                        <ZkAddressDisplay zkAddress={zkAddress} variant="desktop" />
+                                        <Button
+                                            onClick={() => setAccountModalOpen(true)}
+                                            size="sm"
+                                            variant="outline"
+                                            className="text-xs md:text-sm font-mono font-bold uppercase tracking-wider transition-colors border-primary/50 hover:bg-primary/10 hover:border-primary"
+                                        >
+                                            ACCOUNT
+                                        </Button>
+                                    </>
                                 ) : (
                                     <Button
                                         onClick={handleSign}
@@ -119,7 +131,19 @@ export function ArcaneHeader() {
                             {isConnected && address && (
                                 <>
                                     {zkAddress ? (
-                                        <ZkAddressDisplay zkAddress={zkAddress} variant="mobile" />
+                                        <>
+                                            <ZkAddressDisplay zkAddress={zkAddress} variant="mobile" />
+                                            <Button
+                                                onClick={() => {
+                                                    setAccountModalOpen(true)
+                                                    setMobileMenuOpen(false)
+                                                }}
+                                                variant="outline"
+                                                className="w-full text-sm font-mono font-bold uppercase tracking-wider transition-colors border-primary/50 hover:bg-primary/10 hover:border-primary"
+                                            >
+                                                ACCOUNT
+                                            </Button>
+                                        </>
                                     ) : (
                                         <Button
                                             onClick={handleSign}
@@ -135,6 +159,7 @@ export function ArcaneHeader() {
                     </div>
                 )}
             </nav>
+            <AccountModal isOpen={accountModalOpen} onClose={() => setAccountModalOpen(false)} />
         </header>
     )
 }

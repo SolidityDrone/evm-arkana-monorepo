@@ -127,16 +127,16 @@ export default function BasicSpellsPage() {
     const needsApproval = allowance !== null && allowance < requiredAmount && requiredAmount > BigInt(0);
 
     return (
-        <div className="min-h-screen pt-24 pb-12 px-4 sm:px-6 lg:px-8">
+        <div className="min-h-screen pt-24 pb-12 px-4 sm:px-6 lg:px-8 w-full overflow-x-hidden relative">
             {/* Subtle ambient glow */}
             <div
-                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[600px] pointer-events-none"
+                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-[800px] h-[600px] pointer-events-none overflow-hidden"
                 style={{
                     background: "radial-gradient(ellipse at center, rgba(167, 139, 250, 0.06) 0%, transparent 60%)"
                 }}
             />
 
-            <div className="max-w-2xl mx-auto relative z-10">
+            <div className="max-w-2xl mx-auto relative z-10 w-full">
                 {/* Section header */}
                 <div className="text-center mb-12">
                     <div className="inline-flex items-center gap-3 mb-6">
@@ -158,7 +158,7 @@ export default function BasicSpellsPage() {
                 </div>
 
                 {/* Main Card */}
-                <div className="relative group">
+                <div className="relative group w-full min-w-0">
                     {/* Corner sigils */}
                     <div className="absolute -top-1.5 -left-1.5 w-3 h-3 border-t border-l border-primary/30 transition-all duration-500" />
                     <div className="absolute -top-1.5 -right-1.5 w-3 h-3 border-t border-r border-primary/30 transition-all duration-500" />
@@ -173,7 +173,7 @@ export default function BasicSpellsPage() {
                         }}
                     />
 
-                    <Card className="relative bg-card/60 backdrop-blur-sm border-0">
+                    <Card className="relative bg-card/60 backdrop-blur-sm border-0 w-full min-w-0">
                         <CardHeader className="border-b border-border/30 bg-card/40 py-4 px-4 sm:px-6 mb-4">
                             <div className="flex items-center gap-3 justify-center mb-2">
                                 <span className="text-primary/60 text-sm">✧</span>
@@ -186,8 +186,8 @@ export default function BasicSpellsPage() {
                                 CREATE YOUR FIRST POSITION IN THE VOID
                             </CardDescription>
                         </CardHeader>
-                        <CardContent className="p-3 sm:p-6">
-                            <div className="space-y-4">
+                        <CardContent className="p-3 sm:p-6 w-full">
+                            <div className="space-y-4 w-full">
                                 {/* Sign message button */}
                                 {!zkAddress && (
                                     <SpellButton
@@ -212,14 +212,14 @@ export default function BasicSpellsPage() {
 
                                 {/* Form - Show if zkAddress exists */}
                                 {zkAddress && (
-                                    <div className="relative group">
+                                    <div className="relative group w-full min-w-0">
                                         {/* Corner sigils */}
                                         <div className="absolute -top-1 -left-1 w-2 h-2 border-t border-l border-primary/30" />
                                         <div className="absolute -top-1 -right-1 w-2 h-2 border-t border-r border-primary/30" />
                                         <div className="absolute -bottom-1 -left-1 w-2 h-2 border-b border-l border-primary/30" />
                                         <div className="absolute -bottom-1 -right-1 w-2 h-2 border-b border-r border-primary/30" />
 
-                                        <Card className="relative border border-primary/10 bg-card/40 backdrop-blur-sm border-0">
+                                        <Card className="relative border border-primary/10 bg-card/40 backdrop-blur-sm border-0 w-full min-w-0">
                                             <CardHeader className="border-b border-border/30 bg-card/30 py-3 px-4 sm:px-5 mb-3">
                                                 <div className="flex items-center gap-2">
                                                     <span className="text-primary/60 text-xs">◈</span>
@@ -231,15 +231,15 @@ export default function BasicSpellsPage() {
                                             <CardContent>
                                                 <div className="space-y-4">
                                                     {/* Token Address Input */}
-                                                    <div>
-                                                        <div className="flex items-center justify-between mb-1 sm:mb-2">
+                                                    <div className="w-full">
+                                                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-1 sm:mb-2">
                                                             <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider">
                                                                 TOKEN ADDRESS
                                                             </label>
                                                             <Button
                                                                 type="button"
                                                                 onClick={() => setShowTokenSelector(true)}
-                                                                className="text-xs px-3 py-1.5 h-auto bg-accent/20 hover:bg-accent/30 text-accent border border-accent/50 font-mono uppercase transition-all duration-300"
+                                                                className="text-xs px-3 py-1.5 h-auto bg-accent/20 hover:bg-accent/30 text-accent border border-accent/50 font-mono uppercase transition-all duration-300 whitespace-nowrap shrink-0"
                                                                 style={{ boxShadow: "0 0 10px rgba(0, 255, 136, 0.1)" }}
                                                             >
                                                                 {isLoadingTokens ? 'LOADING...' : `SELECT FROM AAVE (${aaveTokens.length})`}
@@ -255,7 +255,7 @@ export default function BasicSpellsPage() {
                                                                 setTokenAddress(normalized);
                                                             }}
                                                             placeholder="0x..."
-                                                            className="text-xs sm:text-sm"
+                                                            className="text-xs sm:text-sm w-full"
                                                         />
                                                     </div>
 
@@ -478,7 +478,7 @@ export default function BasicSpellsPage() {
                 </div>
 
                 {/* Decorative divider */}
-                <div className="max-w-4xl mx-auto mt-12 px-8">
+                <div className="w-full max-w-4xl mx-auto mt-12 px-4 sm:px-8">
                     <div className="flex items-center gap-4">
                         <div className="flex-1 h-px bg-gradient-to-r from-transparent via-border/50 to-transparent" />
                         <span className="text-primary/30 text-lg">✧</span>
@@ -501,19 +501,19 @@ export default function BasicSpellsPage() {
 
             {/* Token Selector Modal */}
             <Dialog open={showTokenSelector} onOpenChange={setShowTokenSelector}>
-                <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col bg-card/95 backdrop-blur-sm border-primary/30">
-                    <DialogHeader>
-                        <DialogTitle className="text-center text-base sm:text-xl font-sans tracking-wider uppercase" style={{ textShadow: "0 0 20px rgba(139, 92, 246, 0.3)" }}>
+                <DialogContent className="max-w-xl max-h-[80vh] overflow-hidden flex flex-col bg-card/95 backdrop-blur-sm border-primary/30 mx-auto">
+                    <DialogHeader className="pb-3">
+                        <DialogTitle className="text-center text-sm sm:text-base font-sans tracking-wider uppercase" style={{ textShadow: "0 0 20px rgba(139, 92, 246, 0.3)" }}>
                             SELECT TOKEN
                         </DialogTitle>
                     </DialogHeader>
-                    <div className="flex-1 overflow-y-auto mt-4">
+                    <div className="flex-1 overflow-y-auto mt-2">
                         {isLoadingTokens ? (
-                            <p className="text-xs font-mono text-muted-foreground text-center py-8">Loading Aave tokens...</p>
+                            <p className="text-[10px] font-mono text-muted-foreground text-center py-6">Loading Aave tokens...</p>
                         ) : aaveTokens.length === 0 ? (
-                            <p className="text-xs font-mono text-muted-foreground text-center py-8">No Aave tokens available</p>
+                            <p className="text-[10px] font-mono text-muted-foreground text-center py-6">No Aave tokens available</p>
                         ) : (
-                            <div className="space-y-2 pr-2">
+                            <div className="space-y-1 pr-1">
                                 {aaveTokens.map((token) => (
                                     <button
                                         key={token.address}
@@ -522,13 +522,13 @@ export default function BasicSpellsPage() {
                                             setTokenAddress(token.address.toLowerCase());
                                             setShowTokenSelector(false);
                                         }}
-                                        className="w-full text-left px-4 py-3 hover:bg-secondary/50 border border-transparent hover:border-accent/30 rounded transition-all duration-300"
+                                        className="w-full text-left px-3 py-2 hover:bg-secondary/50 border border-transparent hover:border-accent/30 rounded transition-all duration-300"
                                         style={{
                                             boxShadow: "0 0 0 0 rgba(0, 255, 136, 0)",
                                             transition: "all 0.3s ease"
                                         }}
                                         onMouseEnter={(e) => {
-                                            e.currentTarget.style.boxShadow = "0 0 10px rgba(0, 255, 136, 0.2)";
+                                            e.currentTarget.style.boxShadow = "0 0 8px rgba(0, 255, 136, 0.15)";
                                         }}
                                         onMouseLeave={(e) => {
                                             e.currentTarget.style.boxShadow = "0 0 0 0 rgba(0, 255, 136, 0)";
@@ -536,10 +536,10 @@ export default function BasicSpellsPage() {
                                     >
                                         <div className="flex items-center justify-between">
                                             <div>
-                                                <p className="text-sm font-mono text-foreground font-bold">{token.symbol}</p>
-                                                <p className="text-xs font-mono text-muted-foreground">{token.name} ({token.decimals} decimals)</p>
+                                                <p className="text-xs font-mono text-foreground font-bold">{token.symbol}</p>
+                                                <p className="text-[10px] font-mono text-muted-foreground">{token.name} ({token.decimals} decimals)</p>
                                             </div>
-                                            <p className="text-xs font-mono text-accent">{token.address.slice(0, 6)}...{token.address.slice(-4)}</p>
+                                            <p className="text-[10px] font-mono text-accent">{token.address.slice(0, 6)}...{token.address.slice(-4)}</p>
                                         </div>
                                     </button>
                                 ))}
