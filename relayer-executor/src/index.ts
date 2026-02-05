@@ -6,6 +6,9 @@
 import { config } from 'dotenv';
 import { ethers } from 'ethers';
 import { EventListener } from './services/eventListener.js';
+import { OrderStorage } from './services/orderStorage.js';
+import { OrderProcessor } from './services/orderProcessor.js';
+import { OrderScheduler } from './services/orderScheduler.js';
 
 // Load environment variables
 config();
@@ -87,7 +90,7 @@ async function main() {
         rpcUrl: process.env.RPC_URL!,
         privateKey: privateKey,
         startBlock: process.env.START_BLOCK ? parseInt(process.env.START_BLOCK) : undefined,
-        pollInterval: process.env.POLL_INTERVAL ? parseInt(process.env.POLL_INTERVAL) : undefined
+        schedulerInterval: process.env.SCHEDULER_INTERVAL ? parseInt(process.env.SCHEDULER_INTERVAL) : 30000 // 30 seconds default
     };
 
     console.log('Configuration:');
@@ -98,31 +101,62 @@ async function main() {
         ? `${privateKey.slice(0, 8)}...${privateKey.slice(-6)}`
         : '***';
     console.log(`  Private Key: ${maskedKey} (masked)`);
-    console.log(`  Start Block: ${config.startBlock || 'latest'}`);
-    console.log(`  Poll Interval: ${config.pollInterval || 12000}ms`);
+    console.log(`  Start Block: ${config.startBlock || 'not set (event-driven only)'}`);
+    console.log(`  Scheduler Interval: ${config.schedulerInterval}ms`);
     console.log('');
 
-    // Create and start event listener
-    const eventListener = new EventListener(config);
+    // Create order storage
+    const orderStorage = new OrderStorage();
+
+    // Create order processor
+    const orderProcessor = new OrderProcessor(
+        config.contractAddress,
+        new ethers.JsonRpcProvider(config.rpcUrl),
+        privateKey
+    );
+
+    // Create event listener (will store orders when events are received)
+    const eventListener = new EventListener({
+        contractAddress: config.contractAddress,
+        rpcUrl: config.rpcUrl,
+        privateKey: privateKey,
+        startBlock: config.startBlock,
+        orderStorage: orderStorage
+    });
+
+    // Create order scheduler (will execute stored orders when ready)
+    const orderScheduler = new OrderScheduler({
+        checkInterval: config.schedulerInterval,
+        orderStorage: orderStorage,
+        orderProcessor: orderProcessor
+    });
 
     // Handle graceful shutdown
     process.on('SIGINT', () => {
         console.log('\n[Main] Received SIGINT, shutting down...');
         eventListener.stop();
+        orderScheduler.stop();
         process.exit(0);
     });
 
     process.on('SIGTERM', () => {
         console.log('\n[Main] Received SIGTERM, shutting down...');
         eventListener.stop();
+        orderScheduler.stop();
         process.exit(0);
     });
 
-    // Start the listener
+    // Start the services
     try {
+        // Start event listener (listens for new orders)
         await eventListener.start();
+
+        // Start scheduler (executes ready orders)
+        orderScheduler.start();
+
         console.log('\n✅ Relayer executor started successfully');
-        console.log('   Listening for EncryptedOrderRegistered events...');
+        console.log('   📡 Listening for EncryptedOrderRegistered events...');
+        console.log('   ⏰ Scheduler checking for ready orders...');
         console.log('   Press Ctrl+C to stop\n');
     } catch (error) {
         console.error('❌ Failed to start relayer executor:', error);

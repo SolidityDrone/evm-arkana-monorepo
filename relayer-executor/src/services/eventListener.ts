@@ -1,10 +1,11 @@
 /**
  * Event Listener Service
  * Listens to EncryptedOrderRegistered events from TLswapRegister contract
+ * Stores orders instead of processing them immediately
  */
 
 import { ethers } from 'ethers';
-import { OrderProcessor } from './orderProcessor.js';
+import { OrderStorage } from './orderStorage.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -20,28 +21,22 @@ export interface EventListenerConfig {
     contractAddress: string;
     rpcUrl: string;
     privateKey: string;
-    startBlock?: number;
-    pollInterval?: number;
+    startBlock?: number; // Optional: only for initial historical scan
+    orderStorage?: OrderStorage; // Optional: will create one if not provided
 }
 
 export class EventListener {
     private provider: ethers.Provider;
     private contract: ethers.Contract;
-    private orderProcessor: OrderProcessor;
+    private orderStorage: OrderStorage;
     private isListening: boolean = false;
     private startBlock: number;
-    private pollInterval: number;
 
     constructor(config: EventListenerConfig) {
         this.provider = new ethers.JsonRpcProvider(config.rpcUrl);
         this.contract = new ethers.Contract(config.contractAddress, TLswapRegisterABI, this.provider);
-        this.orderProcessor = new OrderProcessor(
-            config.contractAddress,
-            this.provider,
-            config.privateKey
-        );
+        this.orderStorage = config.orderStorage || new OrderStorage();
         this.startBlock = config.startBlock || 0;
-        this.pollInterval = config.pollInterval || 12000; // 12 seconds default
     }
 
     /**
@@ -56,23 +51,28 @@ export class EventListener {
         this.isListening = true;
         console.log('[EventListener] Starting event listener...');
         console.log(`  Contract: ${this.contract.target}`);
-        console.log(`  Start block: ${this.startBlock}`);
-        console.log(`  Poll interval: ${this.pollInterval}ms`);
+        console.log(`  Start block: ${this.startBlock || 'latest'}`);
 
-        // Process historical events first
-        await this.processHistoricalEvents();
+        // Optionally process historical events (only if startBlock is set)
+        if (this.startBlock > 0) {
+            await this.processHistoricalEvents();
+        } else {
+            console.log('[EventListener] Skipping historical events (startBlock not set)');
+        }
 
-        // Start listening to new events
+        // Start listening to new events in real-time
         this.contract.on('EncryptedOrderRegistered', async (orderId, ciphertextIpfs, event) => {
             console.log(`\n[EventListener] New EncryptedOrderRegistered event detected`);
             console.log(`  Block: ${event.log.blockNumber}`);
             console.log(`  OrderId: ${orderId}`);
             console.log(`  Ciphertext length: ${ciphertextIpfs.length} bytes`);
             
-            await this.handleNewOrder(orderId, ciphertextIpfs);
+            await this.handleNewOrder(orderId, ciphertextIpfs, event.log.blockNumber);
         });
 
-        console.log('[EventListener] Event listener started');
+        const stats = this.orderStorage.getStats();
+        console.log(`[EventListener] Event listener started`);
+        console.log(`  Stored orders: ${stats.total} (${stats.pending} pending, ${stats.processed} processed)`);
     }
 
     /**
@@ -89,7 +89,7 @@ export class EventListener {
     }
 
     /**
-     * Process historical events from startBlock to current
+     * Process historical events from startBlock to current (optional, for initial sync)
      */
     private async processHistoricalEvents(): Promise<void> {
         console.log('[EventListener] Processing historical events...');
@@ -105,6 +105,7 @@ export class EventListener {
         // Query events in batches
         const batchSize = 1000;
         let fromBlock = this.startBlock;
+        let totalFound = 0;
         
         while (fromBlock < currentBlock) {
             const toBlock = Math.min(fromBlock + batchSize - 1, currentBlock);
@@ -119,7 +120,8 @@ export class EventListener {
                     if (event.args) {
                         const orderId = event.args[0];
                         const ciphertextIpfs = event.args[1];
-                        await this.handleNewOrder(orderId, ciphertextIpfs);
+                        await this.handleNewOrder(orderId, ciphertextIpfs, event.log.blockNumber);
+                        totalFound++;
                     }
                 }
                 
@@ -131,14 +133,20 @@ export class EventListener {
             }
         }
 
-        console.log('[EventListener] Historical events processed');
+        console.log(`[EventListener] Historical events processed (${totalFound} orders stored)`);
     }
 
     /**
-     * Handle a new encrypted order
+     * Handle a new encrypted order - store it instead of processing immediately
      */
-    private async handleNewOrder(orderId: string, ciphertextIpfs: string): Promise<void> {
+    private async handleNewOrder(orderId: string, ciphertextIpfs: string, blockNumber: number): Promise<void> {
         try {
+            // Check if order already exists
+            if (this.orderStorage.getOrder(orderId)) {
+                console.log(`  [EventListener] Order ${orderId} already stored, skipping`);
+                return;
+            }
+
             // Convert hex string to bytes
             const ciphertextBytes = ethers.getBytes(ciphertextIpfs);
             
@@ -148,14 +156,20 @@ export class EventListener {
             const targetRound = ciphertextData.round || ciphertextData.timelock?.targetRound;
             
             if (!targetRound) {
-                console.error(`  [EventListener] No target round found in ciphertext`);
+                console.error(`  [EventListener] No target round found in ciphertext for order ${orderId}`);
                 return;
             }
 
-            console.log(`  [EventListener] Processing order ${orderId} (round ${targetRound})`);
+            // Store the order (will be executed later by the scheduler)
+            this.orderStorage.addOrder({
+                orderId,
+                ciphertextIpfs,
+                ciphertextBytes,
+                targetRound,
+                blockNumber
+            });
             
-            // Process the order (will wait for round if needed)
-            await this.orderProcessor.processOrder(orderId, ciphertextBytes, targetRound);
+            console.log(`  [EventListener] Order ${orderId} stored (target round: ${targetRound})`);
             
         } catch (error) {
             console.error(`  [EventListener] Error handling order ${orderId}:`, error);
@@ -163,30 +177,10 @@ export class EventListener {
     }
 
     /**
-     * Manually process a specific order
+     * Get order storage instance
      */
-    async processOrder(orderId: string): Promise<void> {
-        try {
-            // Get ciphertext from contract
-            const ciphertext = await this.contract.getEncryptedOrder(orderId);
-            if (!ciphertext || ciphertext.length === 0) {
-                throw new Error(`Order ${orderId} not found`);
-            }
-
-            const ciphertextBytes = ethers.getBytes(ciphertext);
-            const ciphertextStr = new TextDecoder().decode(ciphertextBytes);
-            const ciphertextData = JSON.parse(ciphertextStr);
-            const targetRound = ciphertextData.round || ciphertextData.timelock?.targetRound;
-
-            if (!targetRound) {
-                throw new Error('No target round found in ciphertext');
-            }
-
-            await this.orderProcessor.processOrder(orderId, ciphertextBytes, targetRound);
-        } catch (error) {
-            console.error(`Error processing order ${orderId}:`, error);
-            throw error;
-        }
+    getOrderStorage(): OrderStorage {
+        return this.orderStorage;
     }
 }
 

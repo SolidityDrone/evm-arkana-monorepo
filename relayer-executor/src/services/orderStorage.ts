@@ -3,7 +3,7 @@
  * Stores pending orders and manages their execution schedule
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -158,7 +158,6 @@ export class OrderStorage {
             }));
             
             const data = JSON.stringify(serializable, null, 2);
-            const { writeFileSync } = require('node:fs');
             writeFileSync(this.storageFile, data, 'utf-8');
         } catch (error) {
             console.error('[OrderStorage] Error saving orders to disk:', error);
