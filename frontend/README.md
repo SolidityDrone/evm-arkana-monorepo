@@ -14,6 +14,15 @@ Next.js 15.3.1 frontend application with a dark arcane theme.
    - Create a `.env.local` file in the `frontend` directory
    - Add: `NEXT_PUBLIC_PROJECT_ID=your_project_id_here`
 
+3. **Pinata API Keys** (for TL Swap IPFS uploads): Get your free API keys from https://app.pinata.cloud/
+   - Sign up at https://app.pinata.cloud/ (free tier available)
+   - Go to API Keys section and create a new key
+   - Add to `.env.local`:
+     - `PINATA_API_KEY=your_api_key_here`
+     - `PINATA_SECRET_API_KEY=your_secret_api_key_here`
+   - These are server-side only (not exposed to client)
+   - Pinata provides reliable IPFS pinning and gateway access
+
 ### Installation
 
 Install dependencies:

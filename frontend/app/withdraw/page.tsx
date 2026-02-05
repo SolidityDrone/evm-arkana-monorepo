@@ -24,7 +24,9 @@ import { loadAccountData, saveTokenAccountData, TokenAccountData } from '@/lib/i
 import { loadAccountDataOnSign } from '@/lib/loadAccountDataOnSign';
 import { convertAssetsToShares } from '@/lib/shares-to-assets';
 import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
-import { getCurrentRound, getRoundTimestamp, type Order } from '@/lib/timelock-order';
+import { getCurrentRound, getRoundTimestamp, createOrderChain, type Order } from '@/lib/timelock-order';
+import { uploadCiphertextToIPFS, getIPFSGatewayURL } from '@/lib/ipfs';
+import { Copy, ExternalLink } from 'lucide-react';
 
 const ERC20_ABI = parseAbi([
     'function decimals() view returns (uint8)',
@@ -96,6 +98,12 @@ export default function WithdrawPage() {
     const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
     const [tokenName, setTokenName] = useState<string>('');
     const [tokenSymbol, setTokenSymbol] = useState<string>('');
+    const [tokenOutDecimals, setTokenOutDecimals] = useState<Record<string, number>>({});
+    const [tokenOutInfo, setTokenOutInfo] = useState<Record<string, { name: string; symbol: string; decimals: number }>>({});
+    const [isValidatingToken, setIsValidatingToken] = useState(false);
+    const [tokenValidationError, setTokenValidationError] = useState<string | null>(null);
+    const [tokenOutValidationErrors, setTokenOutValidationErrors] = useState<Record<string, string>>({});
+    const [isValidatingTokenOut, setIsValidatingTokenOut] = useState<Record<string, boolean>>({});
 
     // Backend state
     const withdrawBackendRef = useRef<CachedUltraHonkBackend | null>(null);
@@ -115,6 +123,13 @@ export default function WithdrawPage() {
     const [txHash, setTxHash] = useState<string | null>(null);
     const [txError, setTxError] = useState<string | null>(null);
     const [proofError, setProofError] = useState<string | null>(null);
+    const [ipfsCid, setIpfsCid] = useState<string | null>(null);
+    const [isUploadingToIPFS, setIsUploadingToIPFS] = useState(false);
+    const [ipfsError, setIpfsError] = useState<string | null>(null);
+    const [tlSwapCiphertext, setTlSwapCiphertext] = useState<string | null>(null);
+    const [testIpfsCid, setTestIpfsCid] = useState<string | null>(null);
+    const [isTestingIPFS, setIsTestingIPFS] = useState(false);
+    const [testIpfsError, setTestIpfsError] = useState<string | null>(null);
 
     // Token discovery state
     const [isDiscoveringToken, setIsDiscoveringToken] = useState(false);
@@ -237,15 +252,27 @@ export default function WithdrawPage() {
         discoverToken();
     }, [tokenAddress, zkAddress, publicClient, account?.signature, computeCurrentNonce, setCurrentNonce, setBalanceEntries]);
 
-    // Load token info when tokenAddress changes
+    // Validate and load token info when tokenAddress changes
     useEffect(() => {
         const loadTokenInfo = async () => {
             if (!tokenAddress || !publicClient) {
                 setTokenDecimals(null);
                 setTokenName('');
                 setTokenSymbol('');
+                setTokenValidationError(null);
                 return;
             }
+
+            if (tokenAddress.length !== 42 || !tokenAddress.startsWith('0x')) {
+                setTokenValidationError('Invalid token address format');
+                setTokenDecimals(null);
+                setTokenName('');
+                setTokenSymbol('');
+                return;
+            }
+
+            setIsValidatingToken(true);
+            setTokenValidationError(null);
 
             try {
                 // Check Aave tokens first
@@ -257,44 +284,51 @@ export default function WithdrawPage() {
                     setTokenDecimals(aaveToken.decimals);
                     setTokenName(aaveToken.name);
                     setTokenSymbol(aaveToken.symbol);
+                    setIsValidatingToken(false);
                     return;
                 }
 
-                // Fallback to on-chain fetch
+                // Fallback to on-chain fetch and validation
                 const tokenAddr = tokenAddress.startsWith('0x') ? tokenAddress as Address : `0x${tokenAddress}` as Address;
 
+                // Validate ERC20 by checking all three required functions
                 const [decimals, name, symbol] = await Promise.all([
                     publicClient.readContract({
                         address: tokenAddr,
                         abi: ERC20_ABI,
                         functionName: 'decimals',
-                    }).catch(() => null),
+                    }),
                     publicClient.readContract({
                         address: tokenAddr,
                         abi: ERC20_ABI,
                         functionName: 'name',
-                    }).catch(() => null),
+                    }),
                     publicClient.readContract({
                         address: tokenAddr,
                         abi: ERC20_ABI,
                         functionName: 'symbol',
-                    }).catch(() => null),
+                    }),
                 ]);
 
-                if (decimals !== null && decimals !== undefined) {
+                // If all three calls succeeded, it's a valid ERC20
+                if (decimals !== null && decimals !== undefined &&
+                    name !== null && name !== undefined &&
+                    symbol !== null && symbol !== undefined) {
                     setTokenDecimals(decimals);
-                }
-                if (name !== null && name !== undefined) {
                     setTokenName(name);
-                }
-                if (symbol !== null && symbol !== undefined) {
                     setTokenSymbol(symbol);
+                    setTokenValidationError(null);
+                } else {
+                    throw new Error('Token does not implement required ERC20 functions');
                 }
             } catch (error) {
-                console.error('Error fetching token info:', error);
+                console.error('Error validating/fetching token info:', error);
                 setTokenDecimals(null);
                 setTokenName('');
                 setTokenSymbol('');
+                setTokenValidationError(error instanceof Error ? error.message : 'Failed to validate token as ERC20');
+            } finally {
+                setIsValidatingToken(false);
             }
         };
 
@@ -304,8 +338,135 @@ export default function WithdrawPage() {
             setTokenDecimals(null);
             setTokenName('');
             setTokenSymbol('');
+            setTokenValidationError(null);
         }
     }, [tokenAddress, publicClient, aaveTokens]);
+
+    // Load tokenOut info when tokenOut addresses change in TL orders
+    useEffect(() => {
+        const loadTokenOutInfo = async () => {
+            if (!publicClient || tlOrders.length === 0) return;
+
+            const tokenOutAddresses = new Set(
+                tlOrders
+                    .map(order => order.tokenOut?.trim())
+                    .filter((addr): addr is string => !!addr && addr.length === 42 && addr.startsWith('0x'))
+            );
+
+            for (const tokenOutAddr of tokenOutAddresses) {
+                const tokenOutAddrLower = tokenOutAddr.toLowerCase();
+
+                // Skip if we already have info for this token
+                if (tokenOutInfo[tokenOutAddrLower]) continue;
+
+                // Set validating state
+                setIsValidatingTokenOut(prev => ({
+                    ...prev,
+                    [tokenOutAddrLower]: true,
+                }));
+
+                // Clear any previous errors
+                setTokenOutValidationErrors(prev => {
+                    const newObj = { ...prev };
+                    delete newObj[tokenOutAddrLower];
+                    return newObj;
+                });
+
+                try {
+                    const tokenAddr = tokenOutAddr.startsWith('0x') ? tokenOutAddr as Address : `0x${tokenOutAddr}` as Address;
+
+                    // Check Aave tokens first
+                    const aaveToken = aaveTokens.find((t: { address: string }) =>
+                        t.address.toLowerCase() === tokenOutAddrLower
+                    );
+
+                    if (aaveToken) {
+                        setTokenOutInfo(prev => ({
+                            ...prev,
+                            [tokenOutAddrLower]: {
+                                name: aaveToken.name,
+                                symbol: aaveToken.symbol,
+                                decimals: aaveToken.decimals,
+                            },
+                        }));
+
+                        setTokenOutDecimals(prev => ({
+                            ...prev,
+                            [tokenOutAddrLower]: aaveToken.decimals,
+                        }));
+
+                        setIsValidatingTokenOut(prev => {
+                            const newObj = { ...prev };
+                            delete newObj[tokenOutAddrLower];
+                            return newObj;
+                        });
+                        continue;
+                    }
+
+                    // Validate ERC20 and fetch on-chain
+                    const [decimals, name, symbol] = await Promise.all([
+                        publicClient.readContract({
+                            address: tokenAddr,
+                            abi: ERC20_ABI,
+                            functionName: 'decimals',
+                        }),
+                        publicClient.readContract({
+                            address: tokenAddr,
+                            abi: ERC20_ABI,
+                            functionName: 'name',
+                        }),
+                        publicClient.readContract({
+                            address: tokenAddr,
+                            abi: ERC20_ABI,
+                            functionName: 'symbol',
+                        }),
+                    ]);
+
+                    // If all three calls succeeded, it's a valid ERC20
+                    if (decimals !== null && decimals !== undefined &&
+                        name !== null && name !== undefined &&
+                        symbol !== null && symbol !== undefined) {
+                        setTokenOutInfo(prev => ({
+                            ...prev,
+                            [tokenOutAddrLower]: {
+                                name: name as string,
+                                symbol: symbol as string,
+                                decimals: decimals as number,
+                            },
+                        }));
+
+                        setTokenOutDecimals(prev => ({
+                            ...prev,
+                            [tokenOutAddrLower]: decimals as number,
+                        }));
+
+                        setIsValidatingTokenOut(prev => {
+                            const newObj = { ...prev };
+                            delete newObj[tokenOutAddrLower];
+                            return newObj;
+                        });
+                    } else {
+                        throw new Error('Token does not implement required ERC20 functions');
+                    }
+                } catch (error) {
+                    console.error(`Error validating tokenOut ${tokenOutAddr}:`, error);
+                    const errorMessage = error instanceof Error ? error.message : 'Failed to validate token as ERC20';
+                    setTokenOutValidationErrors(prev => ({
+                        ...prev,
+                        [tokenOutAddrLower]: errorMessage,
+                    }));
+
+                    setIsValidatingTokenOut(prev => {
+                        const newObj = { ...prev };
+                        delete newObj[tokenOutAddrLower];
+                        return newObj;
+                    });
+                }
+            }
+        };
+
+        loadTokenOutInfo();
+    }, [tlOrders, publicClient, aaveTokens, tokenOutInfo, tokenOutDecimals]);
 
     // Update txHash when hash changes
     React.useEffect(() => {
@@ -931,6 +1092,10 @@ export default function WithdrawPage() {
             setIsProving(true);
             setProofError(null);
             setProvingTime(null);
+            // Reset IPFS and ciphertext state for new proof
+            setIpfsCid(null);
+            setIpfsError(null);
+            setTlSwapCiphertext(null);
 
             const startTime = performance.now();
             await initializeBackend();
@@ -1160,11 +1325,193 @@ export default function WithdrawPage() {
             setProof(proofHex);
             setPublicInputs(publicInputsHex);
 
+            // Proof generation is complete, set isProving to false
+            // (IPFS upload will happen separately if needed)
+            setIsProving(false);
+
+            // If TL Swap is enabled, create order chain and upload ciphertext to IPFS
+            if (isTlSwap && contextUserKey && tokenNonce !== null) {
+                try {
+                    setIsUploadingToIPFS(true);
+                    setIpfsError(null);
+                    setIpfsCid(null);
+
+                    console.log('🔐 Creating timelock order chain...');
+
+                    // Prepare orders for createOrderChain
+                    // Convert amountOutMin from decimal string to raw units using tokenOut decimals
+                    const orders: Order[] = tlOrders.slice(0, numOrders).map(order => {
+                        let amountOutMinRaw: string | bigint = order.amountOutMin || '0';
+
+                        // If amountOutMin is provided and tokenOut has decimals, convert to raw units
+                        if (order.amountOutMin && order.tokenOut && tokenOutDecimals[order.tokenOut.toLowerCase()]) {
+                            try {
+                                const decimals = tokenOutDecimals[order.tokenOut.toLowerCase()];
+                                const sanitizedAmount = order.amountOutMin.trim().replace(',', '.');
+
+                                if (/^\d+\.?\d*$/.test(sanitizedAmount)) {
+                                    const parts = sanitizedAmount.split('.');
+                                    const integerPart = parts[0] || '0';
+                                    const decimalPart = parts[1] || '';
+                                    const limitedDecimal = decimalPart.slice(0, decimals);
+                                    const paddedDecimal = limitedDecimal.padEnd(decimals, '0');
+                                    amountOutMinRaw = (BigInt(integerPart) * BigInt(10 ** decimals) + BigInt(paddedDecimal)).toString();
+                                }
+                            } catch (error) {
+                                console.error(`Error converting amountOutMin for order:`, error);
+                                // Fallback to original value
+                            }
+                        }
+
+                        return {
+                            sharesAmount: order.sharesAmount,
+                            amountOutMin: amountOutMinRaw,
+                            slippageBps: parseInt(order.slippageBps) || 50,
+                            deadline: parseInt(order.deadline) || Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60),
+                            recipient: order.recipient,
+                            tokenOut: order.tokenOut,
+                            executionFeeBps: parseInt(order.executionFeeBps) || 10
+                        };
+                    });
+
+                    // Get start round (use first order's target round or current + 1000)
+                    const firstOrderTargetRound = tlOrders[0]?.targetRound;
+                    const startRound = firstOrderTargetRound && parseInt(firstOrderTargetRound) > 0
+                        ? parseInt(firstOrderTargetRound)
+                        : getCurrentRound() + 1000;
+                    const roundStep = 1000; // Default step between rounds
+
+                    // Convert userKey to bigint
+                    if (!contextUserKey) {
+                        throw new Error('userKey is required for TL Swap');
+                    }
+                    let userKeyBigInt: bigint;
+                    if (typeof contextUserKey === 'bigint') {
+                        userKeyBigInt = contextUserKey;
+                    } else {
+                        const userKeyStr = String(contextUserKey);
+                        const hexStr = userKeyStr.startsWith('0x') ? userKeyStr.slice(2) : userKeyStr;
+                        userKeyBigInt = BigInt('0x' + hexStr);
+                    }
+
+                    // Calculate previous nonce (current nonce - 1, or 0 if nonce is 0)
+                    const previousNonce = tokenNonce > BigInt(0) ? tokenNonce - BigInt(1) : BigInt(0);
+
+                    // Create order chain
+                    const orderChainResult = await createOrderChain(
+                        orders,
+                        startRound,
+                        roundStep,
+                        userKeyBigInt,
+                        previousNonce
+                    );
+
+                    // Get the first order's ciphertext (contains entire chain)
+                    const firstOrder = orderChainResult.orders[0];
+                    if (!firstOrder || !firstOrder.fullCiphertext) {
+                        throw new Error('Failed to create order chain ciphertext');
+                    }
+
+                    // Store ciphertext for transaction
+                    setTlSwapCiphertext(firstOrder.fullCiphertext);
+
+                    console.log('📤 Uploading ciphertext to IPFS...');
+
+                    // Upload ciphertext to IPFS
+                    const cid = await uploadCiphertextToIPFS(firstOrder.fullCiphertext, 0);
+                    setIpfsCid(cid);
+
+                    console.log(`✅ Ciphertext uploaded to IPFS: ${cid}`);
+                    console.log(`   Gateway URL: ${getIPFSGatewayURL(cid)}`);
+                    console.log(`   TL Hashchain: 0x${orderChainResult.hashChain.tlHashchain}`);
+
+                    toast(`Ciphertext uploaded to IPFS: ${cid}`, 'success');
+
+                    // After successful IPFS upload, automatically send the transaction
+                    console.log('🚀 IPFS upload complete. Automatically sending transaction...');
+                    // Small delay to ensure state is updated and isProving is set to false
+                    setTimeout(() => {
+                        handleWithdraw();
+                    }, 200);
+
+                } catch (error) {
+                    console.error('Error uploading to IPFS:', error);
+                    setIpfsError(error instanceof Error ? error.message : 'Failed to upload to IPFS');
+                    toast(`IPFS upload failed: ${error instanceof Error ? error.message : 'Failed to upload ciphertext to IPFS'}`, 'error');
+                } finally {
+                    setIsUploadingToIPFS(false);
+                }
+            }
+
         } catch (error) {
             console.error('Error generating proof:', error);
             setProofError(error instanceof Error ? error.message : 'Failed to generate proof');
-        } finally {
             setIsProving(false);
+        }
+    };
+
+    // Test IPFS upload function
+    const testIPFSUpload = async () => {
+        try {
+            setIsTestingIPFS(true);
+            setTestIpfsError(null);
+            setTestIpfsCid(null);
+
+            // Create a test order JSON similar to first-order.json structure
+            const testOrder = {
+                order: {
+                    sharesAmount: "1000000",
+                    amountOutMin: "950000000000000000",
+                    slippageBps: 50,
+                    deadline: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60), // 30 days from now
+                    recipient: address || "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+                    tokenOut: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", // WETH mainnet
+                    executionFeeBps: 10,
+                    prevHash: "3144720251581553402669680428615038084405235765980310875083500192296684831944",
+                    nextHash: "7823368255051347161380593580414108410849933056586987272659813242056774285140"
+                },
+                round: getCurrentRound() + 1000,
+                roundTimestamp: Math.floor(Date.now() / 1000),
+                prevHash: "3144720251581553402669680428615038084405235765980310875083500192296684831944",
+                nextHash: "7823368255051347161380593580414108410849933056586987272659813242056774285140",
+                chunkIndex: 0,
+                hasNextCiphertext: false,
+                timelock: {
+                    H: {
+                        x: "6653664777090206779838835280254857796858373530293305067697965320621276867792",
+                        y: "17796465010886131590868715375538236365219401732580219557239129896130072519704"
+                    },
+                    V: {
+                        x: "2924750361927376369715986707976767361268528269581895033910134974389879670704",
+                        y: "7493113443693758121079509599298959112001883645217198384541866639374554066583"
+                    },
+                    C1: {
+                        x0: "4101855731786765877445508168579797606324008824061439311656980510357189730969",
+                        x1: "16554620978394482094239056765858373474038516746450427371863976970583636556526",
+                        y0: "13474024875869012552189970574772355203084055122728183219062547263269999174508",
+                        y1: "15845326339610180629826916039705579185292159512664567446758534829285992607498"
+                    },
+                    targetRound: getCurrentRound() + 1000
+                },
+                aes: {
+                    iv: "f0bebcd6fd8cd9d4f2226e05770b9894",
+                    ciphertext: "97a3aebe1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+                }
+            };
+
+            const testCiphertext = JSON.stringify(testOrder, null, 2);
+
+            console.log('🧪 Testing IPFS upload with test order data...');
+            const cid = await uploadCiphertextToIPFS(testCiphertext, 0);
+            setTestIpfsCid(cid);
+            toast(`Test upload successful! CID: ${cid}`, 'success');
+        } catch (error) {
+            console.error('Test IPFS upload error:', error);
+            const errorMessage = error instanceof Error ? error.message : 'Failed to upload test file to IPFS';
+            setTestIpfsError(errorMessage);
+            toast(`Test upload failed: ${errorMessage}`, 'error');
+        } finally {
+            setIsTestingIPFS(false);
         }
     };
 
@@ -1178,6 +1525,21 @@ export default function WithdrawPage() {
             setTxError('Please connect your wallet first');
             return;
         }
+        // For TL-Swap, ensure IPFS upload completed and ciphertext is available
+        if (isTlSwap) {
+            if (isUploadingToIPFS) {
+                setTxError('IPFS upload in progress. Please wait...');
+                return;
+            }
+            if (ipfsError) {
+                setTxError(`IPFS upload failed: ${ipfsError}. Cannot proceed with transaction.`);
+                return;
+            }
+            if (!ipfsCid || !tlSwapCiphertext) {
+                setTxError('IPFS upload required for TL-Swap. Please generate proof first.');
+                return;
+            }
+        }
 
         try {
             setIsSubmitting(true);
@@ -1187,9 +1549,19 @@ export default function WithdrawPage() {
             const proofBytes = `0x${proof}`;
             const slicedInputs = publicInputs.slice(0, 17); // Contract expects exactly 17 public inputs (8 inputs + 9 outputs including is_tl_swap, tl_hashchain, and final_amount)
 
-            // Prepare calldata for contract call (empty bytes if not provided)
+            // Prepare calldata for contract call
+            // For TL-Swap, use the ciphertext; otherwise use arbitraryCalldata if provided
             let callDataBytes: `0x${string}`;
-            if (arbitraryCalldata && arbitraryCalldata.trim() !== '') {
+            if (isTlSwap && tlSwapCiphertext) {
+                // For TL-Swap, send the ciphertext as bytes
+                // The ciphertext is a JSON string, convert it to hex bytes
+                const ciphertextHex = Buffer.from(tlSwapCiphertext, 'utf-8').toString('hex');
+                callDataBytes = `0x${ciphertextHex}` as `0x${string}`;
+                console.log('📦 Using TL-Swap ciphertext in callData:', {
+                    length: ciphertextHex.length / 2,
+                    preview: ciphertextHex.substring(0, 100) + '...'
+                });
+            } else if (arbitraryCalldata && arbitraryCalldata.trim() !== '') {
                 callDataBytes = (arbitraryCalldata.startsWith('0x') ? arbitraryCalldata : `0x${arbitraryCalldata}`) as `0x${string}`;
             } else {
                 callDataBytes = '0x' as `0x${string}`;
@@ -1415,13 +1787,24 @@ export default function WithdrawPage() {
                                                                 const value = e.target.value;
                                                                 const normalized = value.toLowerCase();
                                                                 setTokenAddress(normalized);
+                                                                setTokenValidationError(null); // Clear error when user types
                                                             }}
                                                             placeholder="0x..."
                                                             className="text-xs sm:text-sm w-full"
                                                         />
-                                                        {tokenName && tokenSymbol && (
+                                                        {isValidatingToken && (
+                                                            <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                Validating ERC20 token...
+                                                            </p>
+                                                        )}
+                                                        {tokenValidationError && (
+                                                            <p className="text-[9px] font-mono text-red-500 mt-1">
+                                                                ⚠️ {tokenValidationError}
+                                                            </p>
+                                                        )}
+                                                        {tokenName && tokenSymbol && !tokenValidationError && (
                                                             <p className="text-[10px] font-mono text-accent text-right mt-1" style={{ textShadow: "0 0 8px rgba(0, 255, 136, 0.3)" }}>
-                                                                {tokenName} ({tokenSymbol})
+                                                                ✓ {tokenName} ({tokenSymbol}) - {tokenDecimals} decimals
                                                             </p>
                                                         )}
                                                     </div>
@@ -1564,25 +1947,34 @@ export default function WithdrawPage() {
                                                     )}
 
                                                     {/* TL Swap Checkbox */}
-                                                    <div className="flex items-center gap-2">
-                                                        <input
-                                                            type="checkbox"
-                                                            id="isTlSwap"
-                                                            checked={isTlSwap}
-                                                            onChange={(e) => {
-                                                                const checked = e.target.checked;
-                                                                setIsTlSwap(checked);
-                                                                // Clear arbitrary calldata when TL Swap is enabled
-                                                                if (checked) {
-                                                                    setArbitraryCalldata('');
-                                                                    setArbitraryCalldataHash('0x0');
-                                                                }
-                                                            }}
-                                                            className="w-4 h-4 rounded border-primary/50 bg-card/40 text-primary focus:ring-primary/50"
-                                                        />
-                                                        <label htmlFor="isTlSwap" className="text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider cursor-pointer">
-                                                            TL SWAP MODE
-                                                        </label>
+                                                    <div className="space-y-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <input
+                                                                type="checkbox"
+                                                                id="isTlSwap"
+                                                                checked={isTlSwap}
+                                                                onChange={(e) => {
+                                                                    const checked = e.target.checked;
+                                                                    setIsTlSwap(checked);
+                                                                    // Clear arbitrary calldata when TL Swap is enabled
+                                                                    if (checked) {
+                                                                        setArbitraryCalldata('');
+                                                                        setArbitraryCalldataHash('0x0');
+                                                                    }
+                                                                }}
+                                                                className="w-4 h-4 rounded border-primary/50 bg-card/40 text-primary focus:ring-primary/50"
+                                                            />
+                                                            <label htmlFor="isTlSwap" className="text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider cursor-pointer">
+                                                                TL SWAP MODE
+                                                            </label>
+                                                        </div>
+                                                        {isTlSwap && (
+                                                            <div className="ml-6 border-l-2 border-primary/30 pl-3 py-2">
+                                                                <p className="text-sm font-mono text-foreground leading-relaxed">
+                                                                    <span className="font-bold text-primary">Note:</span> Orders will be encrypted in a nested chain. The first order contains all subsequent orders. Sum of shares amounts must equal your total withdraw amount exactly.
+                                                                </p>
+                                                            </div>
+                                                        )}
                                                     </div>
 
                                                     {/* TL Swap Order Composition (only show if isTlSwap is true) */}
@@ -1675,7 +2067,7 @@ export default function WithdrawPage() {
                                                                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                                                                 <div>
                                                                                     <label className="block text-[10px] font-mono text-muted-foreground mb-1">
-                                                                                        Token Out Address
+                                                                                        Token Out Address {order.tokenOut && isValidatingTokenOut[order.tokenOut.toLowerCase()] && <span className="text-muted-foreground/50">(validating...)</span>}
                                                                                     </label>
                                                                                     <Input
                                                                                         type="text"
@@ -1684,29 +2076,100 @@ export default function WithdrawPage() {
                                                                                             const newOrders = [...tlOrders];
                                                                                             newOrders[index].tokenOut = e.target.value;
                                                                                             setTlOrders(newOrders);
+                                                                                            // Clear validation error when user types
+                                                                                            if (e.target.value) {
+                                                                                                setTokenOutValidationErrors(prev => {
+                                                                                                    const newObj = { ...prev };
+                                                                                                    delete newObj[e.target.value.toLowerCase()];
+                                                                                                    return newObj;
+                                                                                                });
+                                                                                            }
                                                                                         }}
                                                                                         placeholder="0x..."
                                                                                         className="text-xs w-full font-mono"
                                                                                     />
+                                                                                    {order.tokenOut && tokenOutValidationErrors[order.tokenOut.toLowerCase()] && (
+                                                                                        <p className="text-[9px] font-mono text-red-500 mt-1">
+                                                                                            ⚠️ {tokenOutValidationErrors[order.tokenOut.toLowerCase()]}
+                                                                                        </p>
+                                                                                    )}
+                                                                                    {order.tokenOut && tokenOutInfo[order.tokenOut.toLowerCase()] && !tokenOutValidationErrors[order.tokenOut.toLowerCase()] && (
+                                                                                        <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                            ✓ {tokenOutInfo[order.tokenOut.toLowerCase()]?.name} ({tokenOutInfo[order.tokenOut.toLowerCase()]?.symbol}) - {tokenOutInfo[order.tokenOut.toLowerCase()]?.decimals} decimals
+                                                                                        </p>
+                                                                                    )}
+                                                                                    {order.tokenOut && order.tokenOut.length === 42 && order.tokenOut.startsWith('0x') && !tokenOutInfo[order.tokenOut.toLowerCase()] && !isValidatingTokenOut[order.tokenOut.toLowerCase()] && !tokenOutValidationErrors[order.tokenOut.toLowerCase()] && (
+                                                                                        <p className="text-[9px] font-mono text-yellow-500 mt-1">
+                                                                                            ⚠️ Token validation in progress or token is not a valid ERC20
+                                                                                        </p>
+                                                                                    )}
                                                                                 </div>
                                                                                 <div>
                                                                                     <label className="block text-[10px] font-mono text-muted-foreground mb-1">
-                                                                                        Min Amount Out
+                                                                                        Min Amount Out {order.tokenOut && tokenOutDecimals[order.tokenOut.toLowerCase()] ? `(${tokenOutDecimals[order.tokenOut.toLowerCase()]} decimals)` : ''}
                                                                                     </label>
                                                                                     <Input
                                                                                         type="text"
                                                                                         value={order.amountOutMin}
                                                                                         onChange={(e) => {
+                                                                                            const value = e.target.value;
+
+                                                                                            // Allow empty or just a dot
+                                                                                            if (value === '' || value === '.') {
+                                                                                                const newOrders = [...tlOrders];
+                                                                                                newOrders[index].amountOutMin = value;
+                                                                                                setTlOrders(newOrders);
+                                                                                                return;
+                                                                                            }
+
+                                                                                            // Check if it's a valid decimal number
+                                                                                            if (!/^\d+\.?\d*$/.test(value.replace(',', '.'))) {
+                                                                                                return; // Don't update if invalid
+                                                                                            }
+
+                                                                                            // If tokenOut has decimals, limit decimal places
+                                                                                            if (order.tokenOut && tokenOutDecimals[order.tokenOut.toLowerCase()]) {
+                                                                                                const decimals = tokenOutDecimals[order.tokenOut.toLowerCase()];
+                                                                                                const sanitizedValue = value.replace(',', '.');
+                                                                                                const parts = sanitizedValue.split('.');
+
+                                                                                                if (parts.length === 2 && parts[1].length > decimals) {
+                                                                                                    // Truncate to max decimals
+                                                                                                    const truncated = parts[0] + '.' + parts[1].slice(0, decimals);
+                                                                                                    const newOrders = [...tlOrders];
+                                                                                                    newOrders[index].amountOutMin = truncated;
+                                                                                                    setTlOrders(newOrders);
+                                                                                                    return;
+                                                                                                }
+                                                                                            }
+
                                                                                             const newOrders = [...tlOrders];
-                                                                                            newOrders[index].amountOutMin = e.target.value;
+                                                                                            newOrders[index].amountOutMin = value;
                                                                                             setTlOrders(newOrders);
                                                                                         }}
                                                                                         placeholder="0"
                                                                                         className="text-xs w-full"
                                                                                     />
-                                                                                    <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
-                                                                                        Minimum tokens to receive
-                                                                                    </p>
+                                                                                    {order.tokenOut && !tokenOutInfo[order.tokenOut.toLowerCase()] && order.tokenOut.length === 42 && (
+                                                                                        <p className="text-[9px] font-mono text-yellow-500 mt-1">
+                                                                                            ⚠️ Token must be validated before entering amount
+                                                                                        </p>
+                                                                                    )}
+                                                                                    {order.tokenOut && tokenOutDecimals[order.tokenOut.toLowerCase()] && (
+                                                                                        <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                            Minimum tokens to receive (max {tokenOutDecimals[order.tokenOut.toLowerCase()]} decimals)
+                                                                                            {tokenOutInfo[order.tokenOut.toLowerCase()] && (
+                                                                                                <span className="ml-1 text-primary/70">
+                                                                                                    ({tokenOutInfo[order.tokenOut.toLowerCase()]?.symbol})
+                                                                                                </span>
+                                                                                            )}
+                                                                                        </p>
+                                                                                    )}
+                                                                                    {!order.tokenOut || !tokenOutDecimals[order.tokenOut.toLowerCase()] ? (
+                                                                                        <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                            Minimum tokens to receive
+                                                                                        </p>
+                                                                                    ) : null}
                                                                                 </div>
                                                                             </div>
 
@@ -1857,10 +2320,6 @@ export default function WithdrawPage() {
                                                                 </div>
                                                             )}
 
-                                                            <p className="text-[10px] font-mono text-muted-foreground/60 mt-2">
-                                                                Note: Orders will be encrypted in a nested chain. The first order contains all subsequent orders.
-                                                                Sum of shares amounts must equal your total withdraw amount exactly.
-                                                            </p>
                                                         </div>
                                                     )}
 
@@ -1872,6 +2331,69 @@ export default function WithdrawPage() {
                                                                 <p className="text-sm font-mono text-destructive uppercase tracking-wider">{proofError}</p>
                                                             </div>
                                                         </div>
+                                                    )}
+
+                                                    {/* IPFS Upload Status */}
+                                                    {isTlSwap && (
+                                                        <>
+                                                            {isUploadingToIPFS && (
+                                                                <div className="relative border border-primary/30 bg-card/40 backdrop-blur-sm p-3 sm:p-4 rounded-sm">
+                                                                    <div className="flex items-center gap-3">
+                                                                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-primary border-t-transparent"></div>
+                                                                        <p className="text-xs sm:text-sm font-mono text-primary uppercase tracking-wider">
+                                                                            UPLOADING CIPHERTEXT TO IPFS...
+                                                                        </p>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+
+                                                            {ipfsCid && (
+                                                                <div className="relative border border-primary/20 bg-card/40 backdrop-blur-sm p-3 sm:p-4 rounded-sm">
+                                                                    <div className="space-y-2">
+                                                                        <div className="flex items-center gap-2">
+                                                                            <span className="text-green-400 text-sm">✓</span>
+                                                                            <p className="text-xs sm:text-sm font-mono text-green-400 uppercase tracking-wider">
+                                                                                CIPHERTEXT UPLOADED TO IPFS
+                                                                            </p>
+                                                                        </div>
+                                                                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1 sm:gap-0">
+                                                                            <span className="text-[10px] sm:text-xs font-mono text-muted-foreground uppercase tracking-wider">IPFS CID:</span>
+                                                                            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 sm:gap-2">
+                                                                                <a
+                                                                                    href={getIPFSGatewayURL(ipfsCid)}
+                                                                                    target="_blank"
+                                                                                    rel="noopener noreferrer"
+                                                                                    className="text-[10px] sm:text-xs font-mono text-primary hover:text-primary/70 underline break-all transition-colors"
+                                                                                    style={{ textShadow: "0 0 5px rgba(139, 92, 246, 0.3)" }}
+                                                                                >
+                                                                                    {ipfsCid}
+                                                                                </a>
+                                                                                <button
+                                                                                    onClick={() => {
+                                                                                        navigator.clipboard.writeText(ipfsCid);
+                                                                                        toast('IPFS CID copied to clipboard', 'success');
+                                                                                    }}
+                                                                                    className="text-[10px] sm:text-xs font-mono text-muted-foreground hover:text-primary transition-colors"
+                                                                                >
+                                                                                    [Copy]
+                                                                                </button>
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+
+                                                            {ipfsError && (
+                                                                <div className="relative border border-destructive/30 bg-card/40 backdrop-blur-sm p-3 sm:p-4 rounded-sm">
+                                                                    <div className="flex items-center gap-2">
+                                                                        <span className="text-destructive/60 text-sm">✗</span>
+                                                                        <p className="text-xs sm:text-sm font-mono text-destructive uppercase tracking-wider">
+                                                                            IPFS ERROR: {ipfsError}
+                                                                        </p>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                        </>
                                                     )}
 
                                                     {/* Discovery Status */}
@@ -1898,6 +2420,58 @@ export default function WithdrawPage() {
                                                             </div>
                                                         </div>
                                                     )}
+
+                                                    {/* Test IPFS Upload Button */}
+                                                    <div className="mb-4 p-3 border border-primary/20 bg-card/40 rounded-sm">
+                                                        <div className="flex items-center justify-between mb-2">
+                                                            <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
+                                                                IPFS Test
+                                                            </p>
+                                                            <Button
+                                                                type="button"
+                                                                onClick={testIPFSUpload}
+                                                                disabled={isTestingIPFS}
+                                                                className="text-xs px-3 py-1.5 h-auto bg-accent/20 hover:bg-accent/30 text-accent border border-accent/50 font-mono uppercase transition-all duration-300"
+                                                                style={{ boxShadow: "0 0 10px rgba(0, 255, 136, 0.1)" }}
+                                                            >
+                                                                {isTestingIPFS ? 'UPLOADING...' : 'TEST IPFS UPLOAD'}
+                                                            </Button>
+                                                        </div>
+                                                        {testIpfsCid && (
+                                                            <div className="mt-2 p-2 bg-accent/10 border border-accent/30 rounded">
+                                                                <p className="text-[9px] font-mono text-accent mb-1">✓ Test Upload Successful</p>
+                                                                <div className="flex items-center gap-2">
+                                                                    <p className="text-[9px] font-mono text-muted-foreground break-all">
+                                                                        CID: {testIpfsCid}
+                                                                    </p>
+                                                                    <button
+                                                                        onClick={() => {
+                                                                            navigator.clipboard.writeText(testIpfsCid);
+                                                                            toast('CID copied to clipboard', 'success');
+                                                                        }}
+                                                                        className="text-accent hover:text-accent/70 transition-colors"
+                                                                    >
+                                                                        <Copy className="w-3 h-3" />
+                                                                    </button>
+                                                                    <a
+                                                                        href={getIPFSGatewayURL(testIpfsCid)}
+                                                                        target="_blank"
+                                                                        rel="noopener noreferrer"
+                                                                        className="text-accent hover:text-accent/70 transition-colors"
+                                                                    >
+                                                                        <ExternalLink className="w-3 h-3" />
+                                                                    </a>
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                        {testIpfsError && (
+                                                            <div className="mt-2 p-2 bg-destructive/10 border border-destructive/30 rounded">
+                                                                <p className="text-[9px] font-mono text-destructive">
+                                                                    ✗ {testIpfsError}
+                                                                </p>
+                                                            </div>
+                                                        )}
+                                                    </div>
 
                                                     {/* Generate Proof / Withdraw Button */}
                                                     <SpellButton

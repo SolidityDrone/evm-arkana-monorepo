@@ -2,9 +2,10 @@
 
 import { useState } from "react"
 import { AaveTokenInfo, getTokenLogoUrl } from "@/lib/aave-tokens"
-import { Copy, Check, ExternalLink } from "lucide-react"
+import { Copy, Check, ExternalLink, TrendingUp } from "lucide-react"
 import { Card, CardContent } from "./ui/card"
 import { Button } from "./ui/button"
+import { useAaveAPY } from "@/hooks/useAaveAPY"
 
 interface AaveTokenCardProps {
   token: AaveTokenInfo
@@ -14,6 +15,7 @@ export function AaveTokenCard({ token }: AaveTokenCardProps) {
   const [isHovered, setIsHovered] = useState(false)
   const [copied, setCopied] = useState(false)
   const [logoError, setLogoError] = useState(false)
+  const { currentAPY, isLoading: isLoadingAPY } = useAaveAPY(token.symbol)
 
   // Early return if token is invalid
   if (!token || !token.address) {
@@ -198,6 +200,29 @@ export function AaveTokenCard({ token }: AaveTokenCardProps) {
               <p className="text-xs font-mono text-foreground/80 bg-secondary/30 px-2 py-1 rounded border border-secondary/50 inline-block">
                 {token.decimals}
               </p>
+            </div>
+
+            {/* Supply APY */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
+                  Supply APY
+                </p>
+                <TrendingUp className="w-3 h-3 text-primary/60" />
+              </div>
+              {isLoadingAPY ? (
+                <p className="text-xs font-mono text-muted-foreground/60 animate-pulse">
+                  Loading...
+                </p>
+              ) : currentAPY ? (
+                <p className="text-xs font-mono text-accent font-bold bg-accent/10 px-2 py-1 rounded border border-accent/30 inline-block">
+                  {currentAPY}%
+                </p>
+              ) : (
+                <p className="text-xs font-mono text-muted-foreground/60">
+                  N/A
+                </p>
+              )}
             </div>
           </div>
 
