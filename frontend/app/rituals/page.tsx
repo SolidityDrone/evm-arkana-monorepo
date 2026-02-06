@@ -18,6 +18,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { TokenIcon } from '@/lib/token-icons';
 import { ARKANA_ADDRESS, ARKANA_ABI } from '@/lib/abi/ArkanaConst';
 
+type RitualMode = 'mage' | 'archon';
+
 export default function RitualsPage() {
     const { toast } = useToast();
     const zkAddress = useZkAddress();
@@ -26,6 +28,7 @@ export default function RitualsPage() {
     const [showTokenSelector, setShowTokenSelector] = useState(false);
     const [showTransactionModal, setShowTransactionModal] = useState(false);
     const [showLockInfo, setShowLockInfo] = useState(false);
+    const [ritualMode, setRitualMode] = useState<RitualMode>('mage');
 
     // Initialize hook
     const initializeHook = useInitialize();
@@ -99,10 +102,19 @@ export default function RitualsPage() {
     const tokenCurrentNonce = depositHook.tokenCurrentNonce;
     const isCheckingTokenState = depositHook.isCheckingTokenState;
 
-    // Use the appropriate hook based on initialization state
-    const activeHook = isTokenInitialized === true && tokenCurrentNonce !== null && tokenCurrentNonce > BigInt(0)
-        ? depositHook
-        : initializeHook;
+    // Determine if we're in initialize or deposit mode
+    // Archon mode ALWAYS uses initialize (never deposit)
+    const isDepositMode = ritualMode === 'mage' && isTokenInitialized === true && tokenCurrentNonce !== null && tokenCurrentNonce > BigInt(0);
+    const isInitializeMode = !isDepositMode;
+
+    // Use the appropriate hook based on initialization state and ritual mode
+    // In Archon mode, ALWAYS use initialize (horizontal user_key progression)
+    // In Mage mode, use deposit if token is already initialized
+    const activeHook = ritualMode === 'archon'
+        ? initializeHook  // Archon always uses initialize
+        : (isTokenInitialized === true && tokenCurrentNonce !== null && tokenCurrentNonce > BigInt(0)
+            ? depositHook
+            : initializeHook);
     
     // Use tokenDecimals from the active hook instead of local state
     const tokenDecimals = activeHook.tokenDecimals ?? null;
@@ -129,10 +141,10 @@ export default function RitualsPage() {
     // Show toast on success
     React.useEffect(() => {
         if (activeHook.isConfirmed && activeHook.txHash) {
-            const transactionType = isTokenInitialized ? 'DEPOSIT' : 'INITIALIZE';
+            const transactionType = isDepositMode ? 'DEPOSIT' : (ritualMode === 'archon' ? 'ARCHON INITIALIZE' : 'INITIALIZE');
             toast(`${transactionType} TRANSACTION CONFIRMED`, 'success');
         }
-    }, [activeHook.isConfirmed, activeHook.txHash, toast, isTokenInitialized]);
+    }, [activeHook.isConfirmed, activeHook.txHash, toast, isDepositMode, ritualMode]);
 
     // Show modal on error
     React.useEffect(() => {
@@ -251,10 +263,6 @@ export default function RitualsPage() {
         return result;
     }, [allowance, requiredAmount]);
 
-    // Determine if we're in initialize or deposit mode
-    const isDepositMode = isTokenInitialized === true && tokenCurrentNonce !== null && tokenCurrentNonce > BigInt(0);
-    const isInitializeMode = !isDepositMode;
-
     return (
         <div className="min-h-screen pt-24 pb-12 px-4 sm:px-6 lg:px-8 w-full overflow-x-hidden relative">
             {/* Subtle ambient glow */}
@@ -283,13 +291,20 @@ export default function RitualsPage() {
                     <p className="font-mono text-base md:text-lg text-muted-foreground max-w-xl mx-auto leading-relaxed">
                         {isDepositMode
                             ? 'Add funds to your private account in the Arkana network.'
-                            : 'Initialize your first position in the Arkana network. This ritual creates your initial commitment in the void.'}
-                        {isCheckingTokenState && tokenAddress && (
+                            : ritualMode === 'archon'
+                                ? 'Create a new liquidity position. Each Archon position uses a unique user_key (horizontal progression).'
+                                : 'Initialize your first position in the Arkana network. This ritual creates your initial commitment in the void.'}
+                        {isCheckingTokenState && tokenAddress && ritualMode === 'mage' && (
                             <span className="block mt-2 text-xs">Checking token state...</span>
                         )}
-                        {!isCheckingTokenState && tokenAddress && isTokenInitialized !== null && (
+                        {ritualMode === 'mage' && !isCheckingTokenState && tokenAddress && isTokenInitialized !== null && (
                             <span className={`block mt-2 text-xs ${isDepositMode ? 'text-accent' : 'text-yellow-400'}`}>
                                 {isDepositMode ? `✓ Token initialized - Deposit mode (Nonce: ${tokenCurrentNonce?.toString() || 'N/A'})` : '⚠ Token not initialized - Initialize mode'}
+                            </span>
+                        )}
+                        {ritualMode === 'archon' && tokenAddress && (
+                            <span className="block mt-2 text-xs text-primary/80">
+                                ◈ Archon mode - Always Initialize (new user_key offset)
                             </span>
                         )}
                     </p>
@@ -313,6 +328,30 @@ export default function RitualsPage() {
 
                     <Card className="relative bg-card/60 backdrop-blur-sm border-0 w-full min-w-0">
                         <CardHeader className="border-b border-border/30 bg-card/40 py-4 px-4 sm:px-6 mb-4">
+                            {/* Mage/Archon Mode Toggle */}
+                            <div className="flex justify-end mb-3">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">Mode:</span>
+                                    <div className="flex gap-1 border border-border/50 rounded p-0.5 bg-card/60">
+                                        <Button
+                                            size="sm"
+                                            variant={ritualMode === 'mage' ? 'default' : 'ghost'}
+                                            onClick={() => setRitualMode('mage')}
+                                            className="h-6 px-2 text-[10px] font-mono uppercase tracking-wider"
+                                        >
+                                            Mage
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            variant={ritualMode === 'archon' ? 'default' : 'ghost'}
+                                            onClick={() => setRitualMode('archon')}
+                                            className="h-6 px-2 text-[10px] font-mono uppercase tracking-wider"
+                                        >
+                                            Archon
+                                        </Button>
+                                    </div>
+                                </div>
+                            </div>
                             <div className="flex items-center gap-3 justify-center mb-2">
                                 <span className="text-primary/60 text-sm">✧</span>
                                 <CardTitle className="text-center text-base sm:text-xl font-sans tracking-wider uppercase" style={{ textShadow: "0 0 20px rgba(139, 92, 246, 0.3)" }}>
@@ -321,8 +360,17 @@ export default function RitualsPage() {
                                 <span className="text-primary/60 text-sm">✧</span>
                             </div>
                             <CardDescription className="text-center text-xs sm:text-sm font-mono text-muted-foreground tracking-wider">
-                                {isDepositMode ? 'ADD FUNDS TO YOUR PRIVATE ACCOUNT' : 'CREATE YOUR FIRST POSITION IN THE VOID'}
+                                {isDepositMode 
+                                    ? 'ADD FUNDS TO YOUR PRIVATE ACCOUNT' 
+                                    : ritualMode === 'archon'
+                                        ? 'CREATE NEW LIQUIDITY POSITION (HORIZONTAL)'
+                                        : 'CREATE YOUR FIRST POSITION IN THE VOID'}
                             </CardDescription>
+                            {ritualMode === 'archon' && (
+                                <p className="text-center text-[10px] font-mono text-accent/80 mt-2">
+                                    ◈ Archon mode uses user_key+N for each new position
+                                </p>
+                            )}
                         </CardHeader>
                         <CardContent className="p-3 sm:p-6 w-full">
                             <div className="space-y-4 w-full">

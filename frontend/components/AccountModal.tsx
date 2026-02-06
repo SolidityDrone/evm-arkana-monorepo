@@ -3,9 +3,9 @@
 import { useNonceDiscovery, BalanceEntry } from '@/hooks/useNonceDiscovery';
 import { useZkAddress, useAccount } from '@/context/AccountProvider';
 import { useAccountState } from '@/context/AccountStateProvider';
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { usePublicClient } from 'wagmi';
-import { Address } from 'viem';
+import { Address, formatUnits } from 'viem';
 import { saveTokenAccountData, loadTokenAccountData, TokenAccountData, getTokenAddresses, loadAccountData, AccountData, DiscoveryMode, saveDiscoveryMode } from '@/lib/indexeddb';
 import { useAaveTokens } from '@/hooks/useAaveTokens';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
@@ -15,6 +15,7 @@ import { reconstructTokenHistory, TransactionHistoryEntry } from '@/lib/transact
 import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
 import { ChevronDown, ChevronUp, Clock } from 'lucide-react';
 import { TokenIcon } from '@/lib/token-icons';
+import { convertSharesToAssets } from '@/lib/shares-to-assets';
 
 interface AccountModalProps {
     isOpen: boolean;
@@ -53,8 +54,98 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
     const [historyErrors, setHistoryErrors] = useState<Map<string, string>>(new Map());
     const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('mage');
     const [skipCacheOnNextDiscovery, setSkipCacheOnNextDiscovery] = useState(false);
+    // Map of "tokenAddress-nonce" -> converted asset value (bigint)
+    const [convertedAssets, setConvertedAssets] = useState<Map<string, bigint>>(new Map());
+    const [isConvertingAssets, setIsConvertingAssets] = useState<Set<string>>(new Set());
 
     const isModalClosedRef = useRef(false);
+
+    // Helper function to format value with decimals
+    const formatTokenValue = useCallback((value: bigint, decimals: number, maxDecimals: number = 6): string => {
+        const formatted = formatUnits(value, decimals);
+        const parts = formatted.split('.');
+        if (parts.length === 1) return parts[0];
+        const intPart = parts[0];
+        const decPart = parts[1].slice(0, maxDecimals);
+        // Remove trailing zeros
+        const trimmedDec = decPart.replace(/0+$/, '');
+        if (!trimmedDec) return intPart;
+        return `${intPart}.${trimmedDec}`;
+    }, []);
+
+    // Ref to track pending conversions to avoid duplicates
+    const pendingConversionsRef = useRef<Set<string>>(new Set());
+
+    // Convert shares to assets for all balance entries when tokenDataMap changes
+    useEffect(() => {
+        if (!publicClient || tokenDataMap.size === 0) return;
+
+        const convertAll = async () => {
+            const conversionsToMake: Array<{ tokenAddress: string; nonce: bigint; shares: bigint; key: string }> = [];
+
+            for (const [tokenAddress, tokenData] of tokenDataMap.entries()) {
+                for (const entry of tokenData.balanceEntries) {
+                    const entryNonce = typeof entry.nonce === 'string' ? BigInt(entry.nonce) : entry.nonce;
+                    const key = `${tokenAddress.toLowerCase()}-${entryNonce.toString()}`;
+
+                    // Skip if already converted, currently converting, or pending
+                    if (convertedAssets.has(key) || isConvertingAssets.has(key) || pendingConversionsRef.current.has(key)) {
+                        continue;
+                    }
+
+                    if (entry.amount > BigInt(0)) {
+                        conversionsToMake.push({ tokenAddress, nonce: entryNonce, shares: entry.amount, key });
+                        pendingConversionsRef.current.add(key);
+                    }
+                }
+            }
+
+            if (conversionsToMake.length === 0) return;
+
+            // Mark all as converting
+            setIsConvertingAssets(prev => {
+                const newSet = new Set(prev);
+                conversionsToMake.forEach(c => newSet.add(c.key));
+                return newSet;
+            });
+
+            // Convert in parallel
+            const results = await Promise.all(
+                conversionsToMake.map(async ({ tokenAddress, shares, key }) => {
+                    try {
+                        const assets = await convertSharesToAssets(publicClient, tokenAddress as Address, shares);
+                        return { key, assets };
+                    } catch (error) {
+                        console.error('Error converting shares to assets:', error);
+                        return { key, assets: null };
+                    }
+                })
+            );
+
+            // Update state with all results
+            setConvertedAssets(prev => {
+                const newMap = new Map(prev);
+                for (const { key, assets } of results) {
+                    if (assets !== null) {
+                        newMap.set(key, assets);
+                    }
+                }
+                return newMap;
+            });
+
+            // Clear converting state
+            setIsConvertingAssets(prev => {
+                const newSet = new Set(prev);
+                conversionsToMake.forEach(c => {
+                    newSet.delete(c.key);
+                    pendingConversionsRef.current.delete(c.key);
+                });
+                return newSet;
+            });
+        };
+
+        convertAll();
+    }, [publicClient, tokenDataMap, convertedAssets, isConvertingAssets]);
 
     const loadSavedData = useCallback(async () => {
         if (!zkAddress) return;
@@ -343,6 +434,9 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         setSkipCacheOnNextDiscovery(true);
         // Clear token data to trigger re-discovery with new mode
         setTokenDataMap(new Map());
+        // Clear converted assets for new mode
+        setConvertedAssets(new Map());
+        pendingConversionsRef.current.clear();
     }, [zkAddress]);
 
     // Auto-discover tokens when modal opens
@@ -457,11 +551,25 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                                             <p className="text-xs text-muted-foreground mt-2">
                                                                 Current Nonce: {tokenData.currentNonce?.toString() || 'N/A'}
                                                             </p>
-                                                            {currentBalanceEntry && (
-                                                                <p className="text-xs text-foreground font-semibold mt-1">
-                                                                    Current Balance: {currentBalanceEntry.amount.toString()} shares (at nonce {previousNonce.toString()})
-                                                                </p>
-                                                            )}
+                                                            {currentBalanceEntry && (() => {
+                                                                const assetKey = `${tokenAddress.toLowerCase()}-${previousNonce.toString()}`;
+                                                                const convertedValue = convertedAssets.get(assetKey);
+                                                                const isConverting = isConvertingAssets.has(assetKey);
+                                                                const decimals = tokenInfo?.decimals || 18;
+                                                                
+                                                                return (
+                                                                    <div className="text-xs text-foreground font-semibold mt-1">
+                                                                        <p>Current Balance: {currentBalanceEntry.amount.toString()} shares (at nonce {previousNonce.toString()})</p>
+                                                                        {convertedValue !== undefined ? (
+                                                                            <p className="text-primary mt-0.5">
+                                                                                ≈ {formatTokenValue(convertedValue, decimals)} {tokenSymbol}
+                                                                            </p>
+                                                                        ) : isConverting ? (
+                                                                            <p className="text-muted-foreground mt-0.5">Converting...</p>
+                                                                        ) : null}
+                                                                    </div>
+                                                                );
+                                                            })()}
                                                             <p className="text-xs text-muted-foreground mt-1">
                                                                 Balance Entries: {tokenData.balanceEntries.length}
                                                             </p>
@@ -481,21 +589,37 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                                                     return 0;
                                                                 });
                                                                 
+                                                                const decimals = tokenInfo?.decimals || 18;
+                                                                
                                                                 return (
                                                                     <div className="mt-2 space-y-1">
                                                                         {sortedEntries.map((entry) => {
                                                                             const entryNonce = typeof entry.nonce === 'string' ? BigInt(entry.nonce) : entry.nonce;
                                                                             const isCurrent = entryNonce === previousNonce;
+                                                                            const assetKey = `${tokenAddress.toLowerCase()}-${entryNonce.toString()}`;
+                                                                            const convertedValue = convertedAssets.get(assetKey);
+                                                                            const isConverting = isConvertingAssets.has(assetKey);
+                                                                            
                                                                             return (
                                                                                 <div 
                                                                                     key={`${tokenAddress}-nonce-${entry.nonce.toString()}`} 
                                                                                     className={`text-xs font-mono ${isCurrent ? 'font-semibold text-foreground bg-primary/10 px-2 py-1 rounded border border-primary/20' : 'text-muted-foreground'}`}
                                                                                 >
-                                                                                    <span className="inline-block w-16">Nonce {entry.nonce.toString()}:</span>
-                                                                                    <span className={isCurrent ? 'text-primary' : ''}>
-                                                                                        {entry.amount.toString()} shares
-                                                                                    </span>
-                                                                                    {isCurrent && <span className="ml-2 text-accent">(current)</span>}
+                                                                                    <div className="flex flex-wrap items-baseline gap-x-2">
+                                                                                        <span className="inline-block w-16">Nonce {entry.nonce.toString()}:</span>
+                                                                                        <span className={isCurrent ? 'text-primary' : ''}>
+                                                                                            {entry.amount.toString()} shares
+                                                                                        </span>
+                                                                                        {convertedValue !== undefined && (
+                                                                                            <span className={`${isCurrent ? 'text-primary/80' : 'text-muted-foreground/80'}`}>
+                                                                                                (≈ {formatTokenValue(convertedValue, decimals)} {tokenSymbol})
+                                                                                            </span>
+                                                                                        )}
+                                                                                        {isConverting && (
+                                                                                            <span className="text-muted-foreground/60">(...)</span>
+                                                                                        )}
+                                                                                        {isCurrent && <span className="text-accent">(current)</span>}
+                                                                                    </div>
                                                                                 </div>
                                                                             );
                                                                         })}
