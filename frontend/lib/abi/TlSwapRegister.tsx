@@ -71,9 +71,14 @@ const TLSWAP_REGISTER_ABI = [
         "name": "executeSwapIntent",
         "inputs": [
             {
-                "name": "intentId",
+                "name": "orderId",
                 "type": "bytes32",
                 "internalType": "bytes32"
+            },
+            {
+                "name": "chunkIndex",
+                "type": "uint256",
+                "internalType": "uint256"
             },
             {
                 "name": "intentor",
@@ -107,13 +112,13 @@ const TLSWAP_REGISTER_ABI = [
             },
             {
                 "name": "slippageBps",
-                "type": "uint8",
-                "internalType": "uint8"
+                "type": "uint16",
+                "internalType": "uint16"
             },
             {
                 "name": "deadline",
-                "type": "uint24",
-                "internalType": "uint24"
+                "type": "uint256",
+                "internalType": "uint256"
             },
             {
                 "name": "executionFeeBps",
@@ -147,11 +152,6 @@ const TLSWAP_REGISTER_ABI = [
             },
             {
                 "name": "nextHash",
-                "type": "uint256",
-                "internalType": "uint256"
-            },
-            {
-                "name": "tlHashchain",
                 "type": "uint256",
                 "internalType": "uint256"
             }
@@ -275,6 +275,49 @@ const TLSWAP_REGISTER_ABI = [
     },
     {
         "type": "function",
+        "name": "orderChunkHashes",
+        "inputs": [
+            {
+                "name": "",
+                "type": "bytes32",
+                "internalType": "bytes32"
+            },
+            {
+                "name": "",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "",
+                "type": "bytes32",
+                "internalType": "bytes32"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "getOrderChunkHashes",
+        "inputs": [
+            {
+                "name": "orderId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "",
+                "type": "bytes32[]",
+                "internalType": "bytes32[]"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
         "name": "registerEncryptedOrder",
         "inputs": [
             {
@@ -286,6 +329,11 @@ const TLSWAP_REGISTER_ABI = [
                 "name": "ciphertextIpfs",
                 "type": "bytes",
                 "internalType": "bytes"
+            },
+            {
+                "name": "_orderHashes",
+                "type": "bytes32[]",
+                "internalType": "bytes32[]"
             }
         ],
         "outputs": [
@@ -482,6 +530,16 @@ const TLSWAP_REGISTER_ABI = [
     {
         "type": "error",
         "name": "InvalidHashChain",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "InvalidOrderHash",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "OrderChunkNotFound",
         "inputs": []
     },
     {

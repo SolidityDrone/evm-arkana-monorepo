@@ -182,10 +182,11 @@ contract TLswapRegisterTest is Test {
         bytes32 newNonceCommitment =
             bytes32(uint256(0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef));
         bytes memory ciphertext = hex"1234567890abcdef";
+        bytes32[] memory orderHashes = new bytes32[](0); // Empty array for this test
 
         // Must be called by Arkana
         vm.prank(address(arkana));
-        bytes32 orderId = tlswapRegister.registerEncryptedOrder(newNonceCommitment, ciphertext);
+        bytes32 orderId = tlswapRegister.registerEncryptedOrder(newNonceCommitment, ciphertext, orderHashes);
 
         assertEq(orderId, newNonceCommitment, "Order ID should match newNonceCommitment");
         assertEq(

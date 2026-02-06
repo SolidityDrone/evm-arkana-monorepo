@@ -129,6 +129,7 @@ export default function WithdrawPage() {
     const [isUploadingToIPFS, setIsUploadingToIPFS] = useState(false);
     const [ipfsError, setIpfsError] = useState<string | null>(null);
     const [tlSwapCiphertext, setTlSwapCiphertext] = useState<string | null>(null);
+    const [tlOrderHashes, setTlOrderHashes] = useState<`0x${string}`[] | null>(null);
     const [testIpfsCid, setTestIpfsCid] = useState<string | null>(null);
     const [isTestingIPFS, setIsTestingIPFS] = useState(false);
     const [testIpfsError, setTestIpfsError] = useState<string | null>(null);
@@ -1276,6 +1277,7 @@ export default function WithdrawPage() {
             setIpfsCid(null);
             setIpfsError(null);
             setTlSwapCiphertext(null);
+            setTlOrderHashes(null);
 
             const startTime = performance.now();
             await initializeBackend();
@@ -1601,8 +1603,10 @@ export default function WithdrawPage() {
                         throw new Error('Failed to create order chain ciphertext');
                     }
 
-                    // Store ciphertext for transaction
+                    // Store ciphertext and order hashes for transaction
                     setTlSwapCiphertext(firstOrder.fullCiphertext);
+                    setTlOrderHashes(orderChainResult.orderHashes);
+                    console.log('📋 Order hashes for integrity validation:', orderChainResult.orderHashes);
 
                     console.log('📤 Uploading ciphertext to IPFS...');
 
@@ -1742,13 +1746,23 @@ export default function WithdrawPage() {
             // For TL-Swap, use the ciphertext; otherwise use arbitraryCalldata if provided
             let callDataBytes: `0x${string}`;
             if (isTlSwap && tlSwapCiphertext) {
-                // For TL-Swap, send the ciphertext as bytes
-                // The ciphertext is a JSON string, convert it to hex bytes
-                const ciphertextHex = Buffer.from(tlSwapCiphertext, 'utf-8').toString('hex');
-                callDataBytes = `0x${ciphertextHex}` as `0x${string}`;
-                console.log('📦 Using TL-Swap ciphertext in callData:', {
-                    length: ciphertextHex.length / 2,
-                    preview: ciphertextHex.substring(0, 100) + '...'
+                // For TL-Swap, encode ciphertext and orderHashes together
+                // The contract expects abi.encode(ciphertext, orderHashes)
+                const ciphertextBytes = Buffer.from(tlSwapCiphertext, 'utf-8');
+                const orderHashesArray = tlOrderHashes || [];
+
+                // Use viem's encodeAbiParameters to create the encoded calldata
+                const { encodeAbiParameters, parseAbiParameters } = await import('viem');
+                callDataBytes = encodeAbiParameters(
+                    parseAbiParameters('bytes, bytes32[]'),
+                    [`0x${ciphertextBytes.toString('hex')}`, orderHashesArray]
+                );
+
+                console.log('📦 Using TL-Swap encoded callData:', {
+                    ciphertextLength: ciphertextBytes.length,
+                    orderHashesCount: orderHashesArray.length,
+                    orderHashes: orderHashesArray,
+                    totalLength: callDataBytes.length / 2 - 1
                 });
             } else if (arbitraryCalldata && arbitraryCalldata.trim() !== '') {
                 callDataBytes = (arbitraryCalldata.startsWith('0x') ? arbitraryCalldata : `0x${arbitraryCalldata}`) as `0x${string}`;

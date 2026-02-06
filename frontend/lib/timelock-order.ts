@@ -4,8 +4,10 @@
 
 import { bn254 } from '@noble/curves/bn254.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { keccak_256 } from '@noble/hashes/sha3';
 import { randomBytes } from '@noble/curves/utils.js';
 import { ensureBufferPolyfill } from './buffer-polyfill';
+import { encodeAbiParameters, parseAbiParameters } from 'viem';
 
 // Helper to get Buffer safely
 async function getBuffer(): Promise<typeof import('buffer').Buffer> {
@@ -83,6 +85,42 @@ export interface HashChainData {
 export interface OrderChainResult {
     orders: EncryptedOrder[];
     hashChain: HashChainData;
+    /** keccak256 hashes of each order chunk for integrity validation on-chain */
+    orderHashes: `0x${string}`[];
+}
+
+/**
+ * Compute keccak256 hash of order parameters for integrity validation
+ * Must match Solidity: keccak256(abi.encode(sharesAmount, amountOutMin, slippageBps, deadline, executionFeeBps, recipient, tokenOut, drandRound))
+ */
+export function computeOrderHash(
+    sharesAmount: bigint,
+    amountOutMin: bigint,
+    slippageBps: number,
+    deadline: number,
+    executionFeeBps: number,
+    recipient: string,
+    tokenOut: string,
+    drandRound: number
+): `0x${string}` {
+    // Encode parameters matching Solidity's abi.encode
+    const encoded = encodeAbiParameters(
+        parseAbiParameters('uint256, uint256, uint16, uint256, uint256, address, address, uint256'),
+        [
+            sharesAmount,
+            amountOutMin,
+            slippageBps,
+            BigInt(deadline),
+            BigInt(executionFeeBps),
+            recipient as `0x${string}`,
+            tokenOut as `0x${string}`,
+            BigInt(drandRound)
+        ]
+    );
+
+    // Compute keccak256 hash
+    const hashBytes = keccak_256(Buffer.from(encoded.slice(2), 'hex'));
+    return ('0x' + Buffer.from(hashBytes).toString('hex')) as `0x${string}`;
 }
 
 /**
@@ -518,7 +556,27 @@ export async function createOrderChain(
         encryptedOrders.unshift(encryptedOrder);
     }
 
-    // Return encrypted orders with hash chain metadata
+    // Compute keccak256 hashes for each order chunk (for on-chain integrity validation)
+    // These hashes are computed in forward order (matching chunk indices)
+    const orderHashes: `0x${string}`[] = [];
+    for (let i = 0; i < orders.length; i++) {
+        const order = orders[i];
+        const round = startRound + (i * roundStep);
+        
+        const hash = computeOrderHash(
+            BigInt(order.sharesAmount?.toString() || '0'),
+            BigInt(order.amountOutMin?.toString() || '0'),
+            order.slippageBps || 0,
+            order.deadline || 0,
+            order.executionFeeBps || 0,
+            order.recipient || '',
+            order.tokenOut || '',
+            round
+        );
+        orderHashes.push(hash);
+    }
+
+    // Return encrypted orders with hash chain metadata and order hashes
     return {
         orders: encryptedOrders,
         hashChain: {
@@ -526,7 +584,8 @@ export async function createOrderChain(
             h0: hashChain[0].toString(),
             tlHashchain: tlHashchain.toString(), // Final hash (public on-chain)
             totalShares: totalShares.toString()
-        }
+        },
+        orderHashes // keccak256 hashes for on-chain integrity validation
     };
 }
 

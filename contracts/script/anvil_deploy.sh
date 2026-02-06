@@ -123,7 +123,7 @@ fi
 trap restore_merkle_files EXIT
 
 forge script script/VerifierDeployer.s.sol \
-    --skip "test/**" "src/Arkana.sol" "src/ArkanaVault.sol" "src/uni-v4-hook/**" "src/tl-limit/**" \
+    --skip "test/**" "src/Arkana.sol" "src/ArkanaVault.sol"  "src/tl-limit/**" \
     --broadcast \
     --rpc-url "$RPC_URL" \
     --keystore "$KEYSTORE" \

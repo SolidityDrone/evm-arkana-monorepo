@@ -43,6 +43,10 @@ contract TLswapRegister is ReentrancyGuard {
     /// @dev orderId is now the newNonceCommitment from the withdraw circuit
     mapping(bytes32 => bytes) public encryptedOrdersByNonce;
 
+    /// @notice Mapping from orderId to array of order chunk hashes for integrity validation
+    /// @dev Each chunk hash = keccak256(abi.encode(sharesAmount, amountOutMin, slippageBps, deadline, executionFeeBps, recipient, tokenOut, drandRound))
+    mapping(bytes32 => bytes32[]) public orderChunkHashes;
+
     /// @notice dRand evmnet configuration (hardcoded)
     struct DrandInfo {
         bytes publicKey; // Public key hex string
@@ -79,6 +83,8 @@ contract TLswapRegister is ReentrancyGuard {
     error OnlyArkana();
     error InvalidHashChain();
     error HashChainNodeAlreadyUsed();
+    error InvalidOrderHash();
+    error OrderChunkNotFound();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert OnlyOwner();
@@ -125,12 +131,15 @@ contract TLswapRegister is ReentrancyGuard {
      *      and optionally the next order's ciphertext in a nested encryption chain
      * @param newNonceCommitment The newNonceCommitment from withdraw circuit (used as orderId)
      * @param ciphertextIpfs The encrypted order data (AES-128 encrypted JSON)
+     * @param _orderHashes Array of keccak256 hashes for each order chunk for integrity validation
+     *        Each hash = keccak256(abi.encode(sharesAmount, amountOutMin, slippageBps, deadline, executionFeeBps, recipient, tokenOut, drandRound))
      * @return orderId The orderId (same as newNonceCommitment)
      */
-    function registerEncryptedOrder(bytes32 newNonceCommitment, bytes calldata ciphertextIpfs)
-        external
-        returns (bytes32 orderId)
-    {
+    function registerEncryptedOrder(
+        bytes32 newNonceCommitment,
+        bytes calldata ciphertextIpfs,
+        bytes32[] calldata _orderHashes
+    ) external returns (bytes32 orderId) {
         if (msg.sender != address(arkana)) {
             revert OnlyArkana();
         }
@@ -145,9 +154,23 @@ contract TLswapRegister is ReentrancyGuard {
         // Store encrypted order by nonce commitment
         encryptedOrdersByNonce[orderId] = ciphertextIpfs;
 
+        // Store order chunk hashes for integrity validation during execution
+        if (_orderHashes.length > 0) {
+            orderChunkHashes[orderId] = _orderHashes;
+        }
+
         emit EncryptedOrderRegistered(orderId, ciphertextIpfs);
 
         return orderId;
+    }
+
+    /**
+     * @notice Get order chunk hashes for an order
+     * @param orderId The order identifier (newNonceCommitment)
+     * @return Array of chunk hashes
+     */
+    function getOrderChunkHashes(bytes32 orderId) external view returns (bytes32[] memory) {
+        return orderChunkHashes[orderId];
     }
 
     /**
@@ -164,15 +187,17 @@ contract TLswapRegister is ReentrancyGuard {
      * @dev Called by off-chain executor after decrypting the intent from timelock ciphertext
      * @dev Uses amountOutMin as target - swaps all available tokens to achieve best output
      * @dev Verifies hash chain: hash(prevHash, sharesAmount) == nextHash
-     * @param intentId Unique identifier for the intent (hash of encrypted data)
+     * @dev Verifies order integrity: keccak256(abi.encode(params)) == stored orderChunkHash
+     * @param orderId The order identifier (newNonceCommitment from withdraw circuit)
+     * @param chunkIndex Index of this chunk in the order (0-indexed)
      * @param intentor Address that created the intent (from Arkana withdraw)
      * @param tokenAddress Token address (for Arkana vault operations)
      * @param sharesAmount Amount of shares to withdraw from Arkana (encrypted in ciphertext)
      * @param tokenIn Token to swap from
      * @param tokenOut Token to swap to
      * @param amountOutMin Minimum amount out (target for swap)
-     * @param slippageBps Slippage in basis points (0-255, representing 0-2.55%)
-     * @param deadline Deadline timestamp (uint24, max ~194 days)
+     * @param slippageBps Slippage in basis points (0-1000, representing 0-10%)
+     * @param deadline Deadline timestamp
      * @param executionFeeBps Execution fee in basis points (paid to executor)
      * @param recipient Address to receive swapped tokens
      * @param drandRound dRand round when intent becomes decryptable
@@ -180,28 +205,49 @@ contract TLswapRegister is ReentrancyGuard {
      * @param swapTarget The target contract for the swap (e.g., Universal Router address)
      * @param prevHash Previous hash in the hash chain (h_{i-1})
      * @param nextHash Next hash in the hash chain (h_i) - should equal hash(prevHash, sharesAmount)
-     * @param tlHashchain Final hash chain value from withdraw circuit (public output)
      * @return amountOut The amount of tokens received by the recipient (after fees)
      */
     function executeSwapIntent(
-        bytes32 intentId,
+        bytes32 orderId,
+        uint256 chunkIndex,
         address intentor,
         address tokenAddress,
         uint256 sharesAmount,
         address tokenIn,
         address tokenOut,
         uint256 amountOutMin,
-        uint8 slippageBps,
-        uint24 deadline,
+        uint16 slippageBps,
+        uint256 deadline,
         uint256 executionFeeBps,
         address recipient,
         uint256 drandRound,
         bytes calldata swapCalldata,
         address swapTarget,
         uint256 prevHash,
-        uint256 nextHash,
-        uint256 tlHashchain
+        uint256 nextHash
     ) external nonReentrant returns (uint256 amountOut) {
+        // === ORDER INTEGRITY VALIDATION ===
+        // Validate that provided parameters match the stored hash (prevents executor tampering)
+        bytes32[] storage storedHashes = orderChunkHashes[orderId];
+        if (storedHashes.length == 0) {
+            revert OrderChunkNotFound();
+        }
+        if (chunkIndex >= storedHashes.length) {
+            revert OrderChunkNotFound();
+        }
+
+        // Compute hash of the provided order parameters
+        bytes32 computedHash = keccak256(
+            abi.encode(
+                sharesAmount, amountOutMin, slippageBps, deadline, executionFeeBps, recipient, tokenOut, drandRound
+            )
+        );
+
+        // Verify hash matches stored hash
+        if (computedHash != storedHashes[chunkIndex]) {
+            revert InvalidOrderHash();
+        }
+
         // Validate deadline
         if (deadline <= block.timestamp) {
             revert IntentExpired();
@@ -212,7 +258,7 @@ contract TLswapRegister is ReentrancyGuard {
             revert InvalidAmounts();
         }
 
-        // Validate slippage (max 2.55% = 255 bps)
+        // Validate slippage (max 10% = 1000 bps)
         if (slippageBps > MAX_SLIPPAGE_BPS) {
             revert InvalidSlippage();
         }
@@ -246,11 +292,6 @@ contract TLswapRegister is ReentrancyGuard {
 
         // Mark prevHash as used (nullifier) to prevent chunk reuse
         usedHashChainNodes[prevHash] = true;
-
-        // Note: We don't verify nextHash == tlHashchain here because:
-        // - tlHashchain is the FINAL hash after all chunks
-        // - We verify chunks sequentially, so we only verify the immediate chain step
-        // - The final verification (nextHash == tlHashchain) happens when the last chunk is executed
 
         // Withdraw tokens from Arkana vault using sharesAmount
         // This calls Arkana's function that withdraws from Aave and sends tokens to this contract
@@ -316,7 +357,7 @@ contract TLswapRegister is ReentrancyGuard {
             IERC20(tokenOut).safeTransfer(recipient, recipientAmount);
         }
 
-        emit SwapIntentExecuted(intentId, msg.sender, intentor, tokenIn, tokenOut, availableAmount, recipientAmount);
+        emit SwapIntentExecuted(orderId, msg.sender, intentor, tokenIn, tokenOut, availableAmount, recipientAmount);
 
         return recipientAmount;
     }

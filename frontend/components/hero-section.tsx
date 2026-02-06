@@ -73,33 +73,43 @@ export function HeroSection() {
             <div className="relative z-20 max-w-5xl mx-auto px-4 text-center mt-[250px] md:mt-[300px]">
                 <h1 className="font-sans text-3xl md:text-5xl lg:text-6xl text-foreground mb-6 leading-tight tracking-wider">
                     <span
-                        className="block text-primary"
+                        className="block"
                         style={{
+                            color: "#000000",
                             textShadow: `
-                                -2px -2px 0 rgba(255, 255, 255, 0.8),
-                                2px -2px 0 rgba(255, 255, 255, 0.8),
-                                -2px 2px 0 rgba(255, 255, 255, 0.8),
-                                2px 2px 0 rgba(255, 255, 255, 0.8),
+                                -2px -2px 0 rgba(255, 255, 255, 1),
+                                2px -2px 0 rgba(255, 255, 255, 1),
+                                -2px 2px 0 rgba(255, 255, 255, 1),
+                                2px 2px 0 rgba(255, 255, 255, 1),
+                                -3px -3px 0 rgba(255, 255, 255, 0.8),
+                                3px -3px 0 rgba(255, 255, 255, 0.8),
+                                -3px 3px 0 rgba(255, 255, 255, 0.8),
+                                3px 3px 0 rgba(255, 255, 255, 0.8),
                                 0 0 30px rgba(168, 85, 247, 0.7),
                                 0 0 60px rgba(168, 85, 247, 0.5)
                             `,
-                            WebkitTextStroke: "1px rgba(255, 255, 255, 0.6)",
+                            WebkitTextStroke: "2px rgba(255, 255, 255, 1)",
                             paintOrder: "stroke fill"
                         }}
                     >
                         ARKANA
                     </span>
                     <span
-                        className="block mt-3 text-lg md:text-2xl lg:text-3xl text-foreground/80 font-mono tracking-widest"
+                        className="block mt-3 text-lg md:text-2xl lg:text-3xl font-mono tracking-widest"
                         style={{
+                            color: "#000000",
                             textShadow: `
-                                -1px -1px 0 rgba(255, 255, 255, 0.7),
-                                1px -1px 0 rgba(255, 255, 255, 0.7),
-                                -1px 1px 0 rgba(255, 255, 255, 0.7),
-                                1px 1px 0 rgba(255, 255, 255, 0.7),
+                                -1px -1px 0 rgba(255, 255, 255, 1),
+                                1px -1px 0 rgba(255, 255, 255, 1),
+                                -1px 1px 0 rgba(255, 255, 255, 1),
+                                1px 1px 0 rgba(255, 255, 255, 1),
+                                -2px -2px 0 rgba(255, 255, 255, 0.8),
+                                2px -2px 0 rgba(255, 255, 255, 0.8),
+                                -2px 2px 0 rgba(255, 255, 255, 0.8),
+                                2px 2px 0 rgba(255, 255, 255, 0.8),
                                 0 0 20px rgba(168, 85, 247, 0.5)
                             `,
-                            WebkitTextStroke: "0.5px rgba(255, 255, 255, 0.5)",
+                            WebkitTextStroke: "1.5px rgba(255, 255, 255, 1)",
                             paintOrder: "stroke fill"
                         }}
                     >
@@ -108,26 +118,24 @@ export function HeroSection() {
                 </h1>
 
                 {/* Typed description */}
-                <p
-                    className="font-mono text-base md:text-lg text-muted-foreground mb-12 h-14 md:h-10 max-w-xl mx-auto"
-                    style={{
-                        textShadow: `
-                            -1px -1px 0 rgba(255, 255, 255, 0.6),
-                            1px -1px 0 rgba(255, 255, 255, 0.6),
-                            -1px 1px 0 rgba(255, 255, 255, 0.6),
-                            1px 1px 0 rgba(255, 255, 255, 0.6),
-                            0 0 15px rgba(168, 85, 247, 0.4)
-                        `,
-                        WebkitTextStroke: "0.5px rgba(255, 255, 255, 0.4)",
-                        paintOrder: "stroke fill"
-                    }}
-                >
-                    {typedText}
-                    <span
-                        className="inline-block w-2 h-4 bg-primary/70 ml-1 align-middle"
-                        style={{ opacity: showCursor ? 1 : 0 }}
-                    />
-                </p>
+                <div className="mb-12 max-w-2xl mx-auto">
+                    <p
+                        className="font-mono text-lg md:text-xl lg:text-xl text-white/95 h-20 md:h-16 px-6 py-3 rounded-lg inline-block"
+                        style={{
+                            background: "linear-gradient(135deg, rgba(0, 0, 0, 0.75) 0%, rgba(30, 20, 50, 0.85) 100%)",
+                            backdropFilter: "blur(8px)",
+                            boxShadow: "0 4px 30px rgba(168, 85, 247, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1)",
+                            border: "1px solid rgba(168, 85, 247, 0.3)",
+                            textShadow: "0 2px 4px rgba(0, 0, 0, 0.5)"
+                        }}
+                    >
+                        {typedText}
+                        <span
+                            className="inline-block w-3 h-6 bg-primary ml-1 align-middle"
+                            style={{ opacity: showCursor ? 1 : 0 }}
+                        />
+                    </p>
+                </div>
 
                 {/* Decorative line */}
                 <div className="flex items-center justify-center gap-4 mb-10">
