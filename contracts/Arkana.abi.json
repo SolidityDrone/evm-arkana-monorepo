@@ -151,6 +151,25 @@
   },
   {
     "type": "function",
+    "name": "calculateDiscountedProtocolFee",
+    "inputs": [
+      {
+        "name": "lockDuration",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "effective_fee_bps",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "computeCommitmentLeaf",
     "inputs": [
       {

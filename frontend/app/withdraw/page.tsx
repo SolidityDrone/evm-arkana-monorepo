@@ -25,7 +25,7 @@ import { loadAccountData, saveTokenAccountData, TokenAccountData } from '@/lib/i
 import { loadAccountDataOnSign } from '@/lib/loadAccountDataOnSign';
 import { convertAssetsToShares, convertSharesToAssets } from '@/lib/shares-to-assets';
 import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
-import { getCurrentRound, getRoundTimestamp, createOrderChain, type Order } from '@/lib/timelock-order';
+import { getCurrentRound, getRoundTimestamp, createOrderChain, dateToRound, roundToDate, formatRoundTime, getMinimumRound, type Order } from '@/lib/timelock-order';
 import { uploadCiphertextToIPFS, getIPFSGatewayURL } from '@/lib/ipfs';
 import { Copy, ExternalLink } from 'lucide-react';
 import Image from 'next/image';
@@ -1106,40 +1106,51 @@ export default function WithdrawPage() {
 
             const userKeyForCircuit = '0x' + userKeyToUse.toString(16);
 
-            // Format tl_swap_shares_amounts array from tlOrders (convert to shares if needed, or use as-is)
-            // Use tlOrders if available, otherwise fall back to tlSwapSharesAmounts for backward compatibility
+            // Format tl_swap_shares_amounts array from tlOrders
+            // IMPORTANT: We distribute shares proportionally from the total (amountBigInt) to avoid rounding errors
+            // The sum of chunks must EXACTLY equal the total shares
             const ordersToUse = isTlSwap && tlOrders.length > 0 && tlOrders[0].sharesAmount
                 ? tlOrders.slice(0, numOrders).map(o => o.sharesAmount)
                 : tlSwapSharesAmounts;
 
-            const formattedTlSwapSharesAmounts = await Promise.all(
-                ordersToUse.map(async (amountStr, index) => {
-                    if (!amountStr || amountStr === '0' || amountStr === '') {
-                        return '0';
-                    }
-                    // Convert from decimal string to raw units (shares)
-                    const sanitizedAmount = amountStr.trim().replace(',', '.');
-                    if (!/^\d+\.?\d*$/.test(sanitizedAmount)) {
-                        return '0';
-                    }
-                    const parts = sanitizedAmount.split('.');
-                    const finalDecimals = tokenDecimals ?? 18;
-                    let amountInRawUnits: bigint;
-                    if (parts.length === 1) {
-                        amountInRawUnits = BigInt(sanitizedAmount) * BigInt(10 ** finalDecimals);
-                    } else {
-                        const integerPart = parts[0] || '0';
-                        const decimalPart = parts[1] || '';
-                        const limitedDecimal = decimalPart.slice(0, finalDecimals);
-                        const paddedDecimal = limitedDecimal.padEnd(finalDecimals, '0');
-                        amountInRawUnits = BigInt(integerPart) * BigInt(10 ** finalDecimals) + BigInt(paddedDecimal);
-                    }
-                    // Convert to shares (if vault exists)
-                    const tokenAddr = tokenAddress.startsWith('0x') ? tokenAddress as Address : `0x${tokenAddress}` as Address;
-                    const shares = await convertAssetsToShares(publicClient, tokenAddr, amountInRawUnits);
-                    return shares !== null ? shares.toString() : amountInRawUnits.toString();
-                })
-            );
+            // Calculate proportions from the user's input amounts
+            const parseAmount = (str: string): number => {
+                if (!str || str === '0' || str === '') return 0;
+                const sanitized = str.trim().replace(',', '.');
+                return parseFloat(sanitized) || 0;
+            };
+
+            const inputAmounts = ordersToUse.map(parseAmount);
+            const inputTotal = inputAmounts.reduce((sum, a) => sum + a, 0);
+
+            // Distribute shares proportionally from the total shares (amountBigInt)
+            // This ensures the sum of chunks EXACTLY equals amountBigInt
+            const formattedTlSwapSharesAmounts: string[] = [];
+            let remainingShares = amountBigInt;
+
+            for (let i = 0; i < ordersToUse.length; i++) {
+                if (inputTotal === 0 || inputAmounts[i] === 0) {
+                    formattedTlSwapSharesAmounts.push('0');
+                } else if (i === ordersToUse.length - 1) {
+                    // Last chunk gets ALL remaining shares to ensure exact sum
+                    formattedTlSwapSharesAmounts.push(remainingShares.toString());
+                    remainingShares = BigInt(0);
+                } else {
+                    // Calculate this chunk's share proportionally
+                    const proportion = inputAmounts[i] / inputTotal;
+                    const chunkShares = BigInt(Math.floor(Number(amountBigInt) * proportion));
+                    formattedTlSwapSharesAmounts.push(chunkShares.toString());
+                    remainingShares -= chunkShares;
+                }
+            }
+
+            console.log('🔄 TL Swap shares distribution:', {
+                totalShares: amountBigInt.toString(),
+                inputAmounts,
+                inputTotal,
+                distributedShares: formattedTlSwapSharesAmounts.filter(s => s !== '0'),
+                sum: formattedTlSwapSharesAmounts.reduce((sum, s) => sum + BigInt(s), BigInt(0)).toString(),
+            });
 
             // Pad to 10 elements for circuit
             while (formattedTlSwapSharesAmounts.length < 10) {
@@ -1506,10 +1517,14 @@ export default function WithdrawPage() {
                     setIpfsCid(null);
 
                     console.log('🔐 Creating timelock order chain...');
+                    console.log('📊 TL Swap shares from circuit inputs:', inputs.tl_swap_shares_amounts);
+                    console.log('📊 User input amounts (decimal):', tlOrders.slice(0, numOrders).map(o => o.sharesAmount));
 
                     // Prepare orders for createOrderChain
                     // Convert amountOutMin from decimal string to raw units using tokenOut decimals
-                    const orders: Order[] = tlOrders.slice(0, numOrders).map(order => {
+                    // IMPORTANT: Use the calculated shares from inputs.tl_swap_shares_amounts (already in raw units)
+                    // NOT the user's decimal input (like "0.5")
+                    const orders: Order[] = tlOrders.slice(0, numOrders).map((order, idx) => {
                         let amountOutMinRaw: string | bigint = order.amountOutMin || '0';
 
                         // If amountOutMin is provided and tokenOut has decimals, convert to raw units
@@ -1532,8 +1547,13 @@ export default function WithdrawPage() {
                             }
                         }
 
+                        // Use the pre-calculated shares from circuit inputs (already in raw bigint form)
+                        // These were calculated proportionally to ensure exact sum
+                        // Access from inputs.tl_swap_shares_amounts (set during calculateCircuitInputsWithdraw)
+                        const calculatedShares = inputs.tl_swap_shares_amounts[idx] || '0';
+
                         return {
-                            sharesAmount: order.sharesAmount,
+                            sharesAmount: calculatedShares, // Use calculated shares, NOT user's decimal input
                             amountOutMin: amountOutMinRaw,
                             slippageBps: parseInt(order.slippageBps) || 50,
                             deadline: parseInt(order.deadline) || Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60),
@@ -2373,43 +2393,51 @@ export default function WithdrawPage() {
                                                                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                                                                 <div>
                                                                                     <label className="block text-[10px] font-mono text-muted-foreground mb-1">
-                                                                                        Round Drand
+                                                                                        Unlock Time (converts to dRand round)
                                                                                     </label>
-                                                                                    <Input
-                                                                                        type="number"
-                                                                                        value={order.targetRound}
+                                                                                    <input
+                                                                                        type="datetime-local"
+                                                                                        value={order.targetRound ?
+                                                                                            roundToDate(parseInt(order.targetRound)).toISOString().slice(0, 16) :
+                                                                                            roundToDate(getMinimumRound(300)).toISOString().slice(0, 16)
+                                                                                        }
+                                                                                        min={new Date().toISOString().slice(0, 16)}
                                                                                         onChange={(e) => {
                                                                                             const newOrders = [...tlOrders];
-                                                                                            newOrders[index].targetRound = e.target.value;
+                                                                                            const selectedDate = new Date(e.target.value);
+                                                                                            const round = dateToRound(selectedDate);
+                                                                                            newOrders[index].targetRound = round.toString();
                                                                                             setTlOrders(newOrders);
                                                                                         }}
-                                                                                        placeholder={`${getCurrentRound() + 1000}`}
-                                                                                        className="text-xs w-full"
+                                                                                        className="text-xs w-full h-9 px-3 bg-background border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
                                                                                     />
                                                                                     <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
-                                                                                        Current: {getCurrentRound()}
+                                                                                        Round: {order.targetRound || getMinimumRound(300)}
+                                                                                        {order.targetRound && ` (${formatRoundTime(parseInt(order.targetRound))})`}
                                                                                     </p>
                                                                                 </div>
                                                                                 <div>
                                                                                     <label className="block text-[10px] font-mono text-muted-foreground mb-1">
-                                                                                        Deadline (Unix timestamp)
+                                                                                        Execution Deadline
                                                                                     </label>
-                                                                                    <Input
-                                                                                        type="number"
-                                                                                        value={order.deadline}
+                                                                                    <input
+                                                                                        type="datetime-local"
+                                                                                        value={order.deadline ?
+                                                                                            new Date(parseInt(order.deadline) * 1000).toISOString().slice(0, 16) :
+                                                                                            new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16)
+                                                                                        }
+                                                                                        min={new Date().toISOString().slice(0, 16)}
                                                                                         onChange={(e) => {
                                                                                             const newOrders = [...tlOrders];
-                                                                                            newOrders[index].deadline = e.target.value;
+                                                                                            const selectedDate = new Date(e.target.value);
+                                                                                            newOrders[index].deadline = Math.floor(selectedDate.getTime() / 1000).toString();
                                                                                             setTlOrders(newOrders);
                                                                                         }}
-                                                                                        placeholder={`${Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60)}`}
-                                                                                        className="text-xs w-full"
+                                                                                        className="text-xs w-full h-9 px-3 bg-background border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
                                                                                     />
-                                                                                    {order.deadline && (
-                                                                                        <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
-                                                                                            {new Date(parseInt(order.deadline) * 1000).toLocaleString()}
-                                                                                        </p>
-                                                                                    )}
+                                                                                    <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                        Order expires after this time
+                                                                                    </p>
                                                                                 </div>
                                                                             </div>
 

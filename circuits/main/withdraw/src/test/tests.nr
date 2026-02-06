@@ -27,8 +27,6 @@ fn test_nullifier() -> Field { 0x00 as Field }
 /// Get test receiver address
 fn test_receiver_address() -> Field { 0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6 as Field }
 
-/// Get test relay fee token address (same as token for simplicity)
-
 /// Get test receiver fee amount
 fn test_relayer_fee_amount() -> Field { 0x01 as Field }
 
@@ -240,7 +238,9 @@ fn print_prover_toml_format(
     merkle_proof: [Field; 32],
     arbitrary_calldata_hash: Field,
     receiver_address: Field,
-    relayer_fee_amount: Field
+    relayer_fee_amount: Field,
+    is_tl_swap: bool,
+    tl_swap_shares_amounts: [Field; 10]
 ) {
     std::println("========================================");
     std::println("COPY THIS TO withdraw/Prover.toml");
@@ -264,6 +264,16 @@ fn print_prover_toml_format(
     
     std::print("nullifier = \"");
     std::print(nullifier);
+    std::println("\"");
+    std::println("");
+    
+    std::print("previous_unlocks_at = \"");
+    std::print(previous_unlocks_at);
+    std::println("\"");
+    std::println("");
+    
+    std::print("declared_time_reference = \"");
+    std::print(declared_time_reference);
     std::println("\"");
     std::println("");
     
@@ -316,16 +326,6 @@ fn print_prover_toml_format(
     std::println("\"");
     std::println("");
     
-    std::print("previous_unlocks_at = \"");
-    std::print(previous_unlocks_at);
-    std::println("\"");
-    std::println("");
-    
-    std::print("declared_time_reference = \"");
-    std::print(declared_time_reference);
-    std::println("\"");
-    std::println("");
-    
     std::print("arbitrary_calldata_hash = \"");
     std::print(arbitrary_calldata_hash);
     std::println("\"");
@@ -339,6 +339,24 @@ fn print_prover_toml_format(
     std::print("relayer_fee_amount = \"");
     std::print(relayer_fee_amount);
     std::println("\"");
+    std::println("");
+    
+    std::print("is_tl_swap = ");
+    std::println(is_tl_swap);
+    std::println("");
+    
+    std::print("tl_swap_shares_amounts = [");
+    let mut first_amt = true;
+    for i in 0..10 {
+        if !first_amt {
+            std::print(", ");
+        }
+        first_amt = false;
+        std::print("\"");
+        std::print(tl_swap_shares_amounts[i]);
+        std::print("\"");
+    }
+    std::println("]");
     std::println("");
 }
 
@@ -506,7 +524,10 @@ fn test_withdraw_flow() {
     let chain_id = 1 as Field; // Mainnet chain ID
     let previous_unlocks_at = 0 as Field; // No lock initially
     let declared_time_reference = 1000000 as Field; // Time reference for withdrawal validation
-    let withdraw1_result: ([Field; 2], Field, [Field; 2], [Field; 2]) = main(
+    let is_tl_swap = false; // Normal withdrawal, not TL swap
+    let tl_swap_shares_amounts = [0 as Field; 10]; // Empty for normal withdrawal
+    
+    let withdraw1_result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field) = main(
         user_key,
         token_address,
         test_withdrawal_amount(),
@@ -523,13 +544,18 @@ fn test_withdraw_flow() {
         withdraw1_proof,
         0x1234567890abcdef as Field,
         test_receiver_address(),
-        test_relayer_fee_amount()
+        test_relayer_fee_amount(),
+        is_tl_swap,
+        tl_swap_shares_amounts
     );
     
     let withdraw1_pedersen_point: [Field; 2] = withdraw1_result.0;
     let withdraw1_nonce_commitment = withdraw1_result.1;
+    let withdraw1_tl_hashchain = withdraw1_result.4;
+    let withdraw1_final_amount = withdraw1_result.5;
     
-    // Note: declared_time_reference is now a public input, not an output
+    // Verify final_amount matches withdrawal amount (since not TL swap)
+    assert(withdraw1_final_amount == test_withdrawal_amount(), "Final amount should equal withdrawal amount");
     
     // Hash the Pedersen commitment point to create the leaf
     let withdraw1_commitment_leaf = Poseidon2::hash([withdraw1_pedersen_point[0], withdraw1_pedersen_point[1]], 2);
@@ -539,6 +565,8 @@ fn test_withdraw_flow() {
     std::println(withdraw1_previous_shares);
     std::print("  Withdrawal amount: ");
     std::println(test_withdrawal_amount());
+    std::print("  Final amount: ");
+    std::println(withdraw1_final_amount);
     std::print("  New Pedersen point x: ");
     std::println(withdraw1_pedersen_point[0]);
     std::print("  New Pedersen point y: ");
@@ -603,7 +631,9 @@ fn test_withdraw_flow() {
         withdraw1_proof,
         0x1234567890abcdef as Field,
         test_receiver_address(),
-        test_relayer_fee_amount()
+        test_relayer_fee_amount(),
+        is_tl_swap,
+        tl_swap_shares_amounts
     );
     let _ = withdraw1_result; // Use variable
 }
@@ -650,7 +680,10 @@ fn test_withdraw_exact_balance() {
     // This should pass - tests the circuit structure
     let previous_unlocks_at = 0 as Field; // No lock initially
     let declared_time_reference = 1000000 as Field; // Time reference for withdrawal validation
-    let result: ([Field; 2], Field, [Field; 2], [Field; 2]) = main(
+    let is_tl_swap = false;
+    let tl_swap_shares_amounts = [0 as Field; 10];
+    
+    let result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field) = main(
         user_key,
         token_address,
         withdraw_amount,
@@ -667,7 +700,9 @@ fn test_withdraw_exact_balance() {
         merkle_proof,
         arbitrary_calldata_hash,
         receiver_address,
-        relayer_fee_amount
+        relayer_fee_amount,
+        is_tl_swap,
+        tl_swap_shares_amounts
     );
     
     // Verify new balance is 0
@@ -708,13 +743,15 @@ fn test_withdraw_time_constraint_validation() {
     let receiver_address = test_receiver_address();
     let relayer_fee_amount = 0 as Field;
     let declared_time_reference = 1000000 as Field; // Time reference for withdrawal validation (must be >= unlocks_at)
+    let is_tl_swap = false;
+    let tl_swap_shares_amounts = [0 as Field; 10];
     
     std::println("Testing withdraw with time constraint validation...");
     std::println("  Withdraw amount: 100");
     std::println("  Previous unlocks_at: 0 (no lock)");
     std::println("  Declared time reference: 1000000");
     
-    let result: ([Field; 2], Field, [Field; 2], [Field; 2]) = main(
+    let result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field) = main(
         user_key,
         token_address,
         withdraw_amount,
@@ -731,7 +768,9 @@ fn test_withdraw_time_constraint_validation() {
         merkle_proof,
         arbitrary_calldata_hash,
         receiver_address,
-        relayer_fee_amount
+        relayer_fee_amount,
+        is_tl_swap,
+        tl_swap_shares_amounts
     );
     
     // Verify the circuit returns valid outputs
@@ -742,9 +781,77 @@ fn test_withdraw_time_constraint_validation() {
     assert(pedersen_point[1] != 0, "Pedersen point y should not be zero");
     assert(new_nonce_commitment != 0, "New nonce commitment should not be zero");
     
-    // Note: declared_time_reference is now a public input, not an output
-    // The circuit validates it internally but doesn't return it
-    
     std::println("✅ Time constraint validation test passed! Declared time reference is correctly validated as input");
 }
 
+#[test]
+fn test_tl_swap_hashchain() {
+    let user_key = test_user_key();
+    let token_address = test_token_address();
+    let chain_id = 1 as Field;
+    let total_amount = 100 as Field;
+    
+    let previous_nonce = 0 as Field;
+    let previous_shares = 200 as Field; // Enough shares
+    let nullifier = 0 as Field;
+    let previous_unlocks_at = 0 as Field;
+    
+    // Create previous commitment
+    let spending_key = Poseidon2::hash([user_key, chain_id, token_address], 3);
+    let previous_nonce_commitment = Poseidon2::hash([spending_key, previous_nonce, token_address], 3);
+    let previous_commitment_point = pedersen_commitment_5(previous_shares, nullifier, spending_key, previous_unlocks_at, previous_nonce_commitment);
+    let previous_commitment_leaf = Poseidon2::hash([previous_commitment_point.x, previous_commitment_point.y], 2);
+    
+    // Setup tree
+    let tree_depth = 0 as Field;
+    let commitment_index = 0 as Field;
+    let expected_root = previous_commitment_leaf;
+    let merkle_proof = [0 as Field; 32];
+    
+    let declared_time_reference = 1000000 as Field;
+    let is_tl_swap = true; // TL swap mode
+    
+    // Create TL swap chunks that sum to total_amount
+    let mut tl_swap_shares_amounts = [0 as Field; 10];
+    tl_swap_shares_amounts[0] = 30 as Field;
+    tl_swap_shares_amounts[1] = 20 as Field;
+    tl_swap_shares_amounts[2] = 50 as Field;
+    // Remaining are 0
+    
+    std::println("Testing TL swap with hashchain validation...");
+    std::println("  Total amount: 100");
+    std::println("  Chunks: [30, 20, 50, 0, 0, 0, 0, 0, 0, 0]");
+    
+    let result: ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field) = main(
+        user_key,
+        token_address,
+        total_amount,
+        chain_id,
+        previous_nonce,
+        previous_shares,
+        nullifier,
+        previous_unlocks_at,
+        declared_time_reference,
+        previous_commitment_leaf,
+        commitment_index,
+        tree_depth,
+        expected_root,
+        merkle_proof,
+        0 as Field,
+        test_receiver_address(),
+        0 as Field,
+        is_tl_swap,
+        tl_swap_shares_amounts
+    );
+    
+    let tl_hashchain = result.4;
+    let final_amount = result.5;
+    
+    // Verify TL hashchain was computed
+    assert(tl_hashchain != 0, "TL hashchain should be non-zero");
+    
+    // Verify final_amount is 0 (TL swap doesn't withdraw from vault)
+    assert(final_amount == 0, "Final amount should be 0 for TL swap");
+    
+    std::println("✅ TL swap hashchain test passed!");
+}

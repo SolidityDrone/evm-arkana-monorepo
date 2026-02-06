@@ -50,7 +50,7 @@ fn main(
 
     is_tl_swap: pub bool,
     tl_swap_shares_amounts: [Field; 10] // <-- NOTICE: because noir dosent accept dynamic arrays, for now i set a max of 10;
-) -> pub ([Field; 2], Field, [Field; 2], [Field; 2], Field, Field, Field) {
+) -> pub ([Field; 2], Field, [Field; 2], [Field; 2],  Field, Field) {
     
     // === TL SWAP HASH CHAIN VERIFICATION ===
     // When is_tl_swap = true, we build a hash chain to ensure:
@@ -162,7 +162,6 @@ fn main(
         new_nonce_commitment,
         encrypted_state_details,
         [nonce_discovery_entry.x, nonce_discovery_entry.y],
-        timelock_ciphertext,
         tl_hashchain,
         final_amount
     )

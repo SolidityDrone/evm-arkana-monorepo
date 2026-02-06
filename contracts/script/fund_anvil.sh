@@ -6,7 +6,7 @@
 set -e
 
 # Configuration
-TARGET=${1:-"0xec27B9dccE5e501EEb62035E8d17759d3837A18D"}
+TARGET=${1:-"0x1b756A927EF0D4849025887f520be10a5A9137c1"}
 RPC_URL=${2:-"http://localhost:8545"}
 
 # Token addresses (Sepolia)

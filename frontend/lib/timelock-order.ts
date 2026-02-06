@@ -95,10 +95,57 @@ export function getCurrentRound(): number {
 }
 
 /**
- * Get round timestamp
+ * Get round timestamp (unix seconds)
  */
 export function getRoundTimestamp(round: number): number {
     return GENESIS_TIME + (round * PERIOD);
+}
+
+/**
+ * Convert a timestamp (unix seconds) to a dRand round
+ * @param timestamp Unix timestamp in seconds
+ * @returns The dRand round number at or after this timestamp
+ */
+export function timestampToRound(timestamp: number): number {
+    if (timestamp < GENESIS_TIME) return 0;
+    return Math.ceil((timestamp - GENESIS_TIME) / PERIOD);
+}
+
+/**
+ * Convert a Date object to a dRand round
+ * @param date JavaScript Date object
+ * @returns The dRand round number at or after this date
+ */
+export function dateToRound(date: Date): number {
+    return timestampToRound(Math.floor(date.getTime() / 1000));
+}
+
+/**
+ * Convert a dRand round to a Date object
+ * @param round The dRand round number
+ * @returns Date object for when this round will be available
+ */
+export function roundToDate(round: number): Date {
+    return new Date(getRoundTimestamp(round) * 1000);
+}
+
+/**
+ * Get a human-readable time string for a round
+ * @param round The dRand round number
+ * @returns Formatted date/time string
+ */
+export function formatRoundTime(round: number): string {
+    return roundToDate(round).toLocaleString();
+}
+
+/**
+ * Get the minimum round (next available round from now)
+ * @param offsetSeconds Optional offset in seconds from now (default 60 = 1 minute)
+ * @returns The first available round after now + offset
+ */
+export function getMinimumRound(offsetSeconds: number = 60): number {
+    const now = Math.floor(Date.now() / 1000);
+    return timestampToRound(now + offsetSeconds);
 }
 
 /**

@@ -248,6 +248,15 @@ contract Arkana is AccessControl, ReentrancyGuard {
         _grantRole(VAULT_INITIALIZER_ROLE, msg.sender);
         // Grant TLswapRegister the TLSWAP_REGISTER_ROLE
         _grantRole(TLSWAP_REGISTER_ROLE, _tlswapRegister);
+        // Set tlswapRegister storage variable
+        tlswapRegister = _tlswapRegister;
+    }
+
+    /// @notice Set the TLswapRegister address
+    /// @param _tlswapRegister Address of the TLswapRegister contract
+    /// @dev Only callable by accounts with DEFAULT_ADMIN_ROLE
+    function setTlswapRegister(address _tlswapRegister) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        tlswapRegister = _tlswapRegister;
     }
 
     // ============================================
