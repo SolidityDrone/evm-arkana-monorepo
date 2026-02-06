@@ -213,7 +213,8 @@ export default function WithdrawPage() {
                 try {
                     const { loadTokenAccountData } = await import('@/lib/indexeddb');
                     const normalizedTokenAddress = tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : '0x' + tokenAddress.toLowerCase();
-                    const tokenData = await loadTokenAccountData(zkAddress, normalizedTokenAddress);
+                    // Withdraw uses Mage mode (base user_key)
+                    const tokenData = await loadTokenAccountData(zkAddress, normalizedTokenAddress, 'mage');
 
                     if (tokenData) {
                         setTokenNonce(tokenData.currentNonce);
@@ -242,9 +243,10 @@ export default function WithdrawPage() {
             setDiscoveryError(null);
 
             try {
-                // Load cached data from IndexedDB
+                // Load cached data from IndexedDB (Mage mode for withdrawals)
                 const cachedData = await loadAccountData(zkAddress);
-                const tokenData = cachedData?.tokenData?.find(t => {
+                const mageTokenData = cachedData?.mageTokenData || [];
+                const tokenData = mageTokenData.find(t => {
                     return t.tokenAddress.toLowerCase() === normalizedTokenAddress;
                 });
 
@@ -262,10 +264,12 @@ export default function WithdrawPage() {
 
                 // Use computeCurrentNonce to check if there's a new nonce on-chain
                 // This will discover new nonces automatically using cached data as starting point
+                // Withdraw uses Mage mode (base user_key)
                 const result = await computeCurrentNonce(
                     tokenAddress as `0x${string}`,
                     cachedNonce,
-                    cachedBalanceEntries
+                    cachedBalanceEntries,
+                    'mage'
                 );
 
                 console.log('  Result from computeCurrentNonce:', result ? {
@@ -278,12 +282,13 @@ export default function WithdrawPage() {
                 } : 'null');
 
                 if (result) {
-                    // Save updated token data if it changed
+                    // Save updated token data if it changed (Mage mode)
                     await saveTokenAccountData(
                         zkAddress,
                         tokenAddress,
                         result.currentNonce,
-                        result.balanceEntries
+                        result.balanceEntries,
+                        'mage'
                     );
 
                     // Update global balance entries if needed

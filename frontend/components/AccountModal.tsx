@@ -6,7 +6,7 @@ import { useAccountState } from '@/context/AccountStateProvider';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { usePublicClient } from 'wagmi';
 import { Address } from 'viem';
-import { saveTokenAccountData, loadTokenAccountData, TokenAccountData, getTokenAddresses, loadAccountData, AccountData } from '@/lib/indexeddb';
+import { saveTokenAccountData, loadTokenAccountData, TokenAccountData, getTokenAddresses, loadAccountData, AccountData, DiscoveryMode, saveDiscoveryMode } from '@/lib/indexeddb';
 import { useAaveTokens } from '@/hooks/useAaveTokens';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
@@ -51,6 +51,8 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
     const [tokenHistoryMap, setTokenHistoryMap] = useState<Map<string, TransactionHistoryEntry[]>>(new Map());
     const [loadingHistoryToken, setLoadingHistoryToken] = useState<string | null>(null);
     const [historyErrors, setHistoryErrors] = useState<Map<string, string>>(new Map());
+    const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('mage');
+    const [skipCacheOnNextDiscovery, setSkipCacheOnNextDiscovery] = useState(false);
 
     const isModalClosedRef = useRef(false);
 
@@ -62,10 +64,18 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
             const savedData = await loadAccountData(zkAddress);
 
             if (savedData) {
+                const savedMode = savedData.discoveryMode || 'mage';
+                setDiscoveryMode(savedMode);
+                
                 const tokenMap = new Map<string, TokenAccountData>();
 
-                if (savedData.tokenData) {
-                    for (const tokenData of savedData.tokenData) {
+                // Load mode-specific token data
+                const modeTokenData = savedMode === 'mage' 
+                    ? savedData.mageTokenData 
+                    : savedData.archonTokenData;
+
+                if (modeTokenData && modeTokenData.length > 0) {
+                    for (const tokenData of modeTokenData) {
                         tokenMap.set(tokenData.tokenAddress.toLowerCase(), tokenData);
                     }
                 }
@@ -107,29 +117,42 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
 
         const newTokenDataMap = new Map<string, TokenAccountData>();
 
+        // Check if we should skip cache (mode just changed)
+        const shouldSkipCache = skipCacheOnNextDiscovery;
+        if (shouldSkipCache) {
+            console.log('🔍 [MODAL] Skipping cache - mode just changed');
+            setSkipCacheOnNextDiscovery(false);
+        }
+
         for (const token of aaveTokens) {
             if (isModalClosedRef.current) {
                 break;
             }
 
             try {
-                // Reload cached data before each token to get the latest state
-                const cachedData = await loadAccountData(zkAddress);
-                const tokenAddressLower = token.address.toLowerCase();
+                let cachedNonce: bigint | null = null;
+                let cachedBalanceEntries: BalanceEntry[] = [];
 
-                // Get cached data for this specific token
-                const cachedTokenData = cachedData?.tokenData?.find(t => {
-                    return t.tokenAddress.toLowerCase() === tokenAddressLower;
-                });
-                const cachedNonce = cachedTokenData?.currentNonce || null;
-                const cachedBalanceEntries = cachedTokenData?.balanceEntries || [];
+                // Only use cache if we're not skipping it
+                if (!shouldSkipCache) {
+                    // Reload cached data before each token to get the latest state
+                    const cachedData = await loadAccountData(zkAddress);
+                    const tokenAddressLower = token.address.toLowerCase();
+
+                    // Get cached data for this specific token
+                    const cachedTokenData = cachedData?.tokenData?.find(t => {
+                        return t.tokenAddress.toLowerCase() === tokenAddressLower;
+                    });
+                    cachedNonce = cachedTokenData?.currentNonce || null;
+                    cachedBalanceEntries = cachedTokenData?.balanceEntries || [];
+                }
 
                 // Compute nonce for this token
-                const result = await computeCurrentNonce(token.address as `0x${string}`, cachedNonce, cachedBalanceEntries);
+                const result = await computeCurrentNonce(token.address as `0x${string}`, cachedNonce, cachedBalanceEntries, discoveryMode);
 
                 if (result && !isModalClosedRef.current) {
-                    // Save token-specific data
-                    await saveTokenAccountData(zkAddress, token.address, result.currentNonce, result.balanceEntries);
+                    // Save token-specific data (per mode)
+                    await saveTokenAccountData(zkAddress, token.address, result.currentNonce, result.balanceEntries, discoveryMode);
 
                     newTokenDataMap.set(token.address.toLowerCase(), {
                         tokenAddress: token.address,
@@ -164,7 +187,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
             setTokenDataMap(newTokenDataMap);
             setDataLastSaved(Date.now());
         }
-    }, [publicClient, account?.signature, zkAddress, isLoadingAaveTokens, aaveTokens, computeCurrentNonce]);
+    }, [publicClient, account?.signature, zkAddress, isLoadingAaveTokens, aaveTokens, computeCurrentNonce, discoveryMode, skipCacheOnNextDiscovery]);
 
     const handleDiscoverToken = useCallback(async (tokenAddress: string) => {
         if (!zkAddress || !publicClient || !account?.signature || isModalClosedRef.current) {
@@ -186,18 +209,16 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         try {
             if (isModalClosedRef.current) return;
 
-            // Load cached data for this token
-            const cachedData = await loadAccountData(zkAddress);
-            const cachedTokenData = cachedData?.tokenData?.find(t => {
-                return t.tokenAddress.toLowerCase() === normalizedTokenAddress;
-            });
+            // Load cached data for this token (mode-specific)
+            const cachedTokenData = await loadTokenAccountData(zkAddress, normalizedTokenAddress, discoveryMode);
             const cachedNonce = cachedTokenData?.currentNonce || null;
             const cachedBalanceEntries = cachedTokenData?.balanceEntries || [];
 
             const result = await computeCurrentNonce(
                 normalizedTokenAddress as `0x${string}`,
                 cachedNonce,
-                cachedBalanceEntries
+                cachedBalanceEntries,
+                discoveryMode
             );
 
             if (isModalClosedRef.current) return;
@@ -207,7 +228,8 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                     zkAddress,
                     normalizedTokenAddress,
                     result.currentNonce,
-                    result.balanceEntries
+                    result.balanceEntries,
+                    discoveryMode
                 );
 
                 setTokenDataMap(prev => {
@@ -239,7 +261,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                 return newSet;
             });
         }
-    }, [zkAddress, publicClient, account?.signature, computeCurrentNonce, setCurrentNonce, setBalanceEntries]);
+    }, [zkAddress, publicClient, account?.signature, computeCurrentNonce, setCurrentNonce, setBalanceEntries, discoveryMode]);
 
     // Load transaction history for a specific token
     const loadTokenHistory = useCallback(async (tokenAddress: string) => {
@@ -311,6 +333,18 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         }
     }, [expandedHistoryToken, tokenHistoryMap, loadTokenHistory]);
 
+    // Toggle discovery mode
+    const handleModeToggle = useCallback(async (newMode: DiscoveryMode) => {
+        if (!zkAddress) return;
+        console.log('🔍 [MODAL] Mode changed to:', newMode);
+        setDiscoveryMode(newMode);
+        await saveDiscoveryMode(zkAddress, newMode);
+        // Set flag to skip cache on next discovery
+        setSkipCacheOnNextDiscovery(true);
+        // Clear token data to trigger re-discovery with new mode
+        setTokenDataMap(new Map());
+    }, [zkAddress]);
+
     // Auto-discover tokens when modal opens
     useEffect(() => {
         if (isOpen) {
@@ -319,7 +353,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         }
     }, [isOpen, loadSavedData]);
 
-    // Discover all tokens when Aave tokens are loaded
+    // Discover all tokens when Aave tokens are loaded or mode changes
     useEffect(() => {
         if (isOpen && zkAddress && account?.signature && !isLoadingAaveTokens && aaveTokens.length > 0 && tokenDataMap.size === 0) {
             const timeoutId = setTimeout(() => {
@@ -336,7 +370,30 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         <Dialog open={isOpen} onOpenChange={onClose}>
             <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto w-full min-w-0">
                 <DialogHeader className="pb-4">
-                    <DialogTitle>Account Management</DialogTitle>
+                    <div className="flex items-center justify-between">
+                        <DialogTitle>Account Management</DialogTitle>
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground font-mono uppercase">Mode:</span>
+                            <div className="flex gap-1 border border-border rounded p-0.5">
+                                <Button
+                                    size="sm"
+                                    variant={discoveryMode === 'mage' ? 'default' : 'ghost'}
+                                    onClick={() => handleModeToggle('mage')}
+                                    className="h-7 px-3 text-xs"
+                                >
+                                    Mage
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    variant={discoveryMode === 'archon' ? 'default' : 'ghost'}
+                                    onClick={() => handleModeToggle('archon')}
+                                    className="h-7 px-3 text-xs"
+                                >
+                                    Archon
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
                 </DialogHeader>
 
                 <div className="space-y-4">

@@ -14,6 +14,7 @@ import { computeZkAddress, ARKANA_MESSAGE } from '@/lib/zk-address';
 import { loadAccountDataOnSign } from '@/lib/loadAccountDataOnSign';
 import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
 import { CachedUltraHonkBackend } from '@/lib/cached-ultra-honk-backend';
+import { loadAccountData } from '@/lib/indexeddb';
 
 const ERC20_ABI = parseAbi([
     'function allowance(address owner, address spender) view returns (uint256)',
@@ -405,11 +406,106 @@ export function useInitialize() {
                 chainIdForCircuit = chainId || publicClient?.chain?.id || sepolia.id;
             }
 
+            // Determine user_key offset based on lockDuration
+            let userKeyOffset = BigInt(0);
+            const lockDurationNum = parseInt(lockDuration || '0') || 0;
+            
+            console.log('🔑 [INIT] ===== DEBUGGING USER KEY SELECTION =====');
+            console.log('🔑 [INIT] Base user_key:', userKey);
+            console.log('🔑 [INIT] Raw lockDuration state value:', lockDuration, typeof lockDuration);
+            console.log('🔑 [INIT] Parsed lockDurationNum:', lockDurationNum);
+            console.log('🔑 [INIT] Lock > 0?:', lockDurationNum > 0);
+            console.log('🔑 [INIT] publicClient available?:', !!publicClient);
+            
+            // If lockDuration > 0, we need to find the next available user_key offset
+            // For liquidity provision (lock > 0), ALWAYS start from user_key+1 (offset 1)
+            // This keeps user_key (offset 0) reserved for Mage mode (regular init with lock = 0)
+            if (lockDurationNum > 0 && publicClient) {
+                console.log('🔑 [INIT] Entering Archon mode (lock > 0) branch...');
+                const { poseidon2Hash } = await import('@aztec/foundation/crypto');
+                const { padHex } = await import('viem');
+                const chainIdBigInt = BigInt(chainIdForCircuit);
+                const tokenAddressBigInt = BigInt(tokenAddress);
+                const baseUserKey = BigInt(userKey.startsWith('0x') ? userKey : `0x${userKey}`);
+                
+                const startOffset = BigInt(1);
+                
+                // Find the next available user_key offset
+                const maxOffset = BigInt(100);
+                let foundOffset = false;
+                
+                for (let offset = startOffset; offset < maxOffset && !foundOffset; offset++) {
+                    const currentUserKey = baseUserKey + offset;
+                    const currentSpendingKey = await poseidon2Hash([currentUserKey, chainIdBigInt, tokenAddressBigInt]);
+                    let currentSpendingKeyBigInt: bigint;
+                    if (typeof currentSpendingKey === 'bigint') {
+                        currentSpendingKeyBigInt = currentSpendingKey;
+                    } else if ('toBigInt' in currentSpendingKey && typeof currentSpendingKey.toBigInt === 'function') {
+                        currentSpendingKeyBigInt = currentSpendingKey.toBigInt();
+                    } else if ('value' in currentSpendingKey) {
+                        currentSpendingKeyBigInt = BigInt(currentSpendingKey.value);
+                    } else {
+                        currentSpendingKeyBigInt = BigInt(currentSpendingKey.toString());
+                    }
+                    
+                    const currentNonceCommitment = await poseidon2Hash([currentSpendingKeyBigInt, BigInt(0), tokenAddressBigInt]);
+                    let currentNonceCommitmentBigInt: bigint;
+                    if (typeof currentNonceCommitment === 'bigint') {
+                        currentNonceCommitmentBigInt = currentNonceCommitment;
+                    } else if ('toBigInt' in currentNonceCommitment && typeof currentNonceCommitment.toBigInt === 'function') {
+                        currentNonceCommitmentBigInt = currentNonceCommitment.toBigInt();
+                    } else if ('value' in currentNonceCommitment) {
+                        currentNonceCommitmentBigInt = BigInt(currentNonceCommitment.value);
+                    } else {
+                        currentNonceCommitmentBigInt = BigInt(currentNonceCommitment.toString());
+                    }
+                    
+                    const currentNonceCommitmentBytes32 = padHex(`0x${currentNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
+                    
+                    const isUsed = await publicClient.readContract({
+                        address: ArkanaAddress,
+                        abi: ArkanaAbi,
+                        functionName: 'usedCommitments',
+                        args: [currentNonceCommitmentBytes32],
+                    }) as boolean;
+                    
+                    if (!isUsed) {
+                        userKeyOffset = offset;
+                        foundOffset = true;
+                        console.log('🔑 [INIT] Found available offset:', offset.toString());
+                    } else {
+                        console.log('🔑 [INIT] Offset', offset.toString(), 'is already used, checking next...');
+                    }
+                }
+                
+                if (!foundOffset) {
+                    setProofError('Could not find available user_key offset for liquidity provision');
+                    setIsProving(false);
+                    return;
+                }
+            } else {
+                console.log('🔑 [INIT] NOT in Archon mode branch - using offset 0 (Mage mode)');
+            }
+            
+            // Calculate the actual user_key to use (base + offset)
+            const baseUserKeyBigInt = BigInt(userKey.startsWith('0x') ? userKey : `0x${userKey}`);
+            const actualUserKey = baseUserKeyBigInt + userKeyOffset;
+            const userKeyHex = `0x${actualUserKey.toString(16).padStart(64, '0')}`;
+
+            console.log('🔑 [INIT] ===== FINAL USER KEY FOR CIRCUIT =====');
+            console.log('🔑 [INIT] Base user_key (bigint):', baseUserKeyBigInt.toString());
+            console.log('🔑 [INIT] Offset applied:', userKeyOffset.toString());
+            console.log('🔑 [INIT] Actual user_key (bigint):', actualUserKey.toString());
+            console.log('🔑 [INIT] User key hex for circuit:', userKeyHex);
+            console.log('🔑 [INIT] =========================================');
+
             const inputs = {
-                user_key: userKey,
+                user_key: userKeyHex,
                 token_address: tokenAddress,
                 chain_id: chainIdForCircuit.toString()
             };
+            
+            console.log('🔑 [INIT] Circuit inputs:', inputs);
 
             //@ts-ignore
             const { witness } = await noirRef.current!.execute(inputs, { keccak: true });
@@ -554,13 +650,50 @@ export function useInitialize() {
                 return;
             }
 
-            try {
-            writeContract({
-                address: ArkanaAddress as `0x${string}`,
-                abi: ArkanaAbi,
-                functionName: 'initialize',
-                args: [proofBytes as `0x${string}`, publicInputsBytes32, amountIn, lockDurationBigInt],
+            // Simulate transaction before sending
+            const client = publicClient || createPublicClient({
+                chain: sepolia,
+                transport: http('http://127.0.0.1:8545')
             });
+
+            setIsSimulating(true);
+            try {
+                console.log('🔄 Simulating initialize transaction...');
+                const simResult = await client.simulateContract({
+                    account: address as `0x${string}`,
+                    address: ArkanaAddress as `0x${string}`,
+                    abi: ArkanaAbi,
+                    functionName: 'initialize',
+                    args: [proofBytes as `0x${string}`, publicInputsBytes32, amountIn, lockDurationBigInt],
+                });
+
+                console.log('✅ Simulation successful!');
+                console.log('📊 Simulation result:', simResult);
+            } catch (simulationError: any) {
+                let errorMessage = 'Transaction simulation failed';
+                if (simulationError?.shortMessage) {
+                    errorMessage = simulationError.shortMessage;
+                } else if (simulationError?.message) {
+                    errorMessage = simulationError.message;
+                }
+
+                console.error('❌ Simulation failed:', simulationError);
+                console.error('Error message:', errorMessage);
+                setTxError(errorMessage);
+                setIsSubmitting(false);
+                setIsSimulating(false);
+                return;
+            } finally {
+                setIsSimulating(false);
+            }
+
+            try {
+                writeContract({
+                    address: ArkanaAddress as `0x${string}`,
+                    abi: ArkanaAbi,
+                    functionName: 'initialize',
+                    args: [proofBytes as `0x${string}`, publicInputsBytes32, amountIn, lockDurationBigInt],
+                });
                 console.log('writeContract called successfully, waiting for wallet confirmation...');
             } catch (writeError) {
                 console.error('Error calling writeContract:', writeError);

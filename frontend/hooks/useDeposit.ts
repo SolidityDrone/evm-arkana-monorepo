@@ -243,7 +243,8 @@ export function useDeposit() {
                 try {
                     const { loadTokenAccountData } = await import('@/lib/indexeddb');
                     const normalizedTokenAddress = tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : '0x' + tokenAddress.toLowerCase();
-                    const tokenData = await loadTokenAccountData(zkAddress, normalizedTokenAddress);
+                    // Deposit uses Mage mode (base user_key)
+                    const tokenData = await loadTokenAccountData(zkAddress, normalizedTokenAddress, 'mage');
 
                     if (tokenData && tokenData.currentNonce !== null && tokenData.currentNonce !== undefined && tokenData.currentNonce > BigInt(0)) {
                         setTokenCurrentNonce(tokenData.currentNonce);
@@ -269,9 +270,10 @@ export function useDeposit() {
             setIsTokenInitialized(null);
 
             try {
-                // Load cached data from IndexedDB
+                // Load cached data from IndexedDB (Mage mode for deposits)
                 const cachedData = await loadAccountData(zkAddress);
-                const tokenData = cachedData?.tokenData?.find(t => {
+                const mageTokenData = cachedData?.mageTokenData || [];
+                const tokenData = mageTokenData.find(t => {
                     return t.tokenAddress.toLowerCase() === normalizedTokenAddress;
                 });
 
@@ -280,15 +282,17 @@ export function useDeposit() {
 
                 // Use computeCurrentNonce to check if there's a new nonce on-chain
                 // This will discover new nonces automatically without requiring AccountModal
+                // Deposit uses Mage mode (base user_key)
                 const result = await computeCurrentNonce(
                     tokenAddress as `0x${string}`,
                     cachedNonce,
-                    cachedBalanceEntries
+                    cachedBalanceEntries,
+                    'mage'
                 );
 
                 if (result) {
-                    // Save updated token data if it changed
-                    await saveTokenAccountData(zkAddress, tokenAddress, result.currentNonce, result.balanceEntries);
+                    // Save updated token data if it changed (Mage mode)
+                    await saveTokenAccountData(zkAddress, tokenAddress, result.currentNonce, result.balanceEntries, 'mage');
 
                     // Update global balance entries if needed
                     if (result.balanceEntries.length > 0) {

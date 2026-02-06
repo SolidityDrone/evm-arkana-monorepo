@@ -581,17 +581,6 @@ export default function RitualsPage() {
 
                                                     {/* Token Approval Section */}
                                                     <div className={`mt-2 sm:mt-3 relative border border-border/30 bg-card/40 backdrop-blur-sm p-3 sm:pt-4 rounded-sm transition-opacity duration-200 ${isValidAmount ? 'opacity-100' : 'opacity-0 h-0 p-0 m-0 border-0 overflow-hidden'}`}>
-                                                            {(() => {
-                                                                console.log('🔍 Rendering approval section:', {
-                                                                    isValidAmount,
-                                                                    isCheckingAllowance,
-                                                                    allowance,
-                                                                    allowanceType: typeof allowance,
-                                                                    needsApproval,
-                                                                    requiredAmount: requiredAmount?.toString(),
-                                                                });
-                                                                return null;
-                                                            })()}
                                                             {isCheckingAllowance ? (
                                                                 <p className="text-xs sm:text-sm font-mono text-foreground uppercase tracking-wider">CHECKING ALLOWANCE...</p>
                                                             ) : allowance !== null && allowance !== undefined ? (
@@ -640,14 +629,14 @@ export default function RitualsPage() {
                                                         onClick={activeHook.proof ? (isDepositMode ? depositHook.handleDeposit : initializeHook.handleInitCommit) : (isDepositMode ? depositHook.proveDeposit : initializeHook.proveArkanaEntry)}
                                                         disabled={Boolean(
                                                             activeHook.proof
-                                                                ? activeHook.isPending || activeHook.isConfirming || activeHook.isSubmitting || !activeHook.proof || !activeHook.publicInputs?.length || needsApproval || (isDepositMode && depositHook.isSimulating)
+                                                                ? activeHook.isPending || activeHook.isConfirming || activeHook.isSubmitting || !activeHook.proof || !activeHook.publicInputs?.length || needsApproval || (isDepositMode && depositHook.isSimulating) || (!isDepositMode && initializeHook.isSimulating)
                                                                 : activeHook.isProving || activeHook.isInitializing || !tokenAddress || !amount || (isDepositMode && (depositHook.isCalculatingInputs || depositHook.isTokenInitialized === false || (depositHook.isTokenInitialized === true && depositHook.tokenCurrentNonce === null)))
                                                         )}
                                                         variant="primary"
                                                         className="w-full text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                                     >
                                                         {activeHook.proof
-                                                            ? isDepositMode && depositHook.isSimulating
+                                                            ? (isDepositMode && depositHook.isSimulating) || (!isDepositMode && initializeHook.isSimulating)
                                                                 ? 'SIMULATING TRANSACTION...'
                                                                 : activeHook.isPending || activeHook.isSubmitting
                                                                     ? 'PREPARING TRANSACTION...'

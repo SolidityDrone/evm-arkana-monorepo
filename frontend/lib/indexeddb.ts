@@ -28,17 +28,22 @@ export interface TokenAccountData {
     lastUpdated: number;
 }
 
+export type DiscoveryMode = 'mage' | 'archon';
+
 export interface AccountData {
     zkAddress: string;
     userKey: bigint | null;
-    tokenData: TokenAccountData[];
+    tokenData: TokenAccountData[]; // Legacy - kept for backward compatibility
+    mageTokenData: TokenAccountData[]; // Token data discovered in Mage mode
+    archonTokenData: TokenAccountData[]; // Token data discovered in Archon mode
     lastUpdated: number;
     currentNonce?: bigint | null;
     balanceEntries?: BalanceEntry[];
+    discoveryMode?: DiscoveryMode;
 }
 
 const DB_NAME = 'arkana_account_db';
-const DB_VERSION = 3;
+const DB_VERSION = 4; // Bumped for mode-separated token data
 const STORE_NAME = 'account_data';
 
 let dbInstance: IDBDatabase | null = null;
@@ -70,6 +75,20 @@ async function getDB(): Promise<IDBDatabase> {
     });
 }
 
+const serializeTokenData = (tokenData: TokenAccountData[] | undefined): any[] => {
+    if (!tokenData) return [];
+    return tokenData.map((token: TokenAccountData) => ({
+        tokenAddress: token.tokenAddress,
+        currentNonce: token.currentNonce !== null ? token.currentNonce.toString() : null,
+        balanceEntries: token.balanceEntries.map((entry: BalanceEntry) => ({
+            tokenAddress: entry.tokenAddress.toString(),
+            amount: entry.amount.toString(),
+            nonce: entry.nonce.toString(),
+        })),
+        lastUpdated: token.lastUpdated || Date.now(),
+    }));
+};
+
 export async function saveAccountData(data: AccountData): Promise<void> {
     try {
         const db = await getDB();
@@ -79,16 +98,9 @@ export async function saveAccountData(data: AccountData): Promise<void> {
         const dataToStore: any = {
             zkAddress: data.zkAddress,
             userKey: data.userKey !== null ? data.userKey.toString() : null,
-            tokenData: data.tokenData ? data.tokenData.map((token: TokenAccountData) => ({
-                tokenAddress: token.tokenAddress,
-                currentNonce: token.currentNonce !== null ? token.currentNonce.toString() : null,
-                balanceEntries: token.balanceEntries.map((entry: BalanceEntry) => ({
-                    tokenAddress: entry.tokenAddress.toString(),
-                    amount: entry.amount.toString(),
-                    nonce: entry.nonce.toString(),
-                })),
-                lastUpdated: token.lastUpdated || Date.now(),
-            })) : [],
+            tokenData: serializeTokenData(data.tokenData), // Legacy
+            mageTokenData: serializeTokenData(data.mageTokenData),
+            archonTokenData: serializeTokenData(data.archonTokenData),
             lastUpdated: Date.now(),
             currentNonce: data.currentNonce !== null && data.currentNonce !== undefined ? data.currentNonce.toString() : null,
             balanceEntries: data.balanceEntries ? data.balanceEntries.map((entry: BalanceEntry) => ({
@@ -96,6 +108,7 @@ export async function saveAccountData(data: AccountData): Promise<void> {
                 amount: entry.amount.toString(),
                 nonce: entry.nonce.toString(),
             })) : [],
+            discoveryMode: data.discoveryMode || 'mage',
         };
 
         await new Promise<void>((resolve, reject) => {
@@ -107,6 +120,20 @@ export async function saveAccountData(data: AccountData): Promise<void> {
         console.error('Error saving account data to IndexedDB:', error);
     }
 }
+
+const deserializeTokenData = (tokenData: any[] | undefined, fallbackLastUpdated: number): TokenAccountData[] => {
+    if (!tokenData) return [];
+    return tokenData.map((token: any): TokenAccountData => ({
+        tokenAddress: token.tokenAddress,
+        currentNonce: token.currentNonce !== null ? BigInt(token.currentNonce) : null,
+        balanceEntries: token.balanceEntries.map((entry: any) => ({
+            tokenAddress: BigInt(entry.tokenAddress),
+            amount: BigInt(entry.amount),
+            nonce: BigInt(entry.nonce),
+        })),
+        lastUpdated: token.lastUpdated || fallbackLastUpdated,
+    }));
+};
 
 export async function loadAccountData(zkAddress: string): Promise<AccountData | null> {
     try {
@@ -126,16 +153,9 @@ export async function loadAccountData(zkAddress: string): Promise<AccountData | 
                 const data: AccountData = {
                     zkAddress: result.zkAddress,
                     userKey: result.userKey !== null ? BigInt(result.userKey) : null,
-                    tokenData: result.tokenData ? result.tokenData.map((token: any): TokenAccountData => ({
-                        tokenAddress: token.tokenAddress,
-                        currentNonce: token.currentNonce !== null ? BigInt(token.currentNonce) : null,
-                        balanceEntries: token.balanceEntries.map((entry: any) => ({
-                            tokenAddress: BigInt(entry.tokenAddress),
-                            amount: BigInt(entry.amount),
-                            nonce: BigInt(entry.nonce),
-                        })),
-                        lastUpdated: token.lastUpdated || result.lastUpdated,
-                    })) : [],
+                    tokenData: deserializeTokenData(result.tokenData, result.lastUpdated), // Legacy
+                    mageTokenData: deserializeTokenData(result.mageTokenData, result.lastUpdated),
+                    archonTokenData: deserializeTokenData(result.archonTokenData, result.lastUpdated),
                     lastUpdated: result.lastUpdated,
                     currentNonce: result.currentNonce !== null ? BigInt(result.currentNonce) : null,
                     balanceEntries: result.balanceEntries ? result.balanceEntries.map((entry: any) => ({
@@ -143,6 +163,7 @@ export async function loadAccountData(zkAddress: string): Promise<AccountData | 
                         amount: BigInt(entry.amount),
                         nonce: BigInt(entry.nonce),
                     })) : [],
+                    discoveryMode: result.discoveryMode || 'mage',
                 };
 
                 resolve(data);
@@ -159,7 +180,8 @@ export async function saveTokenAccountData(
     zkAddress: string,
     tokenAddress: string,
     currentNonce: bigint | null,
-    balanceEntries: BalanceEntry[]
+    balanceEntries: BalanceEntry[],
+    mode: DiscoveryMode = 'mage'
 ): Promise<void> {
     try {
         const existingData = await loadAccountData(zkAddress);
@@ -172,15 +194,35 @@ export async function saveTokenAccountData(
             lastUpdated: Date.now(),
         };
 
-        const filteredTokens = existingData?.tokenData
-            ? existingData.tokenData.filter(t => t.tokenAddress.toLowerCase() !== normalizedTokenAddress)
-            : [];
+        // Get existing mode-specific token data
+        const existingMageTokenData = existingData?.mageTokenData || [];
+        const existingArchonTokenData = existingData?.archonTokenData || [];
+
+        let updatedMageTokenData = existingMageTokenData;
+        let updatedArchonTokenData = existingArchonTokenData;
+
+        if (mode === 'mage') {
+            // Filter out existing entry for this token in mage data
+            const filteredMageTokens = existingMageTokenData.filter(
+                t => t.tokenAddress.toLowerCase() !== normalizedTokenAddress
+            );
+            updatedMageTokenData = [...filteredMageTokens, tokenData];
+        } else {
+            // Filter out existing entry for this token in archon data
+            const filteredArchonTokens = existingArchonTokenData.filter(
+                t => t.tokenAddress.toLowerCase() !== normalizedTokenAddress
+            );
+            updatedArchonTokenData = [...filteredArchonTokens, tokenData];
+        }
 
         const updatedData: AccountData = {
             zkAddress,
             userKey: existingData?.userKey || null,
-            tokenData: [...filteredTokens, tokenData],
+            tokenData: existingData?.tokenData || [], // Legacy
+            mageTokenData: updatedMageTokenData,
+            archonTokenData: updatedArchonTokenData,
             lastUpdated: Date.now(),
+            discoveryMode: existingData?.discoveryMode || 'mage',
         };
 
         await saveAccountData(updatedData);
@@ -191,15 +233,25 @@ export async function saveTokenAccountData(
 
 export async function loadTokenAccountData(
     zkAddress: string,
-    tokenAddress: string
+    tokenAddress: string,
+    mode: DiscoveryMode = 'mage'
 ): Promise<TokenAccountData | null> {
     try {
         const accountData = await loadAccountData(zkAddress);
-        if (!accountData || !accountData.tokenData) {
+        if (!accountData) {
             return null;
         }
 
-        const tokenData = accountData.tokenData.find(t => t.tokenAddress.toLowerCase() === tokenAddress.toLowerCase());
+        // Get mode-specific token data
+        const tokenDataArray = mode === 'mage' 
+            ? accountData.mageTokenData 
+            : accountData.archonTokenData;
+
+        if (!tokenDataArray) {
+            return null;
+        }
+
+        const tokenData = tokenDataArray.find(t => t.tokenAddress.toLowerCase() === tokenAddress.toLowerCase());
         return tokenData || null;
     } catch (error) {
         console.error('Error loading token account data from IndexedDB:', error);
@@ -207,16 +259,42 @@ export async function loadTokenAccountData(
     }
 }
 
-export async function getTokenAddresses(zkAddress: string): Promise<string[]> {
+export async function getTokenAddresses(zkAddress: string, mode: DiscoveryMode = 'mage'): Promise<string[]> {
     try {
         const accountData = await loadAccountData(zkAddress);
-        if (!accountData || !accountData.tokenData) {
+        if (!accountData) {
             return [];
         }
-        return accountData.tokenData.map(t => t.tokenAddress);
+        
+        const tokenDataArray = mode === 'mage' 
+            ? accountData.mageTokenData 
+            : accountData.archonTokenData;
+            
+        if (!tokenDataArray) {
+            return [];
+        }
+        return tokenDataArray.map(t => t.tokenAddress);
     } catch (error) {
         console.error('Error getting token addresses from IndexedDB:', error);
         return [];
+    }
+}
+
+export async function saveDiscoveryMode(zkAddress: string, mode: DiscoveryMode): Promise<void> {
+    try {
+        const existingData = await loadAccountData(zkAddress);
+        const updatedData: AccountData = {
+            zkAddress,
+            userKey: existingData?.userKey || null,
+            tokenData: existingData?.tokenData || [],
+            lastUpdated: Date.now(),
+            currentNonce: existingData?.currentNonce || null,
+            balanceEntries: existingData?.balanceEntries || [],
+            discoveryMode: mode,
+        };
+        await saveAccountData(updatedData);
+    } catch (error) {
+        console.error('Error saving discovery mode to IndexedDB:', error);
     }
 }
 
