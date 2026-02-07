@@ -318,6 +318,44 @@ const TLSWAP_REGISTER_ABI = [
     },
     {
         "type": "function",
+        "name": "orderTokenIn",
+        "inputs": [
+            {
+                "name": "",
+                "type": "bytes32",
+                "internalType": "bytes32"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "address"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "orderOperationType",
+        "inputs": [
+            {
+                "name": "",
+                "type": "bytes32",
+                "internalType": "bytes32"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "",
+                "type": "uint8",
+                "internalType": "enum TLswapRegister.OperationType"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
         "name": "registerEncryptedOrder",
         "inputs": [
             {
@@ -334,6 +372,16 @@ const TLSWAP_REGISTER_ABI = [
                 "name": "_orderHashes",
                 "type": "bytes32[]",
                 "internalType": "bytes32[]"
+            },
+            {
+                "name": "_tokenIn",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "_operationType",
+                "type": "uint8",
+                "internalType": "uint8"
             }
         ],
         "outputs": [
@@ -341,6 +389,107 @@ const TLSWAP_REGISTER_ABI = [
                 "name": "orderId",
                 "type": "bytes32",
                 "internalType": "bytes32"
+            }
+        ],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "executeLiquidityProvision",
+        "inputs": [
+            {
+                "name": "orderId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+            },
+            {
+                "name": "chunkIndex",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "tokenAddress",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "sharesAmount",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "poolKey",
+                "type": "tuple",
+                "internalType": "struct PoolKey",
+                "components": [
+                    { "name": "currency0", "type": "address", "internalType": "address" },
+                    { "name": "currency1", "type": "address", "internalType": "address" },
+                    { "name": "fee", "type": "uint24", "internalType": "uint24" },
+                    { "name": "tickSpacing", "type": "int24", "internalType": "int24" },
+                    { "name": "hooks", "type": "address", "internalType": "address" }
+                ]
+            },
+            {
+                "name": "tickLower",
+                "type": "int24",
+                "internalType": "int24"
+            },
+            {
+                "name": "tickUpper",
+                "type": "int24",
+                "internalType": "int24"
+            },
+            {
+                "name": "amount0Max",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "amount1Max",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "deadline",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "executionFeeBps",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "recipient",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "drandRound",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "hookData",
+                "type": "bytes",
+                "internalType": "bytes"
+            },
+            {
+                "name": "prevHash",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "nextHash",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "tokenId",
+                "type": "uint256",
+                "internalType": "uint256"
             }
         ],
         "stateMutability": "nonpayable"
@@ -503,6 +652,55 @@ const TLSWAP_REGISTER_ABI = [
         "anonymous": false
     },
     {
+        "type": "event",
+        "name": "LiquidityProvisionExecuted",
+        "inputs": [
+            {
+                "name": "intentId",
+                "type": "bytes32",
+                "indexed": true,
+                "internalType": "bytes32"
+            },
+            {
+                "name": "executor",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "recipient",
+                "type": "address",
+                "indexed": true,
+                "internalType": "address"
+            },
+            {
+                "name": "tokenId",
+                "type": "uint256",
+                "indexed": false,
+                "internalType": "uint256"
+            },
+            {
+                "name": "liquidityMinted",
+                "type": "uint128",
+                "indexed": false,
+                "internalType": "uint128"
+            },
+            {
+                "name": "amount0",
+                "type": "uint256",
+                "indexed": false,
+                "internalType": "uint256"
+            },
+            {
+                "name": "amount1",
+                "type": "uint256",
+                "indexed": false,
+                "internalType": "uint256"
+            }
+        ],
+        "anonymous": false
+    },
+    {
         "type": "error",
         "name": "HashChainNodeAlreadyUsed",
         "inputs": []
@@ -545,6 +743,21 @@ const TLSWAP_REGISTER_ABI = [
     {
         "type": "error",
         "name": "InvalidRound",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "LiquidityProvisionFailed",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "InvalidPoolKey",
+        "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "InvalidOperationType",
         "inputs": []
     },
     {

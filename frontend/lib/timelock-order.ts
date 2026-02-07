@@ -4,10 +4,9 @@
 
 import { bn254 } from '@noble/curves/bn254.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { keccak_256 } from '@noble/hashes/sha3';
 import { randomBytes } from '@noble/curves/utils.js';
 import { ensureBufferPolyfill } from './buffer-polyfill';
-import { encodeAbiParameters, parseAbiParameters } from 'viem';
+import { encodeAbiParameters, parseAbiParameters, keccak256 } from 'viem';
 
 // Helper to get Buffer safely
 async function getBuffer(): Promise<typeof import('buffer').Buffer> {
@@ -33,6 +32,12 @@ const DRAND_PUBKEY_HEX = '07e1d1d335df83fa98462005690372c643340060d205306a9aa810
 const GENESIS_TIME = 1727521075;
 const PERIOD = 3;
 
+// Operation type enum (must match Solidity)
+export enum OperationType {
+    SWAP = 0,
+    LIQUIDITY = 1
+}
+
 // Type definitions
 export interface Order {
     sharesAmount?: string | bigint;
@@ -42,6 +47,28 @@ export interface Order {
     recipient?: string;
     tokenOut?: string;
     executionFeeBps?: number;
+}
+
+// Pool Key for Uniswap V4 liquidity
+export interface PoolKey {
+    currency0: string;
+    currency1: string;
+    fee: number;
+    tickSpacing: number;
+    hooks: string;
+}
+
+// Liquidity order parameters
+export interface LiquidityOrder {
+    sharesAmount?: string | bigint;
+    poolKey?: PoolKey;
+    tickLower?: number;
+    tickUpper?: number;
+    amount0Max?: string | bigint;
+    amount1Max?: string | bigint;
+    deadline?: number;
+    executionFeeBps?: number;
+    recipient?: string;
 }
 
 export interface TimelockEncryption {
@@ -90,7 +117,7 @@ export interface OrderChainResult {
 }
 
 /**
- * Compute keccak256 hash of order parameters for integrity validation
+ * Compute keccak256 hash of SWAP order parameters for integrity validation
  * Must match Solidity: keccak256(abi.encode(sharesAmount, amountOutMin, slippageBps, deadline, executionFeeBps, recipient, tokenOut, drandRound))
  */
 export function computeOrderHash(
@@ -118,9 +145,57 @@ export function computeOrderHash(
         ]
     );
 
-    // Compute keccak256 hash
-    const hashBytes = keccak_256(Buffer.from(encoded.slice(2), 'hex'));
-    return ('0x' + Buffer.from(hashBytes).toString('hex')) as `0x${string}`;
+    // Compute keccak256 hash using viem
+    return keccak256(encoded);
+}
+
+/**
+ * Compute keccak256 hash of LIQUIDITY order parameters for integrity validation
+ * Must match Solidity: keccak256(abi.encode(sharesAmount, poolKeyHash, tickLower, tickUpper, amount0Max, amount1Max, deadline, executionFeeBps, recipient, drandRound))
+ */
+export function computeLiquidityOrderHash(
+    sharesAmount: bigint,
+    poolKey: PoolKey,
+    tickLower: number,
+    tickUpper: number,
+    amount0Max: bigint,
+    amount1Max: bigint,
+    deadline: number,
+    executionFeeBps: number,
+    recipient: string,
+    drandRound: number
+): `0x${string}` {
+    // First compute the poolKey hash matching Solidity
+    const poolKeyEncoded = encodeAbiParameters(
+        parseAbiParameters('address, address, uint24, int24, address'),
+        [
+            poolKey.currency0 as `0x${string}`,
+            poolKey.currency1 as `0x${string}`,
+            poolKey.fee,
+            poolKey.tickSpacing,
+            poolKey.hooks as `0x${string}`
+        ]
+    );
+    const poolKeyHash = keccak256(poolKeyEncoded);
+
+    // Encode all parameters
+    const encoded = encodeAbiParameters(
+        parseAbiParameters('uint256, bytes32, int24, int24, uint256, uint256, uint256, uint256, address, uint256'),
+        [
+            sharesAmount,
+            poolKeyHash,
+            tickLower,
+            tickUpper,
+            amount0Max,
+            amount1Max,
+            BigInt(deadline),
+            BigInt(executionFeeBps),
+            recipient as `0x${string}`,
+            BigInt(drandRound)
+        ]
+    );
+
+    return keccak256(encoded);
 }
 
 /**

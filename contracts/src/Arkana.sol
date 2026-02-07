@@ -22,10 +22,6 @@ interface IVerifier {
 contract Arkana is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    //@notice Evmnet drand configuration (hardcoded in contract)
-    uint256 public constant GENESIS_TIME = 1727521075;
-    uint256 public constant PERIOD = 3;
-
     /// @notice Role for initializing vaults
     bytes32 public constant VAULT_INITIALIZER_ROLE = keccak256("ARKANA");
     /// @notice Role for TLswapRegister
@@ -821,20 +817,26 @@ contract Arkana is AccessControl, ReentrancyGuard {
             _processWithdrawVaultOperations(tokenAddress, 0, relayerFeeShares, receiverAddress);
         }
 
-        // Register TL swap with TLswapRegister
-        // The call data contains abi.encode(ciphertext, orderHashes)
+        // Register TL operation with TLswapRegister
+        // The call data contains abi.encode(ciphertext, orderHashes, operationType)
         // orderId is the newNonceCommitment from the withdraw circuit
         if (tlswapRegister != address(0)) {
-            // Decode ciphertext and orderHashes from callData
-            (bytes memory ciphertext, bytes32[] memory orderHashes) = abi.decode(callData, (bytes, bytes32[]));
+            // Decode ciphertext, orderHashes, and operationType from callData
+            (bytes memory ciphertext, bytes32[] memory orderHashes, uint8 operationType) =
+                abi.decode(callData, (bytes, bytes32[], uint8));
 
             bytes32 orderId = bytes32(newNonceCommitment);
             (bool success,) = tlswapRegister.call(
                 abi.encodeWithSignature(
-                    "registerEncryptedOrder(bytes32,bytes,bytes32[])", orderId, ciphertext, orderHashes
+                    "registerEncryptedOrder(bytes32,bytes,bytes32[],address,uint8)",
+                    orderId,
+                    ciphertext,
+                    orderHashes,
+                    tokenAddress,
+                    operationType
                 )
             );
-            require(success, "TL swap registration failed");
+            require(success, "TL operation registration failed");
         }
     }
 

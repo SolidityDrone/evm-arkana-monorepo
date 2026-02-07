@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { usePublicClient, useChainId } from 'wagmi';
+import { usePublicClient, useChainId, useAccount as useWagmiAccount } from 'wagmi';
 import { type Address } from 'viem';
 import { useAccount } from '@/context/AccountProvider';
 import { useAaveTokens } from '@/hooks/useAaveTokens';
@@ -21,7 +21,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { TokenIcon } from '@/lib/token-icons';
-import { Loader2, Lock, Unlock, Clock, AlertCircle, CheckCircle2, ExternalLink, ChevronDown, ChevronRight } from 'lucide-react';
+import { Loader2, Lock, Unlock, Clock, AlertCircle, CheckCircle2, ExternalLink, ChevronDown, ChevronRight, Zap } from 'lucide-react';
+
 
 interface DecryptedChunk {
     order: DecryptedOrder;
@@ -51,6 +52,7 @@ export function DecryptOrder() {
     const publicClient = usePublicClient();
     const chainId = useChainId();
     const { account } = useAccount();
+    const { address: walletAddress } = useWagmiAccount();
     const { tokens: aaveTokens, isLoading: isLoadingTokens } = useAaveTokens();
 
     // Simple inputs
@@ -66,6 +68,9 @@ export function DecryptOrder() {
     });
     const [userKey, setUserKey] = useState<bigint | null>(null);
     const [expandedChunks, setExpandedChunks] = useState<Set<number>>(new Set([0]));
+    const [executingChunk, setExecutingChunk] = useState<number | null>(null);
+    const [executeError, setExecuteError] = useState<string | null>(null);
+    const [simulationResult, setSimulationResult] = useState<{ chunkIndex: number; success: boolean; error?: string } | null>(null);
 
     // Derive user key from signature on mount
     useEffect(() => {
@@ -239,6 +244,173 @@ export function DecryptOrder() {
         }
     }, [selectedToken, nonceInput, userKey, computeNonceCommitment, fetchEncryptedOrder, decryptChain]);
 
+    // Simulate swap intent execution (demo - doesn't send tx)
+    const handleSimulateSwap = useCallback(async (chunk: DecryptedChunk) => {
+        if (!status.nonceCommitment || !selectedToken || !walletAddress || !publicClient) {
+            setExecuteError('Missing required data for simulation');
+            return;
+        }
+
+        setExecutingChunk(chunk.chunkIndex);
+        setExecuteError(null);
+        setSimulationResult(null);
+
+        try {
+            const order = chunk.order;
+            const emptySwapCalldata = '0x' as `0x${string}`;
+
+            // First check if order hashes are registered and get operation type + router
+            const [storedHashes, tokenIn, operationType, uniswapRouter] = await Promise.all([
+                publicClient.readContract({
+                    address: TLSWAP_REGISTER_ADDRESS as Address,
+                    abi: TLSWAP_REGISTER_ABI,
+                    functionName: 'getOrderChunkHashes',
+                    args: [status.nonceCommitment as `0x${string}`],
+                }) as Promise<`0x${string}`[]>,
+                publicClient.readContract({
+                    address: TLSWAP_REGISTER_ADDRESS as Address,
+                    abi: TLSWAP_REGISTER_ABI,
+                    functionName: 'orderTokenIn',
+                    args: [status.nonceCommitment as `0x${string}`],
+                }) as Promise<Address>,
+                publicClient.readContract({
+                    address: TLSWAP_REGISTER_ADDRESS as Address,
+                    abi: TLSWAP_REGISTER_ABI,
+                    functionName: 'orderOperationType',
+                    args: [status.nonceCommitment as `0x${string}`],
+                }) as Promise<number>,
+                publicClient.readContract({
+                    address: TLSWAP_REGISTER_ADDRESS as Address,
+                    abi: TLSWAP_REGISTER_ABI,
+                    functionName: 'uniswapRouter',
+                    args: [],
+                }) as Promise<Address>,
+            ]);
+
+            const opTypeString = operationType === 0 ? 'SWAP' : 'LIQUIDITY';
+            console.log('📋 Stored order hashes on-chain:', storedHashes);
+            console.log('📋 Stored tokenIn on-chain:', tokenIn);
+            console.log('📋 Operation type:', opTypeString);
+            console.log('📋 Uniswap Router:', uniswapRouter);
+
+            if (!storedHashes || storedHashes.length === 0) {
+                setSimulationResult({
+                    chunkIndex: chunk.chunkIndex,
+                    success: false,
+                    error: 'No order hashes registered. Did you withdraw with orderHashes?'
+                });
+                setExecutingChunk(null);
+                return;
+            }
+
+            // Check if this is a liquidity operation
+            if (operationType === 1) {
+                setSimulationResult({
+                    chunkIndex: chunk.chunkIndex,
+                    success: false,
+                    error: 'Liquidity operations use executeLiquidityProvision (not swap simulation)'
+                });
+                setExecutingChunk(null);
+                return;
+            }
+
+            // Check if uniswap router is configured
+            if (!uniswapRouter || uniswapRouter === '0x0000000000000000000000000000000000000000') {
+                setSimulationResult({
+                    chunkIndex: chunk.chunkIndex,
+                    success: false,
+                    error: 'Uniswap router not configured in TLswapRegister contract'
+                });
+                setExecutingChunk(null);
+                return;
+            }
+
+            // Use tokenIn from contract, fallback to selectedToken if not set
+            const actualTokenIn = tokenIn && tokenIn !== '0x0000000000000000000000000000000000000000'
+                ? tokenIn
+                : selectedToken as Address;
+
+            const simArgs = {
+                orderId: status.nonceCommitment,
+                chunkIndex: chunk.chunkIndex,
+                storedHash: storedHashes[chunk.chunkIndex] || 'N/A',
+                intentor: walletAddress,
+                tokenAddress: selectedToken,
+                sharesAmount: order.sharesAmount,
+                tokenIn: actualTokenIn,
+                tokenOut: order.tokenOut,
+                amountOutMin: order.amountOutMin,
+                slippageBps: order.slippageBps,
+                deadline: order.deadline,
+                executionFeeBps: order.executionFeeBps,
+                recipient: order.recipient,
+                drandRound: chunk.round,
+                prevHash: order.prevHash,
+                nextHash: order.nextHash,
+            };
+
+            console.log('🔍 Simulating swap intent with args:', simArgs);
+
+            await publicClient.simulateContract({
+                address: TLSWAP_REGISTER_ADDRESS as Address,
+                abi: TLSWAP_REGISTER_ABI,
+                functionName: 'executeSwapIntent',
+                account: walletAddress,
+                args: [
+                    status.nonceCommitment as `0x${string}`,
+                    BigInt(chunk.chunkIndex),
+                    walletAddress,
+                    selectedToken as Address,
+                    BigInt(order.sharesAmount),
+                    actualTokenIn, // Use tokenIn from contract
+                    order.tokenOut as Address,
+                    BigInt(order.amountOutMin),
+                    order.slippageBps,
+                    BigInt(order.deadline),
+                    BigInt(order.executionFeeBps),
+                    order.recipient as Address,
+                    BigInt(chunk.round),
+                    emptySwapCalldata,
+                    uniswapRouter, // Use router from contract
+                    BigInt(order.prevHash),
+                    BigInt(order.nextHash),
+                ],
+            });
+
+            setSimulationResult({ chunkIndex: chunk.chunkIndex, success: true });
+        } catch (e: any) {
+            // Extract the most useful error message - check for custom errors
+            let errorMsg = 'Simulation failed';
+            const errorName = e?.cause?.data?.errorName || e?.data?.errorName;
+
+            // Map custom error names to user-friendly messages
+            const errorMap: Record<string, string> = {
+                'OrderChunkNotFound': 'Order chunk hashes not registered on-chain',
+                'InvalidOrderHash': 'Order params do not match registered hash (tamper check)',
+                'IntentExpired': 'Order deadline has passed',
+                'InvalidAmounts': 'Invalid amounts (amountOutMin=0 or tokenIn==tokenOut)',
+                'InvalidSlippage': 'Slippage > 10% (1000 bps)',
+                'InvalidRound': 'dRand round not yet available',
+                'HashChainNodeAlreadyUsed': 'This hash chain node already executed',
+            };
+
+            if (errorName && errorMap[errorName]) {
+                errorMsg = errorMap[errorName];
+            } else if (e?.cause?.reason) {
+                errorMsg = e.cause.reason;
+            } else if (errorName) {
+                errorMsg = errorName;
+            } else if (e?.shortMessage) {
+                errorMsg = e.shortMessage;
+            }
+
+            console.error('Simulation error:', { errorName, cause: e?.cause, data: e?.cause?.data });
+            setSimulationResult({ chunkIndex: chunk.chunkIndex, success: false, error: errorMsg });
+        } finally {
+            setExecutingChunk(null);
+        }
+    }, [status.nonceCommitment, selectedToken, walletAddress, publicClient]);
+
     // Format timestamp
     const formatTime = (date: Date) => date.toLocaleString();
 
@@ -357,8 +529,19 @@ export function DecryptOrder() {
                     <div className="p-4 bg-destructive/10 border border-destructive/30 rounded-sm flex items-start gap-3">
                         <AlertCircle className="w-5 h-5 text-destructive flex-shrink-0 mt-0.5" />
                         <div>
-                            <p className="text-destructive font-medium">Error</p>
+                            <p className="text-destructive font-medium">Decrypt Error</p>
                             <p className="text-destructive/80 text-sm">{status.error}</p>
+                        </div>
+                    </div>
+                )}
+
+                {/* Execute Error Display */}
+                {executeError && (
+                    <div className="p-4 bg-destructive/10 border border-destructive/30 rounded-sm flex items-start gap-3">
+                        <AlertCircle className="w-5 h-5 text-destructive flex-shrink-0 mt-0.5" />
+                        <div>
+                            <p className="text-destructive font-medium">Error</p>
+                            <p className="text-destructive/80 text-sm break-all">{executeError}</p>
                         </div>
                     </div>
                 )}
@@ -375,11 +558,11 @@ export function DecryptOrder() {
 
                         {status.decryptedChunks.map((chunk) => (
                             <div key={chunk.chunkIndex} className="border border-border/50 rounded-sm overflow-hidden">
-                                <button
-                                    onClick={() => toggleChunk(chunk.chunkIndex)}
-                                    className="w-full p-3 bg-secondary/30 flex items-center justify-between hover:bg-secondary/50 transition-colors"
-                                >
-                                    <div className="flex items-center gap-2">
+                                <div className="p-3 bg-secondary/30 flex items-center justify-between">
+                                    <button
+                                        onClick={() => toggleChunk(chunk.chunkIndex)}
+                                        className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+                                    >
                                         {expandedChunks.has(chunk.chunkIndex) ? (
                                             <ChevronDown className="w-4 h-4 text-primary" />
                                         ) : (
@@ -387,11 +570,38 @@ export function DecryptOrder() {
                                         )}
                                         <Unlock className="w-4 h-4 text-accent" />
                                         <span className="text-foreground font-medium">Order #{chunk.chunkIndex + 1}</span>
+                                        <span className="text-xs text-muted-foreground ml-2">
+                                            Round {chunk.round}
+                                        </span>
+                                    </button>
+
+                                    {/* Simulate Button */}
+                                    <Button
+                                        onClick={() => handleSimulateSwap(chunk)}
+                                        disabled={executingChunk !== null}
+                                        className="bg-accent hover:bg-accent/90 text-accent-foreground"
+                                        size="sm"
+                                    >
+                                        {executingChunk === chunk.chunkIndex ? (
+                                            <>
+                                                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                                                Simulating...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Zap className="w-4 h-4 mr-1" />
+                                                Simulate
+                                            </>
+                                        )}
+                                    </Button>
+                                </div>
+
+                                {/* Simulation Result */}
+                                {simulationResult && simulationResult.chunkIndex === chunk.chunkIndex && (
+                                    <div className={`px-3 py-2 text-xs ${simulationResult.success ? 'bg-accent/10 text-accent' : 'bg-destructive/10 text-destructive'}`}>
+                                        {simulationResult.success ? '✓ Simulation passed - integrity valid' : `✗ ${simulationResult.error}`}
                                     </div>
-                                    <span className="text-xs text-muted-foreground">
-                                        Round {chunk.round}
-                                    </span>
-                                </button>
+                                )}
 
                                 {expandedChunks.has(chunk.chunkIndex) && (
                                     <div className="p-4 space-y-3 bg-card/50">
@@ -401,26 +611,30 @@ export function DecryptOrder() {
                                             <OrderField label="Slippage (BPS)" value={chunk.order.slippageBps.toString()} />
                                             <OrderField label="Deadline" value={new Date(chunk.order.deadline * 1000).toLocaleString()} />
                                             <OrderField label="Recipient" value={chunk.order.recipient} mono />
+                                            <OrderField label="Token In" value={selectedToken || 'Loading...'} mono />
                                             <OrderField label="Token Out" value={chunk.order.tokenOut} mono />
                                             <OrderField label="Execution Fee (BPS)" value={chunk.order.executionFeeBps.toString()} />
                                         </div>
 
                                         <div className="pt-2 border-t border-border/30">
-                                            <span className="text-muted-foreground text-xs">Hash Chain</span>
+                                            <span className="text-muted-foreground text-xs">Hash Chain Verification</span>
                                             <div className="mt-1 grid gap-1 text-xs">
                                                 <div className="flex justify-between">
-                                                    <span className="text-muted-foreground">Prev:</span>
+                                                    <span className="text-muted-foreground">Prev Hash:</span>
                                                     <span className="font-mono text-foreground/70 truncate max-w-[200px]" title={chunk.order.prevHash}>
-                                                        {chunk.order.prevHash.slice(0, 16)}...
+                                                        {chunk.order.prevHash.slice(0, 20)}...
                                                     </span>
                                                 </div>
                                                 <div className="flex justify-between">
-                                                    <span className="text-muted-foreground">Next:</span>
+                                                    <span className="text-muted-foreground">Next Hash:</span>
                                                     <span className="font-mono text-foreground/70 truncate max-w-[200px]" title={chunk.order.nextHash}>
-                                                        {chunk.order.nextHash.slice(0, 16)}...
+                                                        {chunk.order.nextHash.slice(0, 20)}...
                                                     </span>
                                                 </div>
                                             </div>
+                                            <p className="text-xs text-muted-foreground mt-2 italic">
+                                                Click &quot;Execute&quot; to test swap with these decrypted params
+                                            </p>
                                         </div>
                                     </div>
                                 )}

@@ -4,16 +4,49 @@ pragma solidity ^0.8.4;
 import {IERC20} from "@oz/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@oz/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@oz/contracts/utils/ReentrancyGuard.sol";
+import {IERC721} from "@oz/contracts/token/ERC721/IERC721.sol";
 import {Arkana} from "../Arkana.sol";
 import "../merkle/Poseidon2HuffWrapper.sol";
 import {Field} from "../../lib/poseidon2-evm/src/Field.sol";
 
+/// @notice Uniswap V4 PoolKey structure
+struct PoolKey {
+    address currency0;
+    address currency1;
+    uint24 fee;
+    int24 tickSpacing;
+    address hooks;
+}
+
+/// @notice Minimal interface for Uniswap V4 PositionManager
+interface IPositionManager {
+    struct MintParams {
+        PoolKey poolKey;
+        int24 tickLower;
+        int24 tickUpper;
+        uint256 liquidity;
+        uint256 amount0Max;
+        uint256 amount1Max;
+        address owner;
+        bytes hookData;
+    }
+
+    function mint(MintParams calldata params, uint256 deadline, address recipient)
+        external
+        payable
+        returns (uint256 tokenId, uint128 liquidityMinted, uint256 amount0, uint256 amount1);
+
+    function nextTokenId() external view returns (uint256);
+}
+
 /**
  * @title TLswapRegister
- * @notice Registry for executing timelocked encrypted swap intents
- * @dev Parameters (sharesAmount, amountOutMin, slippage, deadline, recipient, tokenOut) are encrypted in timelock ciphertext
- *      Executor decrypts off-chain and calls executeSwapIntent with decrypted parameters
- *      Uses amountOutMin as target - swaps all available tokens (from shares) to achieve best output
+ * @notice Registry for executing timelocked encrypted operations (swaps and liquidity provision)
+ * @dev Parameters are encrypted in timelock ciphertext and validated via keccak256 hash
+ *      Supports two operation types:
+ *      1. Swap: Exchange tokens via DEX (executeSwapIntent)
+ *      2. Liquidity Provision: Add liquidity to Uniswap V4 pools (executeLiquidityProvision)
+ *      Hash chain ensures sum of chunk shares = total shares withdrawn in circuit
  */
 contract TLswapRegister is ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -35,6 +68,15 @@ contract TLswapRegister is ReentrancyGuard {
 
     address public uniswapRouter;
 
+    /// @notice Uniswap V4 Position Manager address
+    address public positionManager;
+
+    /// @notice Operation type enum
+    enum OperationType {
+        SWAP,
+        LIQUIDITY
+    }
+
     /// @notice Mapping to track used hash chain nodes (prevHash) to prevent chunk reuse
     /// @dev When a chunk is executed, we mark its prevHash as used
     mapping(uint256 => bool) public usedHashChainNodes;
@@ -46,6 +88,13 @@ contract TLswapRegister is ReentrancyGuard {
     /// @notice Mapping from orderId to array of order chunk hashes for integrity validation
     /// @dev Each chunk hash = keccak256(abi.encode(sharesAmount, amountOutMin, slippageBps, deadline, executionFeeBps, recipient, tokenOut, drandRound))
     mapping(bytes32 => bytes32[]) public orderChunkHashes;
+
+    /// @notice Mapping from orderId to tokenIn address (the token being swapped from)
+    /// @dev Stored at registration time since tokenIn is not in encrypted payload
+    mapping(bytes32 => address) public orderTokenIn;
+
+    /// @notice Mapping from orderId to operation type (SWAP or LIQUIDITY)
+    mapping(bytes32 => OperationType) public orderOperationType;
 
     /// @notice dRand evmnet configuration (hardcoded)
     struct DrandInfo {
@@ -71,6 +120,16 @@ contract TLswapRegister is ReentrancyGuard {
         uint256 amountOut
     );
 
+    event LiquidityProvisionExecuted(
+        bytes32 indexed intentId,
+        address indexed executor,
+        address indexed recipient,
+        uint256 tokenId,
+        uint128 liquidityMinted,
+        uint256 amount0,
+        uint256 amount1
+    );
+
     /// @notice Errors
     error InvalidSlippage();
     error InvalidAmounts();
@@ -85,6 +144,9 @@ contract TLswapRegister is ReentrancyGuard {
     error HashChainNodeAlreadyUsed();
     error InvalidOrderHash();
     error OrderChunkNotFound();
+    error LiquidityProvisionFailed();
+    error InvalidPoolKey();
+    error InvalidOperationType();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert OnlyOwner();
@@ -107,6 +169,10 @@ contract TLswapRegister is ReentrancyGuard {
         arkana = Arkana(_arkana);
     }
 
+    function setPositionManager(address _positionManager) external onlyOwner {
+        positionManager = _positionManager;
+    }
+
     /**
      * @notice Get dRand evmnet configuration
      * @return DrandInfo struct with hardcoded evmnet configuration
@@ -124,21 +190,25 @@ contract TLswapRegister is ReentrancyGuard {
     }
 
     /**
-     * @notice Register an encrypted order
+     * @notice Register an encrypted order (swap or liquidity provision)
      * @dev Called by Arkana contract when is_tl_swap = true in withdraw()
      *      The orderId is the newNonceCommitment from the withdraw circuit
-     *      The ciphertext contains encrypted order parameters (sharesAmount, amountOutMin, slippage, deadline, recipient, tokenOut)
-     *      and optionally the next order's ciphertext in a nested encryption chain
+     *      The ciphertext contains encrypted order parameters
+     *      For SWAP: (sharesAmount, amountOutMin, slippage, deadline, recipient, tokenOut, executionFeeBps, drandRound)
+     *      For LIQUIDITY: (sharesAmount, poolKey, tickLower, tickUpper, deadline, recipient, executionFeeBps, drandRound)
      * @param newNonceCommitment The newNonceCommitment from withdraw circuit (used as orderId)
      * @param ciphertextIpfs The encrypted order data (AES-128 encrypted JSON)
      * @param _orderHashes Array of keccak256 hashes for each order chunk for integrity validation
-     *        Each hash = keccak256(abi.encode(sharesAmount, amountOutMin, slippageBps, deadline, executionFeeBps, recipient, tokenOut, drandRound))
+     * @param _tokenIn The token address being used (stored for executor reference)
+     * @param _operationType 0 = SWAP, 1 = LIQUIDITY
      * @return orderId The orderId (same as newNonceCommitment)
      */
     function registerEncryptedOrder(
         bytes32 newNonceCommitment,
         bytes calldata ciphertextIpfs,
-        bytes32[] calldata _orderHashes
+        bytes32[] calldata _orderHashes,
+        address _tokenIn,
+        uint8 _operationType
     ) external returns (bytes32 orderId) {
         if (msg.sender != address(arkana)) {
             revert OnlyArkana();
@@ -158,6 +228,14 @@ contract TLswapRegister is ReentrancyGuard {
         if (_orderHashes.length > 0) {
             orderChunkHashes[orderId] = _orderHashes;
         }
+
+        // Store tokenIn for executor reference (not in encrypted payload)
+        if (_tokenIn != address(0)) {
+            orderTokenIn[orderId] = _tokenIn;
+        }
+
+        // Store operation type
+        orderOperationType[orderId] = OperationType(_operationType);
 
         emit EncryptedOrderRegistered(orderId, ciphertextIpfs);
 
@@ -273,6 +351,11 @@ contract TLswapRegister is ReentrancyGuard {
             revert InvalidAmounts();
         }
 
+        // Validate swap target (cannot approve zero address)
+        if (swapTarget == address(0)) {
+            revert SwapFailed();
+        }
+
         // === HASH CHAIN VERIFICATION ===
         // Verify that prevHash hasn't been used before (nullifier check)
         if (usedHashChainNodes[prevHash]) {
@@ -360,6 +443,179 @@ contract TLswapRegister is ReentrancyGuard {
         emit SwapIntentExecuted(orderId, msg.sender, intentor, tokenIn, tokenOut, availableAmount, recipientAmount);
 
         return recipientAmount;
+    }
+
+    /**
+     * @notice Execute a liquidity provision intent
+     * @dev Called by off-chain executor after decrypting the intent from timelock ciphertext
+     * @dev Adds liquidity to Uniswap V4 pool and transfers position NFT to recipient
+     * @param orderId The order identifier (newNonceCommitment from withdraw circuit)
+     * @param chunkIndex Index of this chunk in the order (0-indexed)
+     * @param tokenAddress Token address (for Arkana vault operations)
+     * @param sharesAmount Amount of shares to withdraw from Arkana
+     * @param poolKey Uniswap V4 pool key (currency0, currency1, fee, tickSpacing, hooks)
+     * @param tickLower Lower tick of the position
+     * @param tickUpper Upper tick of the position
+     * @param amount0Max Maximum amount of token0 to use
+     * @param amount1Max Maximum amount of token1 to use
+     * @param deadline Deadline timestamp
+     * @param executionFeeBps Execution fee in basis points (paid to executor)
+     * @param recipient Address to receive the LP position NFT
+     * @param drandRound dRand round when intent becomes decryptable
+     * @param hookData Additional data for pool hooks
+     * @param prevHash Previous hash in the hash chain
+     * @param nextHash Next hash in the hash chain
+     * @return tokenId The minted position NFT token ID
+     */
+    function executeLiquidityProvision(
+        bytes32 orderId,
+        uint256 chunkIndex,
+        address tokenAddress,
+        uint256 sharesAmount,
+        PoolKey calldata poolKey,
+        int24 tickLower,
+        int24 tickUpper,
+        uint256 amount0Max,
+        uint256 amount1Max,
+        uint256 deadline,
+        uint256 executionFeeBps,
+        address recipient,
+        uint256 drandRound,
+        bytes calldata hookData,
+        uint256 prevHash,
+        uint256 nextHash
+    ) external nonReentrant returns (uint256 tokenId) {
+        // === ORDER INTEGRITY VALIDATION ===
+        bytes32[] storage storedHashes = orderChunkHashes[orderId];
+        if (storedHashes.length == 0) {
+            revert OrderChunkNotFound();
+        }
+        if (chunkIndex >= storedHashes.length) {
+            revert OrderChunkNotFound();
+        }
+
+        // Compute hash of the provided liquidity parameters
+        // Hash includes: sharesAmount, poolKey hash, tickLower, tickUpper, deadline, executionFeeBps, recipient, drandRound
+        bytes32 poolKeyHash = keccak256(
+            abi.encode(poolKey.currency0, poolKey.currency1, poolKey.fee, poolKey.tickSpacing, poolKey.hooks)
+        );
+        bytes32 computedHash = keccak256(
+            abi.encode(
+                sharesAmount,
+                poolKeyHash,
+                tickLower,
+                tickUpper,
+                amount0Max,
+                amount1Max,
+                deadline,
+                executionFeeBps,
+                recipient,
+                drandRound
+            )
+        );
+
+        // Verify hash matches stored hash
+        if (computedHash != storedHashes[chunkIndex]) {
+            revert InvalidOrderHash();
+        }
+
+        // Validate deadline
+        if (deadline <= block.timestamp) {
+            revert IntentExpired();
+        }
+
+        // Validate round is available
+        if (!_isRoundAvailable(drandRound)) {
+            revert InvalidRound();
+        }
+
+        // Validate pool key
+        if (poolKey.currency0 == address(0) || poolKey.currency1 == address(0)) {
+            revert InvalidPoolKey();
+        }
+
+        // === HASH CHAIN VERIFICATION ===
+        if (usedHashChainNodes[prevHash]) {
+            revert HashChainNodeAlreadyUsed();
+        }
+
+        Field.Type prevHashField = Field.toField(prevHash);
+        Field.Type sharesAmountField = Field.toField(sharesAmount);
+        Field.Type computedNextHash = poseidon2Hasher.hash_2(prevHashField, sharesAmountField);
+        uint256 computedNextHashUint = Field.toUint256(computedNextHash);
+
+        if (computedNextHashUint != nextHash) {
+            revert InvalidHashChain();
+        }
+
+        // Mark prevHash as used
+        usedHashChainNodes[prevHash] = true;
+
+        // Withdraw tokens from Arkana vault
+        arkana.withdrawForSwap(tokenAddress, sharesAmount, address(this));
+
+        // Get available amounts of both tokens
+        uint256 available0 = IERC20(poolKey.currency0).balanceOf(address(this));
+        uint256 available1 = IERC20(poolKey.currency1).balanceOf(address(this));
+
+        // Approve position manager
+        IERC20(poolKey.currency0).approve(positionManager, available0);
+        IERC20(poolKey.currency1).approve(positionManager, available1);
+
+        // Calculate liquidity based on available amounts
+        // Note: Actual liquidity calculation depends on current pool price
+        // For simplicity, we pass the amounts and let PositionManager handle it
+        uint256 liquidityAmount = available0 < available1 ? available0 : available1; // Simplified
+
+        // Mint liquidity position
+        IPositionManager.MintParams memory params = IPositionManager.MintParams({
+            poolKey: poolKey,
+            tickLower: tickLower,
+            tickUpper: tickUpper,
+            liquidity: liquidityAmount,
+            amount0Max: amount0Max,
+            amount1Max: amount1Max,
+            owner: address(this), // Mint to this contract first
+            hookData: hookData
+        });
+
+        uint128 liquidityMinted;
+        uint256 amount0Used;
+        uint256 amount1Used;
+
+        try IPositionManager(positionManager).mint(params, deadline, address(this)) returns (
+            uint256 _tokenId, uint128 _liquidityMinted, uint256 _amount0, uint256 _amount1
+        ) {
+            tokenId = _tokenId;
+            liquidityMinted = _liquidityMinted;
+            amount0Used = _amount0;
+            amount1Used = _amount1;
+        } catch {
+            revert LiquidityProvisionFailed();
+        }
+
+        // Transfer position NFT to recipient
+        IERC721(positionManager).transferFrom(address(this), recipient, tokenId);
+
+        // Return unused tokens to recipient
+        uint256 remaining0 = IERC20(poolKey.currency0).balanceOf(address(this));
+        uint256 remaining1 = IERC20(poolKey.currency1).balanceOf(address(this));
+
+        if (remaining0 > 0) {
+            IERC20(poolKey.currency0).safeTransfer(recipient, remaining0);
+        }
+        if (remaining1 > 0) {
+            IERC20(poolKey.currency1).safeTransfer(recipient, remaining1);
+        }
+
+        // Pay execution fee (from remaining tokens if any, or handled separately)
+        // Note: For LP operations, execution fee could be handled differently
+
+        emit LiquidityProvisionExecuted(
+            orderId, msg.sender, recipient, tokenId, liquidityMinted, amount0Used, amount1Used
+        );
+
+        return tokenId;
     }
 
     /**

@@ -176,17 +176,19 @@ contract TLswapRegisterTest is Test {
     }
 
     /**
-     * @notice Test registerEncryptedOrder with newNonceCommitment
+     * @notice Test registerEncryptedOrder with newNonceCommitment (SWAP type)
      */
     function test_RegisterEncryptedOrder() public {
         bytes32 newNonceCommitment =
             bytes32(uint256(0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef));
         bytes memory ciphertext = hex"1234567890abcdef";
         bytes32[] memory orderHashes = new bytes32[](0); // Empty array for this test
+        address tokenIn = address(0x1234); // Test tokenIn address
+        uint8 operationType = 0; // SWAP
 
         // Must be called by Arkana
         vm.prank(address(arkana));
-        bytes32 orderId = tlswapRegister.registerEncryptedOrder(newNonceCommitment, ciphertext, orderHashes);
+        bytes32 orderId = tlswapRegister.registerEncryptedOrder(newNonceCommitment, ciphertext, orderHashes, tokenIn, operationType);
 
         assertEq(orderId, newNonceCommitment, "Order ID should match newNonceCommitment");
         assertEq(
@@ -194,6 +196,26 @@ contract TLswapRegisterTest is Test {
             keccak256(ciphertext),
             "Stored ciphertext should match"
         );
+        assertEq(tlswapRegister.orderTokenIn(orderId), tokenIn, "TokenIn should be stored");
+    }
+
+    /**
+     * @notice Test registerEncryptedOrder with LIQUIDITY type
+     */
+    function test_RegisterEncryptedOrder_Liquidity() public {
+        bytes32 newNonceCommitment =
+            bytes32(uint256(0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890));
+        bytes memory ciphertext = hex"abcdef1234567890";
+        bytes32[] memory orderHashes = new bytes32[](0);
+        address tokenIn = address(0x5678);
+        uint8 operationType = 1; // LIQUIDITY
+
+        vm.prank(address(arkana));
+        bytes32 orderId = tlswapRegister.registerEncryptedOrder(newNonceCommitment, ciphertext, orderHashes, tokenIn, operationType);
+
+        assertEq(orderId, newNonceCommitment, "Order ID should match newNonceCommitment");
+        // Check operation type is stored correctly
+        assertEq(uint8(tlswapRegister.orderOperationType(orderId)), operationType, "Operation type should be LIQUIDITY");
     }
 
     /**

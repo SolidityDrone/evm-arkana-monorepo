@@ -28,12 +28,23 @@ contract ArkanaDeployer is Script {
         address aavePool = vm.envAddress("SEPOLIA_AAVE_POOL");
         address multicall3 = vm.envAddress("SEPOLIA_MULTICALL3");
         address uniswapRouter = vm.envAddress("SEPOLIA_UNIVERSAL_ROUTER");
+        address positionManager = vm.envAddress("SEPOLIA_POSITION_MANAGER");
+        
+        console.log("Using addresses:");
+        console.log("  Aave Pool:", aavePool);
+        console.log("  Multicall3:", multicall3);
+        console.log("  Universal Router:", uniswapRouter);
+        console.log("  Position Manager:", positionManager);
 
         // Step 3: Deploy TLswapRegister first (with address(0) for arkana, will be set later)
         console.log("Deploying TLswapRegister...");
         TLswapRegister tlswapRegister = new TLswapRegister(address(0), uniswapRouter, poseidon2Huff);
         address tlswapRegisterAddress = address(tlswapRegister);
         console.log("TLswapRegister deployed at:", tlswapRegisterAddress);
+        
+        // Set Position Manager for liquidity operations
+        tlswapRegister.setPositionManager(positionManager);
+        console.log("TLswapRegister.positionManager set to:", positionManager);
 
         // Step 4: Deploy Arkana with the Huff contract address and TLswapRegister address
         address[] memory verifiers = new address[](5);

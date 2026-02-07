@@ -76,6 +76,7 @@ export default function WithdrawPage() {
     const [arbitraryCalldata, setArbitraryCalldata] = useState('');
     const [arbitraryCalldataHash, setArbitraryCalldataHash] = useState<string>('0x0');
     const [isTlSwap, setIsTlSwap] = useState(false);
+    const [tlOperationType, setTlOperationType] = useState<'swap' | 'liquidity'>('swap'); // 0 = SWAP, 1 = LIQUIDITY
     const [tlSwapSharesAmounts, setTlSwapSharesAmounts] = useState<string[]>(Array(10).fill('0'));
     const [numOrders, setNumOrders] = useState<number>(1);
     const [tlOrders, setTlOrders] = useState<Array<{
@@ -1743,25 +1744,27 @@ export default function WithdrawPage() {
             const slicedInputs = publicInputs.slice(0, 17); // Contract expects exactly 17 public inputs (8 inputs + 9 outputs including is_tl_swap, tl_hashchain, and final_amount)
 
             // Prepare calldata for contract call
-            // For TL-Swap, use the ciphertext; otherwise use arbitraryCalldata if provided
+            // For TL operations, use the ciphertext; otherwise use arbitraryCalldata if provided
             let callDataBytes: `0x${string}`;
             if (isTlSwap && tlSwapCiphertext) {
-                // For TL-Swap, encode ciphertext and orderHashes together
-                // The contract expects abi.encode(ciphertext, orderHashes)
+                // For TL operations, encode ciphertext, orderHashes, and operationType together
+                // The contract expects abi.encode(ciphertext, orderHashes, operationType)
                 const ciphertextBytes = Buffer.from(tlSwapCiphertext, 'utf-8');
                 const orderHashesArray = tlOrderHashes || [];
+                const operationType = tlOperationType === 'swap' ? 0 : 1; // 0 = SWAP, 1 = LIQUIDITY
 
                 // Use viem's encodeAbiParameters to create the encoded calldata
                 const { encodeAbiParameters, parseAbiParameters } = await import('viem');
                 callDataBytes = encodeAbiParameters(
-                    parseAbiParameters('bytes, bytes32[]'),
-                    [`0x${ciphertextBytes.toString('hex')}`, orderHashesArray]
+                    parseAbiParameters('bytes, bytes32[], uint8'),
+                    [`0x${ciphertextBytes.toString('hex')}`, orderHashesArray, operationType]
                 );
 
-                console.log('📦 Using TL-Swap encoded callData:', {
+                console.log('📦 Using TL operation encoded callData:', {
                     ciphertextLength: ciphertextBytes.length,
                     orderHashesCount: orderHashesArray.length,
                     orderHashes: orderHashesArray,
+                    operationType: tlOperationType,
                     totalLength: callDataBytes.length / 2 - 1
                 });
             } else if (arbitraryCalldata && arbitraryCalldata.trim() !== '') {
@@ -2199,20 +2202,46 @@ export default function WithdrawPage() {
                                                             </label>
                                                         </div>
                                                         {isTlSwap && (
-                                                            <div className="ml-6 border-l-2 border-primary/30 pl-3 py-2">
+                                                            <div className="ml-6 border-l-2 border-primary/30 pl-3 py-2 space-y-3">
                                                                 <p className="text-sm font-mono text-foreground leading-relaxed">
                                                                     <span className="font-bold text-primary">Note:</span> Orders will be encrypted in a nested chain. The first order contains all subsequent orders. Sum of shares amounts must equal your total withdraw amount exactly.
                                                                 </p>
+                                                                {/* Operation Type Selector */}
+                                                                <div className="flex items-center gap-4">
+                                                                    <span className="text-xs font-mono text-muted-foreground">Operation Type:</span>
+                                                                    <div className="flex gap-2">
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => setTlOperationType('swap')}
+                                                                            className={`px-3 py-1 text-xs font-bold rounded transition-colors ${tlOperationType === 'swap'
+                                                                                    ? 'bg-primary text-primary-foreground'
+                                                                                    : 'bg-card/60 text-muted-foreground border border-primary/30 hover:bg-primary/20'
+                                                                                }`}
+                                                                        >
+                                                                            SWAP
+                                                                        </button>
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => setTlOperationType('liquidity')}
+                                                                            className={`px-3 py-1 text-xs font-bold rounded transition-colors ${tlOperationType === 'liquidity'
+                                                                                    ? 'bg-accent text-accent-foreground'
+                                                                                    : 'bg-card/60 text-muted-foreground border border-accent/30 hover:bg-accent/20'
+                                                                                }`}
+                                                                        >
+                                                                            ADD LIQUIDITY (V4)
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
                                                             </div>
                                                         )}
                                                     </div>
 
-                                                    {/* TL Swap Order Composition (only show if isTlSwap is true) */}
+                                                    {/* TL Operation Order Composition (only show if isTlSwap is true) */}
                                                     {isTlSwap && (
                                                         <div className="space-y-4 border border-primary/20 bg-card/20 backdrop-blur-sm p-4 rounded-sm">
                                                             <div className="flex items-center justify-between mb-3">
                                                                 <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider">
-                                                                    COMPOSE TIMELOCK ORDERS
+                                                                    {tlOperationType === 'swap' ? 'COMPOSE SWAP ORDERS' : 'COMPOSE LIQUIDITY ORDERS'}
                                                                 </label>
                                                                 <div className="flex items-center gap-2">
                                                                     <label className="text-[10px] font-mono text-muted-foreground">
