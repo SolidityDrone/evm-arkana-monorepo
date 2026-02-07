@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { usePublicClient, useChainId, useAccount as useWagmiAccount } from 'wagmi';
+import { usePublicClient, useChainId, useAccount as useWagmiAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { type Address } from 'viem';
 import { useAccount } from '@/context/AccountProvider';
 import { useAaveTokens } from '@/hooks/useAaveTokens';
@@ -71,6 +71,12 @@ export function DecryptOrder() {
     const [executingChunk, setExecutingChunk] = useState<number | null>(null);
     const [executeError, setExecuteError] = useState<string | null>(null);
     const [simulationResult, setSimulationResult] = useState<{ chunkIndex: number; success: boolean; error?: string } | null>(null);
+    
+    // Transaction execution
+    const { writeContract, data: txHash, isPending: isExecuting, error: executeTxError } = useWriteContract();
+    const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({ 
+        hash: txHash 
+    });
 
     // Derive user key from signature on mount
     useEffect(() => {
@@ -257,7 +263,7 @@ export function DecryptOrder() {
 
         try {
             const order = chunk.order;
-            const emptySwapCalldata = '0x' as `0x${string}`;
+            // executeV4SwapIntent builds swap calldata internally from poolKey
 
             // First check if order hashes are registered and get operation type + router
             const [storedHashes, tokenIn, operationType, uniswapRouter] = await Promise.all([
@@ -330,6 +336,20 @@ export function DecryptOrder() {
                 ? tokenIn
                 : selectedToken as Address;
 
+            // Build PoolKey: currency0 must be < currency1 (sorted by address)
+            const tokenInLower = actualTokenIn.toLowerCase();
+            const tokenOutLower = (order.tokenOut as string).toLowerCase();
+            const currency0 = tokenInLower < tokenOutLower ? actualTokenIn : order.tokenOut as Address;
+            const currency1 = tokenInLower < tokenOutLower ? order.tokenOut as Address : actualTokenIn;
+
+            const poolKey = {
+                currency0: currency0 as Address,
+                currency1: currency1 as Address,
+                fee: 3000, // 0.3% fee tier
+                tickSpacing: 60, // Common tick spacing for 0.3% pools
+                hooks: '0x0000000000000000000000000000000000000000' as Address, // No hooks
+            };
+
             const simArgs = {
                 orderId: status.nonceCommitment,
                 chunkIndex: chunk.chunkIndex,
@@ -339,6 +359,7 @@ export function DecryptOrder() {
                 sharesAmount: order.sharesAmount,
                 tokenIn: actualTokenIn,
                 tokenOut: order.tokenOut,
+                poolKey,
                 amountOutMin: order.amountOutMin,
                 slippageBps: order.slippageBps,
                 deadline: order.deadline,
@@ -347,14 +368,44 @@ export function DecryptOrder() {
                 drandRound: chunk.round,
                 prevHash: order.prevHash,
                 nextHash: order.nextHash,
+                uniswapRouter: uniswapRouter,
             };
 
-            console.log('🔍 Simulating swap intent with args:', simArgs);
+            console.log('🔍 Simulating V4 swap intent with args:', simArgs);
+
+            // Log Foundry test format for debugging
+            console.log(`
+📋 FOUNDRY TEST PARAMETERS:
+-----------------------------
+// Copy these to Debugger.t.sol:
+bytes32 orderId = ${status.nonceCommitment};
+uint256 chunkIndex = ${chunk.chunkIndex};
+address intentor = ${walletAddress};
+address tokenAddress = ${selectedToken};
+uint256 sharesAmount = ${order.sharesAmount};
+address tokenIn = ${actualTokenIn};
+address tokenOut = ${order.tokenOut};
+uint256 amountOutMin = ${order.amountOutMin};
+uint16 slippageBps = ${order.slippageBps};
+uint256 deadline = ${order.deadline};
+uint256 executionFeeBps = ${order.executionFeeBps};
+address recipient = ${order.recipient};
+uint256 drandRound = ${chunk.round};
+uint256 prevHash = ${order.prevHash};
+uint256 nextHash = ${order.nextHash};
+// PoolKey:
+address currency0 = ${currency0};
+address currency1 = ${currency1};
+uint24 fee = 3000;
+int24 tickSpacing = 60;
+address hooks = 0x0000000000000000000000000000000000000000;
+-----------------------------
+`);
 
             await publicClient.simulateContract({
                 address: TLSWAP_REGISTER_ADDRESS as Address,
                 abi: TLSWAP_REGISTER_ABI,
-                functionName: 'executeSwapIntent',
+                functionName: 'executeV4SwapIntent',
                 account: walletAddress,
                 args: [
                     status.nonceCommitment as `0x${string}`,
@@ -362,16 +413,13 @@ export function DecryptOrder() {
                     walletAddress,
                     selectedToken as Address,
                     BigInt(order.sharesAmount),
-                    actualTokenIn, // Use tokenIn from contract
-                    order.tokenOut as Address,
+                    poolKey, // PoolKey tuple
                     BigInt(order.amountOutMin),
                     order.slippageBps,
                     BigInt(order.deadline),
                     BigInt(order.executionFeeBps),
                     order.recipient as Address,
                     BigInt(chunk.round),
-                    emptySwapCalldata,
-                    uniswapRouter, // Use router from contract
                     BigInt(order.prevHash),
                     BigInt(order.nextHash),
                 ],

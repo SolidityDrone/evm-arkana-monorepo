@@ -29,22 +29,34 @@ contract ArkanaDeployer is Script {
         address multicall3 = vm.envAddress("SEPOLIA_MULTICALL3");
         address uniswapRouter = vm.envAddress("SEPOLIA_UNIVERSAL_ROUTER");
         address positionManager = vm.envAddress("SEPOLIA_POSITION_MANAGER");
-        
+        address permit2 = vm.envAddress("SEPOLIA_PERMIT2");
+        address poolManager = vm.envAddress("SEPOLIA_POOL_MANAGER");
+
         console.log("Using addresses:");
         console.log("  Aave Pool:", aavePool);
         console.log("  Multicall3:", multicall3);
         console.log("  Universal Router:", uniswapRouter);
         console.log("  Position Manager:", positionManager);
+        console.log("  Permit2:", permit2);
+        console.log("  Pool Manager:", poolManager);
 
         // Step 3: Deploy TLswapRegister first (with address(0) for arkana, will be set later)
         console.log("Deploying TLswapRegister...");
         TLswapRegister tlswapRegister = new TLswapRegister(address(0), uniswapRouter, poseidon2Huff);
         address tlswapRegisterAddress = address(tlswapRegister);
         console.log("TLswapRegister deployed at:", tlswapRegisterAddress);
-        
+
         // Set Position Manager for liquidity operations
         tlswapRegister.setPositionManager(positionManager);
         console.log("TLswapRegister.positionManager set to:", positionManager);
+
+        // Set Permit2 for V4 swap token transfers
+        tlswapRegister.setPermit2(permit2);
+        console.log("TLswapRegister.permit2 set to:", permit2);
+
+        // Set Pool Manager for V4 operations
+        tlswapRegister.setPoolManager(poolManager);
+        console.log("TLswapRegister.poolManager set to:", poolManager);
 
         // Step 4: Deploy Arkana with the Huff contract address and TLswapRegister address
         address[] memory verifiers = new address[](5);

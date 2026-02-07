@@ -25,7 +25,7 @@ import { loadAccountData, saveTokenAccountData, TokenAccountData } from '@/lib/i
 import { loadAccountDataOnSign } from '@/lib/loadAccountDataOnSign';
 import { convertAssetsToShares, convertSharesToAssets } from '@/lib/shares-to-assets';
 import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
-import { getCurrentRound, getRoundTimestamp, createOrderChain, dateToRound, roundToDate, formatRoundTime, getMinimumRound, type Order } from '@/lib/timelock-order';
+import { getCurrentRound, getRoundTimestamp, createOrderChain, createLiquidityOrderChain, dateToRound, roundToDate, formatRoundTime, getMinimumRound, type Order, type LiquidityOrder, type PoolKey, OperationType } from '@/lib/timelock-order';
 import { uploadCiphertextToIPFS, getIPFSGatewayURL } from '@/lib/ipfs';
 import { Copy, ExternalLink } from 'lucide-react';
 import Image from 'next/image';
@@ -88,6 +88,14 @@ export default function WithdrawPage() {
         tokenOut: string;
         slippageBps: string;
         executionFeeBps: string;
+        // Liquidity-specific fields
+        currency0: string;
+        currency1: string;
+        poolFee: string;
+        tickSpacing: string;
+        hooks: string;
+        tickLower: string;
+        tickUpper: string;
     }>>([{
         sharesAmount: '',
         amountOutMin: '',
@@ -96,7 +104,15 @@ export default function WithdrawPage() {
         recipient: address || '',
         tokenOut: '',
         slippageBps: '50',
-        executionFeeBps: '10'
+        executionFeeBps: '10',
+        // Liquidity defaults
+        currency0: '',
+        currency1: '',
+        poolFee: '3000',
+        tickSpacing: '60',
+        hooks: '0x0000000000000000000000000000000000000000',
+        tickLower: '-887220',
+        tickUpper: '887220',
     }]);
     const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
     const [tokenName, setTokenName] = useState<string>('');
@@ -1523,49 +1539,6 @@ export default function WithdrawPage() {
                     console.log('📊 TL Swap shares from circuit inputs:', inputs.tl_swap_shares_amounts);
                     console.log('📊 User input amounts (decimal):', tlOrders.slice(0, numOrders).map(o => o.sharesAmount));
 
-                    // Prepare orders for createOrderChain
-                    // Convert amountOutMin from decimal string to raw units using tokenOut decimals
-                    // IMPORTANT: Use the calculated shares from inputs.tl_swap_shares_amounts (already in raw units)
-                    // NOT the user's decimal input (like "0.5")
-                    const orders: Order[] = tlOrders.slice(0, numOrders).map((order, idx) => {
-                        let amountOutMinRaw: string | bigint = order.amountOutMin || '0';
-
-                        // If amountOutMin is provided and tokenOut has decimals, convert to raw units
-                        if (order.amountOutMin && order.tokenOut && tokenOutDecimals[order.tokenOut.toLowerCase()]) {
-                            try {
-                                const decimals = tokenOutDecimals[order.tokenOut.toLowerCase()];
-                                const sanitizedAmount = order.amountOutMin.trim().replace(',', '.');
-
-                                if (/^\d+\.?\d*$/.test(sanitizedAmount)) {
-                                    const parts = sanitizedAmount.split('.');
-                                    const integerPart = parts[0] || '0';
-                                    const decimalPart = parts[1] || '';
-                                    const limitedDecimal = decimalPart.slice(0, decimals);
-                                    const paddedDecimal = limitedDecimal.padEnd(decimals, '0');
-                                    amountOutMinRaw = (BigInt(integerPart) * BigInt(10 ** decimals) + BigInt(paddedDecimal)).toString();
-                                }
-                            } catch (error) {
-                                console.error(`Error converting amountOutMin for order:`, error);
-                                // Fallback to original value
-                            }
-                        }
-
-                        // Use the pre-calculated shares from circuit inputs (already in raw bigint form)
-                        // These were calculated proportionally to ensure exact sum
-                        // Access from inputs.tl_swap_shares_amounts (set during calculateCircuitInputsWithdraw)
-                        const calculatedShares = inputs.tl_swap_shares_amounts[idx] || '0';
-
-                        return {
-                            sharesAmount: calculatedShares, // Use calculated shares, NOT user's decimal input
-                            amountOutMin: amountOutMinRaw,
-                            slippageBps: parseInt(order.slippageBps) || 50,
-                            deadline: parseInt(order.deadline) || Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60),
-                            recipient: order.recipient,
-                            tokenOut: order.tokenOut,
-                            executionFeeBps: parseInt(order.executionFeeBps) || 10
-                        };
-                    });
-
                     // Get start round (use first order's target round or current + 1000)
                     const firstOrderTargetRound = tlOrders[0]?.targetRound;
                     const startRound = firstOrderTargetRound && parseInt(firstOrderTargetRound) > 0
@@ -1589,14 +1562,87 @@ export default function WithdrawPage() {
                     // Calculate previous nonce (current nonce - 1, or 0 if nonce is 0)
                     const previousNonce = tokenNonce > BigInt(0) ? tokenNonce - BigInt(1) : BigInt(0);
 
-                    // Create order chain
-                    const orderChainResult = await createOrderChain(
-                        orders,
-                        startRound,
-                        roundStep,
-                        userKeyBigInt,
-                        previousNonce
-                    );
+                    let orderChainResult;
+
+                    if (tlOperationType === 'liquidity') {
+                        // Create LIQUIDITY orders for Uniswap V4
+                        const liquidityOrders: LiquidityOrder[] = tlOrders.slice(0, numOrders).map((order, idx) => {
+                            const calculatedShares = inputs.tl_swap_shares_amounts[idx] || '0';
+
+                            // Build PoolKey from order fields
+                            const poolKey: PoolKey = {
+                                currency0: order.currency0 || '0x0000000000000000000000000000000000000000',
+                                currency1: order.currency1 || '0x0000000000000000000000000000000000000000',
+                                fee: parseInt(order.poolFee) || 3000,
+                                tickSpacing: parseInt(order.tickSpacing) || 60,
+                                hooks: order.hooks || '0x0000000000000000000000000000000000000000',
+                            };
+
+                            return {
+                                sharesAmount: calculatedShares,
+                                poolKey,
+                                tickLower: parseInt(order.tickLower) || -887220,
+                                tickUpper: parseInt(order.tickUpper) || 887220,
+                                amount0Max: BigInt(calculatedShares), // Use shares as max (will be converted on withdrawal)
+                                amount1Max: BigInt(0), // Single-sided liquidity from vault
+                                deadline: parseInt(order.deadline) || Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60),
+                                executionFeeBps: parseInt(order.executionFeeBps) || 10,
+                                recipient: order.recipient,
+                            };
+                        });
+
+                        orderChainResult = await createLiquidityOrderChain(
+                            liquidityOrders,
+                            startRound,
+                            roundStep,
+                            userKeyBigInt,
+                            previousNonce
+                        );
+                    } else {
+                        // Create SWAP orders (existing logic)
+                        const orders: Order[] = tlOrders.slice(0, numOrders).map((order, idx) => {
+                            let amountOutMinRaw: string | bigint = order.amountOutMin || '0';
+
+                            // If amountOutMin is provided and tokenOut has decimals, convert to raw units
+                            if (order.amountOutMin && order.tokenOut && tokenOutDecimals[order.tokenOut.toLowerCase()]) {
+                                try {
+                                    const decimals = tokenOutDecimals[order.tokenOut.toLowerCase()];
+                                    const sanitizedAmount = order.amountOutMin.trim().replace(',', '.');
+
+                                    if (/^\d+\.?\d*$/.test(sanitizedAmount)) {
+                                        const parts = sanitizedAmount.split('.');
+                                        const integerPart = parts[0] || '0';
+                                        const decimalPart = parts[1] || '';
+                                        const limitedDecimal = decimalPart.slice(0, decimals);
+                                        const paddedDecimal = limitedDecimal.padEnd(decimals, '0');
+                                        amountOutMinRaw = (BigInt(integerPart) * BigInt(10 ** decimals) + BigInt(paddedDecimal)).toString();
+                                    }
+                                } catch (error) {
+                                    console.error(`Error converting amountOutMin for order:`, error);
+                                }
+                            }
+
+                            const calculatedShares = inputs.tl_swap_shares_amounts[idx] || '0';
+
+                            return {
+                                sharesAmount: calculatedShares,
+                                amountOutMin: amountOutMinRaw,
+                                slippageBps: parseInt(order.slippageBps) || 50,
+                                deadline: parseInt(order.deadline) || Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60),
+                                recipient: order.recipient,
+                                tokenOut: order.tokenOut,
+                                executionFeeBps: parseInt(order.executionFeeBps) || 10
+                            };
+                        });
+
+                        orderChainResult = await createOrderChain(
+                            orders,
+                            startRound,
+                            roundStep,
+                            userKeyBigInt,
+                            previousNonce
+                        );
+                    }
 
                     // Get the first order's ciphertext (contains entire chain)
                     const firstOrder = orderChainResult.orders[0];
@@ -2214,8 +2260,8 @@ export default function WithdrawPage() {
                                                                             type="button"
                                                                             onClick={() => setTlOperationType('swap')}
                                                                             className={`px-3 py-1 text-xs font-bold rounded transition-colors ${tlOperationType === 'swap'
-                                                                                    ? 'bg-primary text-primary-foreground'
-                                                                                    : 'bg-card/60 text-muted-foreground border border-primary/30 hover:bg-primary/20'
+                                                                                ? 'bg-primary text-primary-foreground'
+                                                                                : 'bg-card/60 text-muted-foreground border border-primary/30 hover:bg-primary/20'
                                                                                 }`}
                                                                         >
                                                                             SWAP
@@ -2224,8 +2270,8 @@ export default function WithdrawPage() {
                                                                             type="button"
                                                                             onClick={() => setTlOperationType('liquidity')}
                                                                             className={`px-3 py-1 text-xs font-bold rounded transition-colors ${tlOperationType === 'liquidity'
-                                                                                    ? 'bg-accent text-accent-foreground'
-                                                                                    : 'bg-card/60 text-muted-foreground border border-accent/30 hover:bg-accent/20'
+                                                                                ? 'bg-accent text-accent-foreground'
+                                                                                : 'bg-card/60 text-muted-foreground border border-accent/30 hover:bg-accent/20'
                                                                                 }`}
                                                                         >
                                                                             ADD LIQUIDITY (V4)
@@ -2265,7 +2311,14 @@ export default function WithdrawPage() {
                                                                                         recipient: address || '',
                                                                                         tokenOut: '',
                                                                                         slippageBps: '50',
-                                                                                        executionFeeBps: '10'
+                                                                                        executionFeeBps: '10',
+                                                                                        currency0: '',
+                                                                                        currency1: '',
+                                                                                        poolFee: '3000',
+                                                                                        tickSpacing: '60',
+                                                                                        hooks: '0x0000000000000000000000000000000000000000',
+                                                                                        tickLower: '-887220',
+                                                                                        tickUpper: '887220',
                                                                                     });
                                                                                 }
                                                                             } else {
@@ -2322,115 +2375,246 @@ export default function WithdrawPage() {
                                                                                 />
                                                                             </div>
 
-                                                                            {/* Token Out and Min Amount Out - Same line */}
-                                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                                                <div>
-                                                                                    <label className="block text-[10px] font-mono text-muted-foreground mb-1">
-                                                                                        Token Out Address {order.tokenOut && isValidatingTokenOut[order.tokenOut.toLowerCase()] && <span className="text-muted-foreground/50">(validating...)</span>}
-                                                                                    </label>
-                                                                                    <Input
-                                                                                        type="text"
-                                                                                        value={order.tokenOut}
-                                                                                        onChange={(e) => {
-                                                                                            const newOrders = [...tlOrders];
-                                                                                            newOrders[index].tokenOut = e.target.value;
-                                                                                            setTlOrders(newOrders);
-                                                                                            // Clear validation error when user types
-                                                                                            if (e.target.value) {
-                                                                                                setTokenOutValidationErrors(prev => {
-                                                                                                    const newObj = { ...prev };
-                                                                                                    delete newObj[e.target.value.toLowerCase()];
-                                                                                                    return newObj;
-                                                                                                });
-                                                                                            }
-                                                                                        }}
-                                                                                        placeholder="0x..."
-                                                                                        className="text-xs w-full font-mono"
-                                                                                    />
-                                                                                    {order.tokenOut && tokenOutValidationErrors[order.tokenOut.toLowerCase()] && (
-                                                                                        <p className="text-[9px] font-mono text-red-500 mt-1">
-                                                                                            ⚠️ {tokenOutValidationErrors[order.tokenOut.toLowerCase()]}
-                                                                                        </p>
-                                                                                    )}
-                                                                                    {order.tokenOut && tokenOutInfo[order.tokenOut.toLowerCase()] && !tokenOutValidationErrors[order.tokenOut.toLowerCase()] && (
-                                                                                        <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
-                                                                                            ✓ {tokenOutInfo[order.tokenOut.toLowerCase()]?.name} ({tokenOutInfo[order.tokenOut.toLowerCase()]?.symbol}) - {tokenOutInfo[order.tokenOut.toLowerCase()]?.decimals} decimals
-                                                                                        </p>
-                                                                                    )}
-                                                                                    {order.tokenOut && order.tokenOut.length === 42 && order.tokenOut.startsWith('0x') && !tokenOutInfo[order.tokenOut.toLowerCase()] && !isValidatingTokenOut[order.tokenOut.toLowerCase()] && !tokenOutValidationErrors[order.tokenOut.toLowerCase()] && (
-                                                                                        <p className="text-[9px] font-mono text-yellow-500 mt-1">
-                                                                                            ⚠️ Token validation in progress or token is not a valid ERC20
-                                                                                        </p>
-                                                                                    )}
-                                                                                </div>
-                                                                                <div>
-                                                                                    <label className="block text-[10px] font-mono text-muted-foreground mb-1">
-                                                                                        Min Amount Out {order.tokenOut && tokenOutDecimals[order.tokenOut.toLowerCase()] ? `(${tokenOutDecimals[order.tokenOut.toLowerCase()]} decimals)` : ''}
-                                                                                    </label>
-                                                                                    <Input
-                                                                                        type="text"
-                                                                                        value={order.amountOutMin}
-                                                                                        onChange={(e) => {
-                                                                                            const value = e.target.value;
-
-                                                                                            // Allow empty or just a dot
-                                                                                            if (value === '' || value === '.') {
+                                                                            {/* SWAP-SPECIFIC: Token Out and Min Amount Out */}
+                                                                            {tlOperationType === 'swap' && (
+                                                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                                                    <div>
+                                                                                        <label className="block text-[10px] font-mono text-muted-foreground mb-1">
+                                                                                            Token Out Address {order.tokenOut && isValidatingTokenOut[order.tokenOut.toLowerCase()] && <span className="text-muted-foreground/50">(validating...)</span>}
+                                                                                        </label>
+                                                                                        <Input
+                                                                                            type="text"
+                                                                                            value={order.tokenOut}
+                                                                                            onChange={(e) => {
                                                                                                 const newOrders = [...tlOrders];
-                                                                                                newOrders[index].amountOutMin = value;
+                                                                                                newOrders[index].tokenOut = e.target.value;
                                                                                                 setTlOrders(newOrders);
-                                                                                                return;
-                                                                                            }
+                                                                                                // Clear validation error when user types
+                                                                                                if (e.target.value) {
+                                                                                                    setTokenOutValidationErrors(prev => {
+                                                                                                        const newObj = { ...prev };
+                                                                                                        delete newObj[e.target.value.toLowerCase()];
+                                                                                                        return newObj;
+                                                                                                    });
+                                                                                                }
+                                                                                            }}
+                                                                                            placeholder="0x..."
+                                                                                            className="text-xs w-full font-mono"
+                                                                                        />
+                                                                                        {order.tokenOut && tokenOutValidationErrors[order.tokenOut.toLowerCase()] && (
+                                                                                            <p className="text-[9px] font-mono text-red-500 mt-1">
+                                                                                                ⚠️ {tokenOutValidationErrors[order.tokenOut.toLowerCase()]}
+                                                                                            </p>
+                                                                                        )}
+                                                                                        {order.tokenOut && tokenOutInfo[order.tokenOut.toLowerCase()] && !tokenOutValidationErrors[order.tokenOut.toLowerCase()] && (
+                                                                                            <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                ✓ {tokenOutInfo[order.tokenOut.toLowerCase()]?.name} ({tokenOutInfo[order.tokenOut.toLowerCase()]?.symbol}) - {tokenOutInfo[order.tokenOut.toLowerCase()]?.decimals} decimals
+                                                                                            </p>
+                                                                                        )}
+                                                                                        {order.tokenOut && order.tokenOut.length === 42 && order.tokenOut.startsWith('0x') && !tokenOutInfo[order.tokenOut.toLowerCase()] && !isValidatingTokenOut[order.tokenOut.toLowerCase()] && !tokenOutValidationErrors[order.tokenOut.toLowerCase()] && (
+                                                                                            <p className="text-[9px] font-mono text-yellow-500 mt-1">
+                                                                                                ⚠️ Token validation in progress or token is not a valid ERC20
+                                                                                            </p>
+                                                                                        )}
+                                                                                    </div>
+                                                                                    <div>
+                                                                                        <label className="block text-[10px] font-mono text-muted-foreground mb-1">
+                                                                                            Min Amount Out {order.tokenOut && tokenOutDecimals[order.tokenOut.toLowerCase()] ? `(${tokenOutDecimals[order.tokenOut.toLowerCase()]} decimals)` : ''}
+                                                                                        </label>
+                                                                                        <Input
+                                                                                            type="text"
+                                                                                            value={order.amountOutMin}
+                                                                                            onChange={(e) => {
+                                                                                                const value = e.target.value;
 
-                                                                                            // Check if it's a valid decimal number
-                                                                                            if (!/^\d+\.?\d*$/.test(value.replace(',', '.'))) {
-                                                                                                return; // Don't update if invalid
-                                                                                            }
-
-                                                                                            // If tokenOut has decimals, limit decimal places
-                                                                                            if (order.tokenOut && tokenOutDecimals[order.tokenOut.toLowerCase()]) {
-                                                                                                const decimals = tokenOutDecimals[order.tokenOut.toLowerCase()];
-                                                                                                const sanitizedValue = value.replace(',', '.');
-                                                                                                const parts = sanitizedValue.split('.');
-
-                                                                                                if (parts.length === 2 && parts[1].length > decimals) {
-                                                                                                    // Truncate to max decimals
-                                                                                                    const truncated = parts[0] + '.' + parts[1].slice(0, decimals);
+                                                                                                // Allow empty or just a dot
+                                                                                                if (value === '' || value === '.') {
                                                                                                     const newOrders = [...tlOrders];
-                                                                                                    newOrders[index].amountOutMin = truncated;
+                                                                                                    newOrders[index].amountOutMin = value;
                                                                                                     setTlOrders(newOrders);
                                                                                                     return;
                                                                                                 }
-                                                                                            }
 
-                                                                                            const newOrders = [...tlOrders];
-                                                                                            newOrders[index].amountOutMin = value;
-                                                                                            setTlOrders(newOrders);
-                                                                                        }}
-                                                                                        placeholder="0"
-                                                                                        className="text-xs w-full"
-                                                                                    />
-                                                                                    {order.tokenOut && !tokenOutInfo[order.tokenOut.toLowerCase()] && order.tokenOut.length === 42 && (
-                                                                                        <p className="text-[9px] font-mono text-yellow-500 mt-1">
-                                                                                            ⚠️ Token must be validated before entering amount
-                                                                                        </p>
-                                                                                    )}
-                                                                                    {order.tokenOut && tokenOutDecimals[order.tokenOut.toLowerCase()] && (
-                                                                                        <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
-                                                                                            Minimum tokens to receive (max {tokenOutDecimals[order.tokenOut.toLowerCase()]} decimals)
-                                                                                            {tokenOutInfo[order.tokenOut.toLowerCase()] && (
-                                                                                                <span className="ml-1 text-primary/70">
-                                                                                                    ({tokenOutInfo[order.tokenOut.toLowerCase()]?.symbol})
-                                                                                                </span>
-                                                                                            )}
-                                                                                        </p>
-                                                                                    )}
-                                                                                    {!order.tokenOut || !tokenOutDecimals[order.tokenOut.toLowerCase()] ? (
-                                                                                        <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
-                                                                                            Minimum tokens to receive
-                                                                                        </p>
-                                                                                    ) : null}
+                                                                                                // Check if it's a valid decimal number
+                                                                                                if (!/^\d+\.?\d*$/.test(value.replace(',', '.'))) {
+                                                                                                    return; // Don't update if invalid
+                                                                                                }
+
+                                                                                                // If tokenOut has decimals, limit decimal places
+                                                                                                if (order.tokenOut && tokenOutDecimals[order.tokenOut.toLowerCase()]) {
+                                                                                                    const decimals = tokenOutDecimals[order.tokenOut.toLowerCase()];
+                                                                                                    const sanitizedValue = value.replace(',', '.');
+                                                                                                    const parts = sanitizedValue.split('.');
+
+                                                                                                    if (parts.length === 2 && parts[1].length > decimals) {
+                                                                                                        // Truncate to max decimals
+                                                                                                        const truncated = parts[0] + '.' + parts[1].slice(0, decimals);
+                                                                                                        const newOrders = [...tlOrders];
+                                                                                                        newOrders[index].amountOutMin = truncated;
+                                                                                                        setTlOrders(newOrders);
+                                                                                                        return;
+                                                                                                    }
+                                                                                                }
+
+                                                                                                const newOrders = [...tlOrders];
+                                                                                                newOrders[index].amountOutMin = value;
+                                                                                                setTlOrders(newOrders);
+                                                                                            }}
+                                                                                            placeholder="0"
+                                                                                            className="text-xs w-full"
+                                                                                        />
+                                                                                        {order.tokenOut && !tokenOutInfo[order.tokenOut.toLowerCase()] && order.tokenOut.length === 42 && (
+                                                                                            <p className="text-[9px] font-mono text-yellow-500 mt-1">
+                                                                                                ⚠️ Token must be validated before entering amount
+                                                                                            </p>
+                                                                                        )}
+                                                                                        {order.tokenOut && tokenOutDecimals[order.tokenOut.toLowerCase()] && (
+                                                                                            <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                Minimum tokens to receive (max {tokenOutDecimals[order.tokenOut.toLowerCase()]} decimals)
+                                                                                                {tokenOutInfo[order.tokenOut.toLowerCase()] && (
+                                                                                                    <span className="ml-1 text-primary/70">
+                                                                                                        ({tokenOutInfo[order.tokenOut.toLowerCase()]?.symbol})
+                                                                                                    </span>
+                                                                                                )}
+                                                                                            </p>
+                                                                                        )}
+                                                                                        {!order.tokenOut || !tokenOutDecimals[order.tokenOut.toLowerCase()] ? (
+                                                                                            <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                Minimum tokens to receive
+                                                                                            </p>
+                                                                                        ) : null}
+                                                                                    </div>
                                                                                 </div>
-                                                                            </div>
+                                                                            )}
+
+                                                                            {/* LIQUIDITY-SPECIFIC: Pool Key and Tick Range */}
+                                                                            {tlOperationType === 'liquidity' && (
+                                                                                <div className="space-y-2 p-2 border border-accent/20 bg-accent/5 rounded">
+                                                                                    <p className="text-[10px] font-mono text-accent uppercase tracking-wider">Uniswap V4 Pool Parameters</p>
+                                                                                    <div className="grid grid-cols-2 gap-2">
+                                                                                        <div>
+                                                                                            <label className="block text-[10px] font-mono text-muted-foreground mb-1">Currency 0 (Token A)</label>
+                                                                                            <Input
+                                                                                                type="text"
+                                                                                                placeholder="0x..."
+                                                                                                className="text-xs w-full font-mono"
+                                                                                                value={order.currency0}
+                                                                                                onChange={(e) => {
+                                                                                                    const newOrders = [...tlOrders];
+                                                                                                    newOrders[index].currency0 = e.target.value;
+                                                                                                    setTlOrders(newOrders);
+                                                                                                }}
+                                                                                            />
+                                                                                        </div>
+                                                                                        <div>
+                                                                                            <label className="block text-[10px] font-mono text-muted-foreground mb-1">Currency 1 (Token B)</label>
+                                                                                            <Input
+                                                                                                type="text"
+                                                                                                placeholder="0x..."
+                                                                                                className="text-xs w-full font-mono"
+                                                                                                value={order.currency1}
+                                                                                                onChange={(e) => {
+                                                                                                    const newOrders = [...tlOrders];
+                                                                                                    newOrders[index].currency1 = e.target.value;
+                                                                                                    setTlOrders(newOrders);
+                                                                                                }}
+                                                                                            />
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    <div className="grid grid-cols-3 gap-2">
+                                                                                        <div>
+                                                                                            <label className="block text-[10px] font-mono text-muted-foreground mb-1">Fee (bps)</label>
+                                                                                            <Input
+                                                                                                type="number"
+                                                                                                placeholder="3000"
+                                                                                                className="text-xs w-full"
+                                                                                                value={order.poolFee}
+                                                                                                onChange={(e) => {
+                                                                                                    const newOrders = [...tlOrders];
+                                                                                                    newOrders[index].poolFee = e.target.value;
+                                                                                                    setTlOrders(newOrders);
+                                                                                                }}
+                                                                                            />
+                                                                                            <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                500=0.05%, 3000=0.3%, 10000=1%
+                                                                                            </p>
+                                                                                        </div>
+                                                                                        <div>
+                                                                                            <label className="block text-[10px] font-mono text-muted-foreground mb-1">Tick Spacing</label>
+                                                                                            <Input
+                                                                                                type="number"
+                                                                                                placeholder="60"
+                                                                                                className="text-xs w-full"
+                                                                                                value={order.tickSpacing}
+                                                                                                onChange={(e) => {
+                                                                                                    const newOrders = [...tlOrders];
+                                                                                                    newOrders[index].tickSpacing = e.target.value;
+                                                                                                    setTlOrders(newOrders);
+                                                                                                }}
+                                                                                            />
+                                                                                            <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                1, 10, 60, 200
+                                                                                            </p>
+                                                                                        </div>
+                                                                                        <div>
+                                                                                            <label className="block text-[10px] font-mono text-muted-foreground mb-1">Hooks</label>
+                                                                                            <Input
+                                                                                                type="text"
+                                                                                                placeholder="0x0..."
+                                                                                                className="text-xs w-full font-mono"
+                                                                                                value={order.hooks}
+                                                                                                onChange={(e) => {
+                                                                                                    const newOrders = [...tlOrders];
+                                                                                                    newOrders[index].hooks = e.target.value;
+                                                                                                    setTlOrders(newOrders);
+                                                                                                }}
+                                                                                            />
+                                                                                            <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                0x0 for no hooks
+                                                                                            </p>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    <div className="grid grid-cols-2 gap-2">
+                                                                                        <div>
+                                                                                            <label className="block text-[10px] font-mono text-muted-foreground mb-1">Tick Lower</label>
+                                                                                            <Input
+                                                                                                type="number"
+                                                                                                placeholder="-887220"
+                                                                                                className="text-xs w-full"
+                                                                                                value={order.tickLower}
+                                                                                                onChange={(e) => {
+                                                                                                    const newOrders = [...tlOrders];
+                                                                                                    newOrders[index].tickLower = e.target.value;
+                                                                                                    setTlOrders(newOrders);
+                                                                                                }}
+                                                                                            />
+                                                                                            <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                -887220 = full range
+                                                                                            </p>
+                                                                                        </div>
+                                                                                        <div>
+                                                                                            <label className="block text-[10px] font-mono text-muted-foreground mb-1">Tick Upper</label>
+                                                                                            <Input
+                                                                                                type="number"
+                                                                                                placeholder="887220"
+                                                                                                className="text-xs w-full"
+                                                                                                value={order.tickUpper}
+                                                                                                onChange={(e) => {
+                                                                                                    const newOrders = [...tlOrders];
+                                                                                                    newOrders[index].tickUpper = e.target.value;
+                                                                                                    setTlOrders(newOrders);
+                                                                                                }}
+                                                                                            />
+                                                                                            <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                887220 = full range
+                                                                                            </p>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    <p className="text-[9px] font-mono text-accent/70 mt-2 p-2 bg-accent/10 rounded">
+                                                                                        💡 LP position NFT will be transferred to recipient after execution
+                                                                                    </p>
+                                                                                </div>
+                                                                            )}
 
                                                                             {/* Round Drand and Deadline - Same line */}
                                                                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -2484,47 +2668,49 @@ export default function WithdrawPage() {
                                                                                 </div>
                                                                             </div>
 
-                                                                            {/* Slippage and Pool Fee - Same line */}
-                                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                                                <div>
-                                                                                    <label className="block text-[10px] font-mono text-muted-foreground mb-1">
-                                                                                        Slippage (basis points)
-                                                                                    </label>
-                                                                                    <Input
-                                                                                        type="number"
-                                                                                        value={order.slippageBps}
-                                                                                        onChange={(e) => {
-                                                                                            const newOrders = [...tlOrders];
-                                                                                            newOrders[index].slippageBps = e.target.value;
-                                                                                            setTlOrders(newOrders);
-                                                                                        }}
-                                                                                        placeholder="50"
-                                                                                        className="text-xs w-full"
-                                                                                    />
-                                                                                    <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
-                                                                                        {order.slippageBps ? `${(parseFloat(order.slippageBps) / 100).toFixed(2)}%` : '0.5% = 50 bps'}
-                                                                                    </p>
+                                                                            {/* Slippage and Execution Fee - SWAP ONLY */}
+                                                                            {tlOperationType === 'swap' && (
+                                                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                                                    <div>
+                                                                                        <label className="block text-[10px] font-mono text-muted-foreground mb-1">
+                                                                                            Slippage (basis points)
+                                                                                        </label>
+                                                                                        <Input
+                                                                                            type="number"
+                                                                                            value={order.slippageBps}
+                                                                                            onChange={(e) => {
+                                                                                                const newOrders = [...tlOrders];
+                                                                                                newOrders[index].slippageBps = e.target.value;
+                                                                                                setTlOrders(newOrders);
+                                                                                            }}
+                                                                                            placeholder="50"
+                                                                                            className="text-xs w-full"
+                                                                                        />
+                                                                                        <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                            {order.slippageBps ? `${(parseFloat(order.slippageBps) / 100).toFixed(2)}%` : '0.5% = 50 bps'}
+                                                                                        </p>
+                                                                                    </div>
+                                                                                    <div>
+                                                                                        <label className="block text-[10px] font-mono text-muted-foreground mb-1">
+                                                                                            Execution Fee (basis points)
+                                                                                        </label>
+                                                                                        <Input
+                                                                                            type="number"
+                                                                                            value={order.executionFeeBps}
+                                                                                            onChange={(e) => {
+                                                                                                const newOrders = [...tlOrders];
+                                                                                                newOrders[index].executionFeeBps = e.target.value;
+                                                                                                setTlOrders(newOrders);
+                                                                                            }}
+                                                                                            placeholder="10"
+                                                                                            className="text-xs w-full"
+                                                                                        />
+                                                                                        <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                            {order.executionFeeBps ? `${(parseFloat(order.executionFeeBps) / 100).toFixed(2)}%` : '0.1% = 10 bps'}
+                                                                                        </p>
+                                                                                    </div>
                                                                                 </div>
-                                                                                <div>
-                                                                                    <label className="block text-[10px] font-mono text-muted-foreground mb-1">
-                                                                                        Pool Fee (basis points)
-                                                                                    </label>
-                                                                                    <Input
-                                                                                        type="number"
-                                                                                        value={order.executionFeeBps}
-                                                                                        onChange={(e) => {
-                                                                                            const newOrders = [...tlOrders];
-                                                                                            newOrders[index].executionFeeBps = e.target.value;
-                                                                                            setTlOrders(newOrders);
-                                                                                        }}
-                                                                                        placeholder="10"
-                                                                                        className="text-xs w-full"
-                                                                                    />
-                                                                                    <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
-                                                                                        {order.executionFeeBps ? `${(parseFloat(order.executionFeeBps) / 100).toFixed(2)}%` : '0.1% = 10 bps'}
-                                                                                    </p>
-                                                                                </div>
-                                                                            </div>
+                                                                            )}
 
                                                                             {/* Recipient - Full width */}
                                                                             <div>

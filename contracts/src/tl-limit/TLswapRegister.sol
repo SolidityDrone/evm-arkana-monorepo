@@ -8,14 +8,49 @@ import {IERC721} from "@oz/contracts/token/ERC721/IERC721.sol";
 import {Arkana} from "../Arkana.sol";
 import "../merkle/Poseidon2HuffWrapper.sol";
 import {Field} from "../../lib/poseidon2-evm/src/Field.sol";
+import {Currency} from "../../lib/v4-core/src/types/Currency.sol";
+import {IHooks} from "../../lib/v4-core/src/interfaces/IHooks.sol";
+import {PoolKey} from "../../lib/v4-core/src/types/PoolKey.sol";
 
-/// @notice Uniswap V4 PoolKey structure
-struct PoolKey {
-    address currency0;
-    address currency1;
-    uint24 fee;
-    int24 tickSpacing;
-    address hooks;
+/// @notice Minimal interface for Universal Router
+interface IUniversalRouter {
+    function execute(bytes calldata commands, bytes[] calldata inputs, uint256 deadline) external payable;
+}
+
+/// @notice Minimal interface for Permit2
+interface IPermit2 {
+    function approve(address token, address spender, uint160 amount, uint48 expiration) external;
+}
+
+/// @notice V4 Router Actions (from v4-periphery)
+library Actions {
+    uint256 internal constant SWAP_EXACT_IN_SINGLE = 0x06;
+    uint256 internal constant SWAP_EXACT_OUT_SINGLE = 0x08;
+    uint256 internal constant SETTLE_ALL = 0x0c;
+    uint256 internal constant TAKE_ALL = 0x0f;
+}
+
+/// @notice Universal Router Commands
+library Commands {
+    uint8 internal constant V4_SWAP = 0x10;
+}
+
+/// @notice V4Router ExactOutputSingleParams
+struct V4ExactOutputSingleParams {
+    PoolKey poolKey;
+    bool zeroForOne;
+    uint128 amountOut;
+    uint128 amountInMaximum;
+    bytes hookData;
+}
+
+/// @notice V4Router ExactInputSingleParams
+struct V4ExactInputSingleParams {
+    PoolKey poolKey;
+    bool zeroForOne;
+    uint128 amountIn;
+    uint128 amountOutMinimum;
+    bytes hookData;
 }
 
 /// @notice Minimal interface for Uniswap V4 PositionManager
@@ -70,6 +105,12 @@ contract TLswapRegister is ReentrancyGuard {
 
     /// @notice Uniswap V4 Position Manager address
     address public positionManager;
+
+    /// @notice Permit2 address for token transfers
+    address public permit2;
+
+    /// @notice Pool Manager address for V4
+    address public poolManager;
 
     /// @notice Operation type enum
     enum OperationType {
@@ -171,6 +212,14 @@ contract TLswapRegister is ReentrancyGuard {
 
     function setPositionManager(address _positionManager) external onlyOwner {
         positionManager = _positionManager;
+    }
+
+    function setPermit2(address _permit2) external onlyOwner {
+        permit2 = _permit2;
+    }
+
+    function setPoolManager(address _poolManager) external onlyOwner {
+        poolManager = _poolManager;
     }
 
     /**
@@ -351,9 +400,13 @@ contract TLswapRegister is ReentrancyGuard {
             revert InvalidAmounts();
         }
 
-        // Validate swap target (cannot approve zero address)
-        if (swapTarget == address(0)) {
-            revert SwapFailed();
+        // Use contract's uniswapRouter if swapTarget is zero address
+        address actualSwapTarget = swapTarget;
+        if (actualSwapTarget == address(0)) {
+            actualSwapTarget = uniswapRouter;
+            if (actualSwapTarget == address(0)) {
+                revert SwapFailed(); // Neither provided nor configured
+            }
         }
 
         // === HASH CHAIN VERIFICATION ===
@@ -388,8 +441,8 @@ contract TLswapRegister is ReentrancyGuard {
         }
 
         // Approve swap target to spend all available tokens
-        IERC20(tokenIn).approve(swapTarget, 0);
-        IERC20(tokenIn).approve(swapTarget, availableAmount);
+        IERC20(tokenIn).approve(actualSwapTarget, 0);
+        IERC20(tokenIn).approve(actualSwapTarget, availableAmount);
 
         // Get balance before swap (swap should send tokens to this contract)
         uint256 balanceBefore = IERC20(tokenOut).balanceOf(address(this));
@@ -397,7 +450,7 @@ contract TLswapRegister is ReentrancyGuard {
         // Execute swap - use all available tokens to get best output
         // NOTE: The swapCalldata must be configured to send output tokens to address(this),
         // NOT to the recipient directly. The contract will distribute fees and remaining tokens.
-        (bool success,) = swapTarget.call(swapCalldata);
+        (bool success,) = actualSwapTarget.call(swapCalldata);
         if (!success) {
             revert SwapFailed();
         }
@@ -443,6 +496,220 @@ contract TLswapRegister is ReentrancyGuard {
         emit SwapIntentExecuted(orderId, msg.sender, intentor, tokenIn, tokenOut, availableAmount, recipientAmount);
 
         return recipientAmount;
+    }
+
+    /**
+     * @notice Execute a V4 swap intent using Universal Router with proper calldata encoding
+     * @dev This version builds the V4 swap calldata internally using pool parameters
+     * @param orderId The order ID (nonce commitment)
+     * @param chunkIndex Index of this chunk in the order chain
+     * @param intentor The original intent creator
+     * @param tokenAddress The Arkana vault token address
+     * @param sharesAmount Amount of shares to withdraw
+     * @param poolKey V4 pool key for the swap
+     * @param amountOutMin Minimum output amount expected
+     * @param slippageBps Slippage tolerance in basis points (max 1000 = 10%)
+     * @param deadline Unix timestamp for order expiry
+     * @param executionFeeBps Fee for executor in basis points
+     * @param recipient Address to receive output tokens
+     * @param drandRound The dRand round for timelock verification
+     * @param prevHash Previous hash in the hash chain
+     * @param nextHash Expected next hash in the chain
+     */
+    function executeV4SwapIntent(
+        bytes32 orderId,
+        uint256 chunkIndex,
+        address intentor,
+        address tokenAddress,
+        uint256 sharesAmount,
+        PoolKey calldata poolKey,
+        uint256 amountOutMin,
+        uint16 slippageBps,
+        uint256 deadline,
+        uint256 executionFeeBps,
+        address recipient,
+        uint256 drandRound,
+        uint256 prevHash,
+        uint256 nextHash
+    ) external nonReentrant returns (uint256 amountOut) {
+        // Validate deadline
+        if (deadline < block.timestamp) {
+            revert IntentExpired();
+        }
+
+        // Validate slippage
+        if (slippageBps > 1000) {
+            revert InvalidSlippage();
+        }
+
+        // === ORDER HASH VALIDATION ===
+        bytes32[] memory storedHashes = orderChunkHashes[orderId];
+        if (storedHashes.length == 0) {
+            revert OrderChunkNotFound();
+        }
+        if (chunkIndex >= storedHashes.length) {
+            revert OrderChunkNotFound();
+        }
+
+        // Determine tokenIn and tokenOut from pool key and orderTokenIn
+        address tokenIn = orderTokenIn[orderId];
+        if (tokenIn == address(0)) {
+            revert InvalidAmounts();
+        }
+
+        address tokenOut;
+        bool zeroForOne;
+        if (tokenIn == Currency.unwrap(poolKey.currency0)) {
+            tokenOut = Currency.unwrap(poolKey.currency1);
+            zeroForOne = true;
+        } else if (tokenIn == Currency.unwrap(poolKey.currency1)) {
+            tokenOut = Currency.unwrap(poolKey.currency0);
+            zeroForOne = false;
+        } else {
+            revert InvalidAmounts(); // tokenIn not in pool
+        }
+
+        // Compute hash using SAME structure as executeSwapIntent (with tokenOut, not poolKey)
+        // This allows orders created for regular swaps to be executed via V4
+        bytes32 computedHash = keccak256(
+            abi.encode(
+                sharesAmount, amountOutMin, slippageBps, deadline, executionFeeBps, recipient, tokenOut, drandRound
+            )
+        );
+
+        if (storedHashes[chunkIndex] != computedHash) {
+            revert InvalidOrderHash();
+        }
+
+        // === HASH CHAIN VERIFICATION ===
+        if (usedHashChainNodes[prevHash]) {
+            revert HashChainNodeAlreadyUsed();
+        }
+
+        Field.Type prevHashField = Field.toField(prevHash);
+        Field.Type sharesAmountField = Field.toField(sharesAmount);
+        Field.Type computedNextHash = poseidon2Hasher.hash_2(prevHashField, sharesAmountField);
+        uint256 computedNextHashUint = Field.toUint256(computedNextHash);
+
+        if (computedNextHashUint != nextHash) {
+            revert InvalidHashChain();
+        }
+
+        usedHashChainNodes[prevHash] = true;
+
+        // Withdraw tokens from Arkana vault
+        arkana.withdrawForSwap(tokenAddress, sharesAmount, address(this));
+
+        uint256 availableAmount = IERC20(tokenIn).balanceOf(address(this));
+        if (availableAmount == 0) {
+            revert InvalidAmounts();
+        }
+
+        // Build and execute V4 swap via Universal Router
+        uint256 balanceBefore = IERC20(tokenOut).balanceOf(address(this));
+
+        _executeV4Swap(
+            poolKey, zeroForOne, uint128(availableAmount), uint128(amountOutMin), tokenIn, tokenOut, deadline
+        );
+
+        uint256 balanceAfter = IERC20(tokenOut).balanceOf(address(this));
+        amountOut = balanceAfter - balanceBefore;
+
+        // Validate slippage
+        uint256 minAcceptableOut = (amountOutMin * (10000 - slippageBps)) / 10000;
+        if (amountOut < minAcceptableOut) {
+            revert InvalidSlippage();
+        }
+
+        // Distribute fees and transfer to recipient
+        uint256 totalFees = 0;
+        if (executionFeeBps > 0) {
+            uint256 executionFeeAmount = (amountOut * executionFeeBps) / 10000;
+            if (executionFeeAmount > 0) {
+                IERC20(tokenOut).safeTransfer(msg.sender, executionFeeAmount);
+                totalFees += executionFeeAmount;
+            }
+        }
+        if (protocolFeeBps > 0) {
+            uint256 protocolFeeAmount = (amountOut * protocolFeeBps) / 10000;
+            if (protocolFeeAmount > 0) {
+                IERC20(tokenOut).safeTransfer(owner, protocolFeeAmount);
+                totalFees += protocolFeeAmount;
+            }
+        }
+
+        uint256 recipientAmount = amountOut - totalFees;
+        if (recipientAmount > 0) {
+            IERC20(tokenOut).safeTransfer(recipient, recipientAmount);
+        }
+
+        emit SwapIntentExecuted(orderId, msg.sender, intentor, tokenIn, tokenOut, availableAmount, recipientAmount);
+        return recipientAmount;
+    }
+
+    /**
+     * @notice Internal function to execute V4 swap via Universal Router
+     * @dev Encodes proper V4_SWAP command with SWAP_EXACT_IN_SINGLE action
+     */
+    function _executeV4Swap(
+        PoolKey calldata poolKey,
+        bool zeroForOne,
+        uint128 amountIn,
+        uint128 amountOutMinimum,
+        address tokenIn,
+        address tokenOut,
+        uint256 swapDeadline
+    ) internal {
+        require(uniswapRouter != address(0), "Router not set");
+        require(permit2 != address(0), "Permit2 not set");
+
+        // Step 1: Approve Permit2 to spend our tokens
+        IERC20(tokenIn).approve(permit2, type(uint256).max);
+
+        // Step 2: Approve Universal Router via Permit2
+        IPermit2(permit2)
+            .approve(
+                tokenIn,
+                uniswapRouter,
+                uint160(amountIn),
+                uint48(block.timestamp + 3600) // 1 hour expiration
+            );
+
+        // Step 3: Build V4 swap command
+        bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
+        bytes[] memory inputs = new bytes[](1);
+
+        // Encode actions: SWAP_EXACT_IN_SINGLE + SETTLE_ALL + TAKE_ALL
+        bytes memory actions =
+            abi.encodePacked(uint8(Actions.SWAP_EXACT_IN_SINGLE), uint8(Actions.SETTLE_ALL), uint8(Actions.TAKE_ALL));
+
+        // Prepare params for each action
+        bytes[] memory params = new bytes[](3);
+
+        // Param 0: ExactInputSingleParams
+        params[0] = abi.encode(
+            V4ExactInputSingleParams({
+                poolKey: poolKey,
+                zeroForOne: zeroForOne,
+                amountIn: amountIn,
+                amountOutMinimum: amountOutMinimum,
+                hookData: bytes("")
+            })
+        );
+
+        // Param 1: SETTLE_ALL (currency, maxAmount)
+        Currency settleCurrency = zeroForOne ? poolKey.currency0 : poolKey.currency1;
+        params[1] = abi.encode(settleCurrency, amountIn);
+
+        // Param 2: TAKE_ALL (currency, minAmount) - output goes to this contract
+        Currency takeCurrency = zeroForOne ? poolKey.currency1 : poolKey.currency0;
+        params[2] = abi.encode(takeCurrency, amountOutMinimum);
+
+        // Combine actions and params
+        inputs[0] = abi.encode(actions, params);
+
+        // Execute swap
+        IUniversalRouter(uniswapRouter).execute(commands, inputs, swapDeadline);
     }
 
     /**
@@ -497,7 +764,13 @@ contract TLswapRegister is ReentrancyGuard {
         // Compute hash of the provided liquidity parameters
         // Hash includes: sharesAmount, poolKey hash, tickLower, tickUpper, deadline, executionFeeBps, recipient, drandRound
         bytes32 poolKeyHash = keccak256(
-            abi.encode(poolKey.currency0, poolKey.currency1, poolKey.fee, poolKey.tickSpacing, poolKey.hooks)
+            abi.encode(
+                Currency.unwrap(poolKey.currency0),
+                Currency.unwrap(poolKey.currency1),
+                poolKey.fee,
+                poolKey.tickSpacing,
+                address(poolKey.hooks)
+            )
         );
         bytes32 computedHash = keccak256(
             abi.encode(
@@ -530,7 +803,7 @@ contract TLswapRegister is ReentrancyGuard {
         }
 
         // Validate pool key
-        if (poolKey.currency0 == address(0) || poolKey.currency1 == address(0)) {
+        if (Currency.unwrap(poolKey.currency0) == address(0) || Currency.unwrap(poolKey.currency1) == address(0)) {
             revert InvalidPoolKey();
         }
 
@@ -555,12 +828,14 @@ contract TLswapRegister is ReentrancyGuard {
         arkana.withdrawForSwap(tokenAddress, sharesAmount, address(this));
 
         // Get available amounts of both tokens
-        uint256 available0 = IERC20(poolKey.currency0).balanceOf(address(this));
-        uint256 available1 = IERC20(poolKey.currency1).balanceOf(address(this));
+        address token0 = Currency.unwrap(poolKey.currency0);
+        address token1 = Currency.unwrap(poolKey.currency1);
+        uint256 available0 = IERC20(token0).balanceOf(address(this));
+        uint256 available1 = IERC20(token1).balanceOf(address(this));
 
         // Approve position manager
-        IERC20(poolKey.currency0).approve(positionManager, available0);
-        IERC20(poolKey.currency1).approve(positionManager, available1);
+        IERC20(token0).approve(positionManager, available0);
+        IERC20(token1).approve(positionManager, available1);
 
         // Calculate liquidity based on available amounts
         // Note: Actual liquidity calculation depends on current pool price
@@ -598,14 +873,14 @@ contract TLswapRegister is ReentrancyGuard {
         IERC721(positionManager).transferFrom(address(this), recipient, tokenId);
 
         // Return unused tokens to recipient
-        uint256 remaining0 = IERC20(poolKey.currency0).balanceOf(address(this));
-        uint256 remaining1 = IERC20(poolKey.currency1).balanceOf(address(this));
+        uint256 remaining0 = IERC20(token0).balanceOf(address(this));
+        uint256 remaining1 = IERC20(token1).balanceOf(address(this));
 
         if (remaining0 > 0) {
-            IERC20(poolKey.currency0).safeTransfer(recipient, remaining0);
+            IERC20(token0).safeTransfer(recipient, remaining0);
         }
         if (remaining1 > 0) {
-            IERC20(poolKey.currency1).safeTransfer(recipient, remaining1);
+            IERC20(token1).safeTransfer(recipient, remaining1);
         }
 
         // Pay execution fee (from remaining tokens if any, or handled separately)

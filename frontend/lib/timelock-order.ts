@@ -665,6 +665,154 @@ export async function createOrderChain(
 }
 
 /**
+ * Create nested encryption chain for LIQUIDITY orders (Uniswap V4)
+ * @param orders Array of liquidity order objects
+ * @param startRound Starting dRand round
+ * @param roundStep Step between rounds (e.g., 1000)
+ * @param userKey User key (Field) for hash chain initialization
+ * @param previousNonce Previous nonce (Field) for hash chain initialization
+ * @returns Array of encrypted orders with nested ciphertexts and hash chain data
+ */
+export async function createLiquidityOrderChain(
+    orders: LiquidityOrder[],
+    startRound: number,
+    roundStep: number = 1000,
+    userKey: bigint,
+    previousNonce: bigint
+): Promise<OrderChainResult> {
+    const encryptedOrders: EncryptedOrder[] = [];
+
+    // Calculate total shares (sum of all chunks)
+    const totalShares = orders.reduce((sum, order) => {
+        return sum + BigInt(order.sharesAmount?.toString() || '0');
+    }, 0n);
+
+    // Get poseidon2Hash after Buffer is initialized
+    const poseidon2Hash = await getPoseidon2Hash();
+
+    // Calculate initial_hashchain = Poseidon2::hash([user_key, previous_nonce], 2)
+    const initialHashchain = await poseidon2Hash([userKey, previousNonce]);
+    const initialHashchainBigInt = initialHashchain.toBigInt();
+
+    // Calculate h0 = Poseidon2::hash([initial_hashchain, amount], 2)
+    const h0 = await poseidon2Hash([initialHashchainBigInt, totalShares]);
+    let currentHash = h0.toBigInt();
+
+    // Calculate hash chain for all chunks
+    const hashChain: bigint[] = [currentHash];
+    for (let i = 0; i < orders.length; i++) {
+        const chunkShares = BigInt(orders[i].sharesAmount?.toString() || '0');
+        const nextHash = await poseidon2Hash([currentHash, chunkShares]);
+        currentHash = nextHash.toBigInt();
+        hashChain.push(currentHash);
+    }
+
+    const tlHashchain = hashChain[hashChain.length - 1];
+
+    // Start from the last order and work backwards
+    for (let i = orders.length - 1; i >= 0; i--) {
+        const order = orders[i];
+        const round = startRound + (i * roundStep);
+        const chunkIndex = i;
+
+        // Create liquidity order JSON
+        const orderData: any = {
+            operationType: OperationType.LIQUIDITY,
+            sharesAmount: order.sharesAmount?.toString() || '0',
+            poolKey: order.poolKey,
+            tickLower: order.tickLower || 0,
+            tickUpper: order.tickUpper || 0,
+            amount0Max: order.amount0Max?.toString() || '0',
+            amount1Max: order.amount1Max?.toString() || '0',
+            deadline: order.deadline || 0,
+            executionFeeBps: order.executionFeeBps || 0,
+            recipient: order.recipient || '',
+            drandRound: round,
+            // Hash chain data for verification
+            prevHash: hashChain[chunkIndex].toString(),
+            nextHash: hashChain[chunkIndex + 1].toString()
+        };
+
+        // Include next order's ciphertext if not last
+        let plaintext: string;
+        if (i < orders.length - 1) {
+            const nextOrder = encryptedOrders[0];
+            plaintext = JSON.stringify({
+                ...orderData,
+                nextCiphertext: nextOrder.fullCiphertext
+            });
+        } else {
+            plaintext = JSON.stringify(orderData);
+        }
+
+        // Create timelock encryption
+        const timelock = await createTimelockEncryption(plaintext, round);
+        const aesKey = await deriveAESKey(timelock.pairingResult);
+        const aesEncrypted = await encryptAES128(plaintext, aesKey);
+
+        const fullCiphertext = JSON.stringify({
+            aes: aesEncrypted,
+            round,
+            timelock: {
+                H: timelock.H,
+                V: timelock.V,
+                C1: timelock.C1,
+                targetRound: timelock.targetRound
+            }
+        });
+
+        const encryptedOrder: EncryptedOrder = {
+            round,
+            roundTimestamp: getRoundTimestamp(round),
+            orderData: orderData as OrderData,
+            timelock,
+            aes: aesEncrypted,
+            fullCiphertext,
+            hasNextCiphertext: i < orders.length - 1,
+            prevHash: hashChain[chunkIndex].toString(),
+            nextHash: hashChain[chunkIndex + 1].toString(),
+            chunkIndex
+        };
+
+        encryptedOrders.unshift(encryptedOrder);
+    }
+
+    // Compute keccak256 hashes for each liquidity order chunk
+    const orderHashes: `0x${string}`[] = [];
+    for (let i = 0; i < orders.length; i++) {
+        const order = orders[i];
+        const round = startRound + (i * roundStep);
+
+        if (!order.poolKey) throw new Error('Pool key is required for liquidity orders');
+        
+        const hash = computeLiquidityOrderHash(
+            BigInt(order.sharesAmount?.toString() || '0'),
+            order.poolKey,
+            order.tickLower || 0,
+            order.tickUpper || 0,
+            BigInt(order.amount0Max?.toString() || '0'),
+            BigInt(order.amount1Max?.toString() || '0'),
+            order.deadline || 0,
+            order.executionFeeBps || 0,
+            order.recipient || '',
+            round
+        );
+        orderHashes.push(hash);
+    }
+
+    return {
+        orders: encryptedOrders,
+        hashChain: {
+            initialHashchain: initialHashchainBigInt.toString(),
+            h0: hashChain[0].toString(),
+            tlHashchain: tlHashchain.toString(),
+            totalShares: totalShares.toString()
+        },
+        orderHashes
+    };
+}
+
+/**
  * Decrypt order from chain (when round is available)
  * @param encryptedOrder Encrypted order object
  * @param drandSignature dRand signature for the round (G1 point)

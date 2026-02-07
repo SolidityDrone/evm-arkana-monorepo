@@ -167,6 +167,117 @@ const TLSWAP_REGISTER_ABI = [
     },
     {
         "type": "function",
+        "name": "executeV4SwapIntent",
+        "inputs": [
+            {
+                "name": "orderId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+            },
+            {
+                "name": "chunkIndex",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "intentor",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "tokenAddress",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "sharesAmount",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "poolKey",
+                "type": "tuple",
+                "internalType": "struct PoolKey",
+                "components": [
+                    {
+                        "name": "currency0",
+                        "type": "address",
+                        "internalType": "Currency"
+                    },
+                    {
+                        "name": "currency1",
+                        "type": "address",
+                        "internalType": "Currency"
+                    },
+                    {
+                        "name": "fee",
+                        "type": "uint24",
+                        "internalType": "uint24"
+                    },
+                    {
+                        "name": "tickSpacing",
+                        "type": "int24",
+                        "internalType": "int24"
+                    },
+                    {
+                        "name": "hooks",
+                        "type": "address",
+                        "internalType": "contract IHooks"
+                    }
+                ]
+            },
+            {
+                "name": "amountOutMin",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "slippageBps",
+                "type": "uint16",
+                "internalType": "uint16"
+            },
+            {
+                "name": "deadline",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "executionFeeBps",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "recipient",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "drandRound",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "prevHash",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "nextHash",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "amountOut",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
         "name": "getDrandInfos",
         "inputs": [],
         "outputs": [

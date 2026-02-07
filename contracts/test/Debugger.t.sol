@@ -3,21 +3,33 @@ pragma solidity ^0.8.4;
 
 import {Test, console} from "forge-std/Test.sol";
 import {Arkana} from "../src/Arkana.sol";
+import {TLswapRegister} from "../src/tl-limit/TLswapRegister.sol";
 import {IERC20} from "@oz/contracts/token/ERC20/IERC20.sol";
+import {PoolKey} from "../lib/v4-core/src/types/PoolKey.sol";
+import {Currency} from "../lib/v4-core/src/types/Currency.sol";
+import {IHooks} from "../lib/v4-core/src/interfaces/IHooks.sol";
 
 contract Debugger is Test {
     Arkana public arkana;
+    TLswapRegister public tlswapRegister;
 
-    // Hardcoded values from initialize-transaction-args.json
-    address constant ARKANA_ADDRESS = 0x71cEE012bA3B9642277f189c2C26488cAA28CF13;
+    // Hardcoded values - UPDATE THESE AFTER REDEPLOYMENT
+    address constant ARKANA_ADDRESS = 0x8d56f39e73B0e17671A0eCDce277A9cdeEb665cc;
+    address constant TLSWAP_REGISTER_ADDRESS = 0x9841806AC68865af1FDE1033e04cC4241D4f911b;
     address constant SENDER = 0x1EC8CC0Ba36450965392A35dF50BeC69b14Fdd59;
     address constant TOKEN_ADDRESS = 0x29f2D40B0605204364af54EC677bD022dA425d03;
     uint256 constant AMOUNT_IN = 100; // 1 WBTC
     uint256 constant LOCK_DURATION = 0;
 
+    // Sepolia V4 addresses
+    address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+    address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
+
     function setUp() public {
         arkana = Arkana(ARKANA_ADDRESS);
+        tlswapRegister = TLswapRegister(TLSWAP_REGISTER_ADDRESS);
         console.log("Arkana contract address:", ARKANA_ADDRESS);
+        console.log("TLswapRegister address:", TLSWAP_REGISTER_ADDRESS);
     }
 
     function test_InitializeFromJSON() public {
@@ -89,6 +101,278 @@ contract Debugger is Test {
             }
 
             // Re-throw to see full trace
+            assembly {
+                revert(add(reason, 0x20), mload(reason))
+            }
+        }
+    }
+
+    function test_ExecuteSwapIntent() public {
+        // ============= VALUES FROM FRONTEND CONSOLE LOG =============
+        bytes32 orderId = 0x2c2e320d2e17e949ff704244b5b3dc8d93dc095bae14b342c6b81ae7e2e1600f;
+        uint256 chunkIndex = 0;
+        address intentor = 0x1b756A927EF0D4849025887f520be10a5A9137c1;
+        address tokenAddress = 0x29f2D40B0605204364af54EC677bD022dA425d03;
+        uint256 sharesAmount = 100000000;
+        address tokenIn = 0x29f2D40B0605204364af54EC677bD022dA425d03;
+        address tokenOut = 0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c;
+        uint256 amountOutMin = 100000;
+        uint16 slippageBps = 50;
+        uint256 deadline = 1773033540;
+        uint256 executionFeeBps = 10;
+        address recipient = 0x1b756A927EF0D4849025887f520be10a5A9137c1;
+        uint256 drandRound = 14304442;
+        bytes memory swapCalldata = "";
+        address swapTarget = 0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b;
+        uint256 prevHash = 19993463783780640396212792579661695366922507527881475622508770417227445270927;
+        uint256 nextHash = 3287037616482411681311412834349852813926118796454729779522855064065344126255;
+        // ================================================================
+
+        console.log("\n========== TLswapRegister Debug ==========");
+
+        // Check TLswapRegister state
+        address uniswapRouter = tlswapRegister.uniswapRouter();
+        console.log("Configured uniswapRouter:", uniswapRouter);
+
+        address arkanaAddr = address(tlswapRegister.arkana());
+        console.log("Arkana address in TLswap:", arkanaAddr);
+
+        // Check if order is registered
+        bytes memory ciphertext = tlswapRegister.encryptedOrdersByNonce(orderId);
+        console.log("Ciphertext length:", ciphertext.length);
+
+        address storedTokenIn = tlswapRegister.orderTokenIn(orderId);
+        console.log("Stored tokenIn:", storedTokenIn);
+
+        TLswapRegister.OperationType opType = tlswapRegister.orderOperationType(orderId);
+        console.log("Operation type:", uint8(opType));
+
+        // Check order hashes
+        bytes32[] memory orderHashes = tlswapRegister.getOrderChunkHashes(orderId);
+        console.log("Number of stored hashes:", orderHashes.length);
+        for (uint256 i = 0; i < orderHashes.length; i++) {
+            console.log("  Hash", i, ":", vm.toString(orderHashes[i]));
+        }
+
+        // Check hash nodes used
+        bool hashNodeUsed = tlswapRegister.usedHashChainNodes(prevHash);
+        console.log("Prev hash node used:", hashNodeUsed);
+
+        console.log("\n========== Attempting executeSwapIntent ==========");
+
+        vm.prank(intentor);
+        try tlswapRegister.executeSwapIntent(
+            orderId,
+            chunkIndex,
+            intentor,
+            tokenAddress,
+            sharesAmount,
+            tokenIn,
+            tokenOut,
+            amountOutMin,
+            slippageBps,
+            deadline,
+            executionFeeBps,
+            recipient,
+            drandRound,
+            swapCalldata,
+            swapTarget,
+            prevHash,
+            nextHash
+        ) returns (
+            uint256 amountOut
+        ) {
+            console.log("SUCCESS! Amount out:", amountOut);
+        } catch (bytes memory reason) {
+            console.log("REVERTED!");
+            console.logBytes(reason);
+
+            // Decode error selector
+            if (reason.length >= 4) {
+                bytes4 selector;
+                assembly {
+                    selector := mload(add(reason, 32))
+                }
+                console.log("Error selector:", vm.toString(selector));
+
+                // Known selectors
+                // SwapFailed() = 0x81ceff30
+                // InvalidOrderHash() = ...
+                if (selector == bytes4(keccak256("SwapFailed()"))) {
+                    console.log("Error: SwapFailed - either router is 0x0 or swap call failed");
+                } else if (selector == bytes4(keccak256("InvalidOrderHash()"))) {
+                    console.log("Error: InvalidOrderHash - hash mismatch");
+                } else if (selector == bytes4(keccak256("OrderChunkNotFound()"))) {
+                    console.log("Error: OrderChunkNotFound - no hashes registered");
+                } else if (selector == bytes4(keccak256("HashChainNodeAlreadyUsed()"))) {
+                    console.log("Error: HashChainNodeAlreadyUsed - already executed");
+                }
+            }
+
+            // Re-throw
+            assembly {
+                revert(add(reason, 0x20), mload(reason))
+            }
+        }
+    }
+
+    /**
+     * @notice Test executeV4SwapIntent with proper V4 PoolKey
+     * @dev This uses the new function that builds Universal Router calldata internally
+     */
+    function test_ExecuteV4SwapIntent() public {
+        // ============= VALUES FROM FRONTEND CONSOLE LOG (LATEST) =============
+        bytes32 orderId = 0x2c2e320d2e17e949ff704244b5b3dc8d93dc095bae14b342c6b81ae7e2e1600f;
+        uint256 chunkIndex = 0;
+        address intentor = 0x1b756A927EF0D4849025887f520be10a5A9137c1;
+        address tokenAddress = 0x29f2D40B0605204364af54EC677bD022dA425d03; // Arkana vault token (WBTC)
+        uint256 sharesAmount = 100000000;
+        address tokenIn = 0x29f2D40B0605204364af54EC677bD022dA425d03; // WBTC
+        address tokenOut = 0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8; // USDC
+        uint256 amountOutMin = 1;
+        uint16 slippageBps = 49;
+        uint256 deadline = 1777088700;
+        uint256 executionFeeBps = 10;
+        address recipient = 0x1b756A927EF0D4849025887f520be10a5A9137c1;
+        uint256 drandRound = 14301342;
+        uint256 prevHash = 19993463783780640396212792579661695366922507527881475622508770417227445270927;
+        uint256 nextHash = 3287037616482411681311412834349852813926118796454729779522855064065344126255;
+        // ================================================================
+
+        console.log("\n========== TLswapRegister V4 Debug ==========");
+
+        // Check TLswapRegister state
+        address uniswapRouter = tlswapRegister.uniswapRouter();
+        address permit2Addr = tlswapRegister.permit2();
+        address poolManagerAddr = tlswapRegister.poolManager();
+
+        console.log("Configured uniswapRouter:", uniswapRouter);
+        console.log("Configured permit2:", permit2Addr);
+        console.log("Configured poolManager:", poolManagerAddr);
+
+        // If not set, set them (owner only)
+        if (permit2Addr == address(0)) {
+            console.log("Setting permit2...");
+            vm.prank(tlswapRegister.owner());
+            tlswapRegister.setPermit2(PERMIT2);
+            console.log("permit2 set to:", PERMIT2);
+        }
+        if (poolManagerAddr == address(0)) {
+            console.log("Setting poolManager...");
+            vm.prank(tlswapRegister.owner());
+            tlswapRegister.setPoolManager(POOL_MANAGER);
+            console.log("poolManager set to:", POOL_MANAGER);
+        }
+
+        address arkanaAddr = address(tlswapRegister.arkana());
+        console.log("Arkana address in TLswap:", arkanaAddr);
+
+        // Check if order is registered
+        bytes memory ciphertext = tlswapRegister.encryptedOrdersByNonce(orderId);
+        console.log("Ciphertext length:", ciphertext.length);
+
+        address storedTokenIn = tlswapRegister.orderTokenIn(orderId);
+        console.log("Stored tokenIn:", storedTokenIn);
+
+        // Check order hashes
+        bytes32[] memory orderHashes = tlswapRegister.getOrderChunkHashes(orderId);
+        console.log("Number of stored hashes:", orderHashes.length);
+        for (uint256 i = 0; i < orderHashes.length; i++) {
+            console.log("  Stored Hash", i, ":", vm.toString(orderHashes[i]));
+        }
+
+        // Compute expected hash using same structure as contract
+        bytes32 expectedHash = keccak256(
+            abi.encode(
+                sharesAmount, amountOutMin, slippageBps, deadline, executionFeeBps, recipient, tokenOut, drandRound
+            )
+        );
+        console.log("Computed hash:", vm.toString(expectedHash));
+        console.log("Hash match:", orderHashes.length > 0 && orderHashes[0] == expectedHash);
+
+        // Check hash nodes used
+        bool hashNodeUsed = tlswapRegister.usedHashChainNodes(prevHash);
+        console.log("Prev hash node used:", hashNodeUsed);
+
+        // Build PoolKey for V4 swap
+        // Note: currency0 must be < currency1 (sorted by address)
+        address currency0;
+        address currency1;
+        bool zeroForOne;
+
+        if (uint160(tokenIn) < uint160(tokenOut)) {
+            currency0 = tokenIn;
+            currency1 = tokenOut;
+            zeroForOne = true; // swapping currency0 -> currency1
+        } else {
+            currency0 = tokenOut;
+            currency1 = tokenIn;
+            zeroForOne = false; // swapping currency1 -> currency0
+        }
+
+        console.log("\nV4 Pool Key:");
+        console.log("  currency0:", currency0);
+        console.log("  currency1:", currency1);
+        console.log("  zeroForOne:", zeroForOne);
+
+        // Create PoolKey (using common fee tier 3000 = 0.3%, tick spacing 60)
+        PoolKey memory poolKey = PoolKey({
+            currency0: Currency.wrap(currency0),
+            currency1: Currency.wrap(currency1),
+            fee: 3000, // 0.3% fee
+            tickSpacing: 60, // Common tick spacing for 0.3% pools
+            hooks: IHooks(address(0)) // No hooks
+        });
+
+        console.log("\n========== Attempting executeV4SwapIntent ==========");
+
+        vm.prank(intentor);
+        try tlswapRegister.executeV4SwapIntent(
+            orderId,
+            chunkIndex,
+            intentor,
+            tokenAddress,
+            sharesAmount,
+            poolKey,
+            amountOutMin,
+            slippageBps,
+            deadline,
+            executionFeeBps,
+            recipient,
+            drandRound,
+            prevHash,
+            nextHash
+        ) returns (
+            uint256 amountOut
+        ) {
+            console.log("SUCCESS! Amount out:", amountOut);
+        } catch (bytes memory reason) {
+            console.log("REVERTED!");
+            console.logBytes(reason);
+
+            // Decode error selector
+            if (reason.length >= 4) {
+                bytes4 selector;
+                assembly {
+                    selector := mload(add(reason, 32))
+                }
+                console.log("Error selector:", vm.toString(selector));
+
+                // Known selectors
+                if (selector == bytes4(keccak256("SwapFailed()"))) {
+                    console.log("Error: SwapFailed - router call failed (maybe no V4 pool exists for these tokens)");
+                } else if (selector == bytes4(keccak256("InvalidOrderHash()"))) {
+                    console.log("Error: InvalidOrderHash - V4 hash params don't match stored hash");
+                } else if (selector == bytes4(keccak256("OrderChunkNotFound()"))) {
+                    console.log("Error: OrderChunkNotFound - no hashes registered");
+                } else if (selector == bytes4(keccak256("HashChainNodeAlreadyUsed()"))) {
+                    console.log("Error: HashChainNodeAlreadyUsed - already executed");
+                } else if (selector == bytes4(keccak256("InvalidAmounts()"))) {
+                    console.log("Error: InvalidAmounts - tokenIn not in pool or zero tokens");
+                }
+            }
+
+            // Re-throw
             assembly {
                 revert(add(reason, 0x20), mload(reason))
             }
