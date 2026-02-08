@@ -7,85 +7,85 @@
 /* Dark arcane mystical theme */
 
 :root {
-  --background: #202033;
+  --background: #0f0f1a;
   --foreground: #e8e4f0;
-  --card: #2a2a42;
+  --card: #1a1a2e;
   --card-foreground: #e8e4f0;
-  --popover: #2a2a42;
+  --popover: #1a1a2e;
   --popover-foreground: #e8e4f0;
   --primary: #a855f7;
-  --primary-foreground: #202033;
-  --secondary: #343450;
+  --primary-foreground: #ffffff;
+  --secondary: #252540;
   --secondary-foreground: #e8e4f0;
-  --muted: #343450;
+  --muted: #252540;
   --muted-foreground: #9a9ab0;
   --accent: #00ff88;
-  --accent-foreground: #202033;
+  --accent-foreground: #0f0f1a;
   --destructive: #ef4444;
   --destructive-foreground: #fafafa;
-  --border: #585878;
-  --input: #585878;
+  --border: #3d3d5c;
+  --input: #252540;
   --ring: #a855f7;
   --chart-1: #a855f7;
   --chart-2: #00ff88;
   --chart-3: #06b6d4;
   --chart-4: #f59e0b;
   --chart-5: #ef4444;
-  --radius: 0.25rem;
-  --sidebar: #2a2a42;
+  --radius: 0.75rem;
+  --sidebar: #1a1a2e;
   --sidebar-foreground: #e8e4f0;
   --sidebar-primary: #a855f7;
-  --sidebar-primary-foreground: #202033;
-  --sidebar-accent: #343450;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #252540;
   --sidebar-accent-foreground: #e8e4f0;
-  --sidebar-border: #585878;
+  --sidebar-border: #3d3d5c;
   --sidebar-ring: #a855f7;
 
   /* Custom arcane colors */
   --arcane-glow: #a855f7;
   --arcane-green: #00ff88;
   --arcane-cyan: #06b6d4;
-  --void-black: #171728;
+  --void-black: #0a0a12;
 }
 
 .dark {
-  --background: #202033;
+  --background: #0f0f1a;
   --foreground: #e8e4f0;
-  --card: #2a2a42;
+  --card: #1a1a2e;
   --card-foreground: #e8e4f0;
-  --popover: #2a2a42;
+  --popover: #1a1a2e;
   --popover-foreground: #e8e4f0;
   --primary: #a855f7;
-  --primary-foreground: #202033;
-  --secondary: #343450;
+  --primary-foreground: #ffffff;
+  --secondary: #252540;
   --secondary-foreground: #e8e4f0;
-  --muted: #343450;
+  --muted: #252540;
   --muted-foreground: #9a9ab0;
   --accent: #00ff88;
-  --accent-foreground: #202033;
+  --accent-foreground: #0f0f1a;
   --destructive: #ef4444;
   --destructive-foreground: #fafafa;
-  --border: #585878;
-  --input: #585878;
+  --border: #3d3d5c;
+  --input: #252540;
   --ring: #a855f7;
   --chart-1: #a855f7;
   --chart-2: #00ff88;
   --chart-3: #06b6d4;
   --chart-4: #f59e0b;
   --chart-5: #ef4444;
-  --sidebar: #2a2a42;
+  --sidebar: #1a1a2e;
   --sidebar-foreground: #e8e4f0;
   --sidebar-primary: #a855f7;
-  --sidebar-primary-foreground: #202033;
-  --sidebar-accent: #343450;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #252540;
   --sidebar-accent-foreground: #e8e4f0;
-  --sidebar-border: #585878;
+  --sidebar-border: #3d3d5c;
   --sidebar-ring: #a855f7;
 }
 
 @theme inline {
-  --font-sans: 'Press Start 2P', 'Geist', monospace;
-  --font-mono: 'VT323', 'Geist Mono', monospace;
+  --font-sans: 'Inter', 'SF Pro Display', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
 
   /* Custom arcane colors for Tailwind */
   --color-arcane-glow: var(--arcane-glow);
@@ -140,10 +140,11 @@
   }
 }
 
-/* Pixel art rendering */
-.pixel-perfect {
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
+/* Smooth rendering */
+.smooth-render {
+  image-rendering: auto;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Arcane glow effects */
@@ -362,54 +363,39 @@
   animation: runeColorPulse 4s ease-in-out infinite;
 }
 
-/* Custom scrollbar - terminal style */
+/* Custom scrollbar - smooth style */
 ::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--background);
-  border: 1px solid var(--border);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
   background: var(--border);
-  border: 1px solid var(--background);
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--muted);
+  background: var(--muted-foreground);
 }
 
-/* Terminal-like glass effect */
+/* Glass effect */
 .glass {
-  background: var(--card);
-  border: 1px solid var(--border);
+  background: rgba(26, 26, 46, 0.8);
+  backdrop-blur: 12px;
+  border: 1px solid rgba(61, 61, 92, 0.3);
+  border-radius: 12px;
 }
 
-/* Terminal text */
+/* Gradient text */
 .gradient-text {
-  color: var(--foreground);
-  text-shadow: 0 0 2px var(--foreground);
-}
-
-/* Terminal prompt style */
-.terminal-prompt::before {
-  content: "$ ";
-  color: var(--muted-foreground);
-}
-
-/* Terminal output style */
-.terminal-output {
-  color: var(--foreground);
-  font-family: var(--font-mono);
-}
-
-/* Terminal border style */
-.terminal-border {
-  border: 1px solid var(--border);
-  box-shadow: inset 0 0 0 1px var(--secondary);
+  background: linear-gradient(135deg, var(--foreground) 0%, var(--primary) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 /* Transaction Modal Animations */

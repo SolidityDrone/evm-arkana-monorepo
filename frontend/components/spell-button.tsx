@@ -24,61 +24,45 @@ export function SpellButton({ children, variant = "primary", onClick, className 
       onMouseEnter={() => !disabled && setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       className={`
-        relative px-8 py-4 font-sans text-[10px] tracking-widest uppercase overflow-hidden
-        transition-all duration-500 cursor-pointer
+        relative px-6 py-3 text-sm font-medium tracking-wide uppercase overflow-hidden
+        transition-all duration-300 cursor-pointer rounded-xl
         ${disabled ? "opacity-50 cursor-not-allowed" : ""}
         ${isPrimary 
-          ? "bg-primary/90 text-primary-foreground border border-primary/60" 
-          : "bg-transparent text-foreground/80 border border-border/60 hover:border-primary/40 hover:text-foreground"
+          ? "bg-gradient-to-r from-primary to-primary/80 text-primary-foreground border border-primary/30" 
+          : "bg-secondary/50 text-foreground/90 border border-border/40 hover:border-primary/40 hover:text-foreground hover:bg-secondary/70"
         }
         ${className}
       `}
       style={{
         boxShadow: isHovered 
           ? isPrimary 
-            ? "0 0 40px rgba(167, 139, 250, 0.4), 0 0 80px rgba(167, 139, 250, 0.2)" 
-            : "0 0 30px rgba(167, 139, 250, 0.25)"
+            ? "0 8px 32px rgba(168, 85, 247, 0.35), 0 4px 16px rgba(168, 85, 247, 0.25)" 
+            : "0 4px 20px rgba(168, 85, 247, 0.15)"
           : isPrimary 
-            ? "0 0 20px rgba(167, 139, 250, 0.25)"
+            ? "0 4px 16px rgba(168, 85, 247, 0.2)"
             : "none"
       }}
     >
-      {/* Subtle corner marks */}
+      {/* Gradient overlay on hover */}
       <span 
-        className="absolute top-1 left-1 w-2 h-2 border-t border-l transition-all duration-500"
-        style={{ borderColor: isHovered ? "rgba(167, 139, 250, 0.9)" : "rgba(167, 139, 250, 0.4)" }}
-      />
-      <span 
-        className="absolute top-1 right-1 w-2 h-2 border-t border-r transition-all duration-500"
-        style={{ borderColor: isHovered ? "rgba(167, 139, 250, 0.9)" : "rgba(167, 139, 250, 0.4)" }}
-      />
-      <span 
-        className="absolute bottom-1 left-1 w-2 h-2 border-b border-l transition-all duration-500"
-        style={{ borderColor: isHovered ? "rgba(167, 139, 250, 0.9)" : "rgba(167, 139, 250, 0.4)" }}
-      />
-      <span 
-        className="absolute bottom-1 right-1 w-2 h-2 border-b border-r transition-all duration-500"
-        style={{ borderColor: isHovered ? "rgba(167, 139, 250, 0.9)" : "rgba(167, 139, 250, 0.4)" }}
-      />
-      {/* Text with subtle glow on hover */}
-      <span 
-        className="relative z-10 transition-all duration-500"
+        className="absolute inset-0 pointer-events-none transition-opacity duration-300 rounded-xl"
         style={{
-          textShadow: isHovered ? "0 0 10px rgba(167, 139, 250, 0.6)" : "none"
+          opacity: isHovered ? 1 : 0,
+          background: isPrimary 
+            ? "linear-gradient(135deg, rgba(255, 255, 255, 0.15) 0%, transparent 50%, rgba(255, 255, 255, 0.05) 100%)"
+            : "linear-gradient(135deg, rgba(168, 85, 247, 0.1) 0%, transparent 50%, rgba(168, 85, 247, 0.05) 100%)"
+        }}
+      />
+      
+      {/* Text */}
+      <span 
+        className="relative z-10 transition-all duration-300"
+        style={{
+          textShadow: isHovered && isPrimary ? "0 0 20px rgba(255, 255, 255, 0.5)" : "none"
         }}
       >
         {children}
       </span>
-      {/* Ethereal overlay on hover */}
-      <span 
-        className="absolute inset-0 pointer-events-none transition-opacity duration-700"
-        style={{
-          opacity: isHovered ? 1 : 0,
-          background: isPrimary 
-            ? "radial-gradient(ellipse at 50% 50%, rgba(255, 255, 255, 0.1) 0%, transparent 70%)"
-            : "radial-gradient(ellipse at 50% 50%, rgba(167, 139, 250, 0.15) 0%, transparent 70%)"
-        }}
-      />
     </button>
   )
 }

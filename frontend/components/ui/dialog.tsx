@@ -79,12 +79,13 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
         ref={ref}
         className={cn(
           'relative w-full min-w-0 p-6',
-          'bg-background border border-primary/30 rounded-lg shadow-lg',
+          'bg-card/95 backdrop-blur-xl border border-border/30 rounded-2xl shadow-2xl',
           'animate-in fade-in-0 zoom-in-95',
           className
         )}
         style={{
           maxWidth: '100%',
+          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 40px rgba(168, 85, 247, 0.1)',
           ...props.style
         }}
         {...props}

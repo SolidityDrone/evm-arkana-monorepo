@@ -2,14 +2,12 @@
 
 import { useEffect, useState } from "react"
 import { RitualCircle } from "./ritual-circle"
-import { SpellButton } from "./spell-button"
-import Link from "next/link"
 import Image from "next/image"
 
 export function HeroSection() {
     const [typedText, setTypedText] = useState("")
     const [showCursor, setShowCursor] = useState(true)
-    const fullText = "Your DeFi transactions, shrouded in ancient cryptographic sorcery"
+    const fullText = "Your DeFi ops, shrouded in crypto-sorcery"
 
     useEffect(() => {
         let index = 0
@@ -144,16 +142,55 @@ export function HeroSection() {
                     <div className="w-16 h-px bg-gradient-to-l from-transparent to-primary/40" />
                 </div>
 
-                {/* CTA Buttons */}
-                <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-                    <Link href="/rituals">
-                        <SpellButton variant="primary">
-                            Begin the Ritual
-                        </SpellButton>
-                    </Link>
-                    <SpellButton variant="secondary">
-                        Read the Grimoire
-                    </SpellButton>
+                {/* Built With */}
+                <div className="flex flex-col items-center gap-5">
+                    <span className="text-xs text-muted-foreground/50 tracking-[0.3em] uppercase">
+                        Built With
+                    </span>
+                    <div className="flex items-center justify-center gap-4 md:gap-6">
+                        <a
+                            href="https://aave.com"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="opacity-70 hover:opacity-100 transition-all duration-300 hover:scale-105 bg-white/90 hover:bg-white rounded-xl px-4 py-3"
+                        >
+                            <Image
+                                src="/aavelogotext.png"
+                                alt="Aave"
+                                width={140}
+                                height={48}
+                                className="h-10 md:h-12 w-auto object-contain"
+                            />
+                        </a>
+                        <a
+                            href="https://drand.love"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="opacity-70 hover:opacity-100 transition-all duration-300 hover:scale-105 bg-white/90 hover:bg-white rounded-xl px-4 py-3"
+                        >
+                            <Image
+                                src="/drandlogotext.png"
+                                alt="drand"
+                                width={140}
+                                height={48}
+                                className="h-10 md:h-12 w-auto object-contain"
+                            />
+                        </a>
+                        <a
+                            href="https://uniswap.org"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="opacity-70 hover:opacity-100 transition-all duration-300 hover:scale-105 bg-white/90 hover:bg-white rounded-xl px-4 py-3"
+                        >
+                            <Image
+                                src="/unilogotext.png"
+                                alt="Uniswap"
+                                width={140}
+                                height={48}
+                                className="h-10 md:h-12 w-auto object-contain"
+                            />
+                        </a>
+                    </div>
                 </div>
 
                 {/* Scroll indicator */}

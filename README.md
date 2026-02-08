@@ -1,4 +1,8 @@
-# Arkana
+# Arkana - DeFi shroud
+
+<p align="center">
+  <img src="frontend/public/logo.webp" alt="Arkana Logo" width="200" />
+</p>
 
 > **⚠️ Hackathon Project Disclaimer**
 > 
@@ -7,6 +11,16 @@
 > **Security Warning**: This codebase contains known and potentially unknown vulnerabilities. The code is incomplete and has not undergone comprehensive security audits. Just dont use it!
 
 A privacy-preserving DeFi protocol that enables private deposits, withdrawals, and timelock-encrypted swap operations using zero-knowledge proofs.
+
+### Built With
+
+<p align="center">
+  <a href="https://aave.com"><img src="frontend/public/aavelogotext.png" alt="Aave" height="40" /></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://drand.love"><img src="frontend/public/drandlogotext.png" alt="drand" height="40" /></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://uniswap.org"><img src="frontend/public/unilogotext.png" alt="Uniswap" height="40" /></a>
+</p>
 
 ## Overview
 
@@ -49,41 +63,46 @@ The following diagrams illustrate how the protocol works:
 #### Deposit Flow
 
 ```mermaid
-graph TB
-    A[User] -->|1. Transfer tokens| B[Arkana Contract]
-    B -->|2. Approve tokens| C[ArkanaVault]
-    C -->|3. supplyToAave| D[Aave Pool]
-    D -->|4. Returns aTokens| C
-    C -->|5. Holds aTokens as assets| C
-    B -->|6. mintShares| C
-    C -->|7. Mints ERC4626 shares| E[Arkana holds shares]
+sequenceDiagram
+    participant U as User
+    participant A as Arkana
+    participant V as Vault
+    participant AA as Aave
 
-    style A fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
-    style B fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
-    style C fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
-    style D fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
-    style E fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
+    U->>A: 1. deposit(ZK proof, tokens)
+    A->>A: 2. Verify ZK proof
+    A->>V: 3. Transfer tokens to vault
+    V->>AA: 4. supplyToAave(tokens)
+    AA-->>V: 5. Return aTokens
+    V->>V: 6. Hold aTokens as assets
+    A->>V: 7. mintShares(user)
+    V-->>A: 8. ERC4626 shares minted
+    
+    Note over U,A: User's commitment added to Merkle tree
 ```
 
 #### Withdraw Flow
 
 ```mermaid
-graph TB
-    F[User] -->|1. ZK Proof + withdraw| G[Arkana Contract]
-    G -->|2. convertToAssets| H[ArkanaVault]
-    G -->|3. burnShares| H
-    H -->|4. withdrawFromAave| I[Aave Pool]
-    I -->|5. Burns aTokens, returns tokens| H
-    H -->|6. Transfer tokens| G
-    G -->|7a. Pay relayer fee| J[Relayer]
-    G -->|7b. Transfer to receiver| K[Receiver Address]
+sequenceDiagram
+    participant U as User
+    participant A as Arkana
+    participant V as Vault
+    participant AA as Aave
+    participant RL as Relayer
+    participant R as Receiver
 
-    style F fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
-    style G fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
-    style H fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
-    style I fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
-    style J fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-    style K fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
+    U->>A: 1. withdraw(ZK proof)
+    A->>A: 2. Verify ZK proof
+    A->>V: 3. convertToAssets(shares)
+    A->>V: 4. burnShares(amount)
+    V->>AA: 5. withdrawFromAave(assets)
+    AA-->>V: 6. Burn aTokens, return tokens
+    V-->>A: 7. Transfer tokens
+    A-->>RL: 8. Pay relayer fee
+    A-->>R: 9. Transfer remainder to receiver
+    
+    Note over U,A: User's nullifier marked as spent
 ```
 
 #### Timelock Swap (TL_SWAP) Flow
@@ -127,41 +146,52 @@ sequenceDiagram
 #### Vault Asset Tracking
 
 ```mermaid
-graph TB
-    V[ArkanaVault ERC4626]
-    V -->|asset = aToken| W[Holds aTokens from Aave]
-    V -->|totalAssets| X[Returns vault's aToken balance]
-    V -->|totalSupply| Y[Returns total shares minted]
-    V -->|convertToShares/Assets| Z[Uses ERC4626 standard formula]
+sequenceDiagram
+    participant C as Caller
+    participant V as ArkanaVault
+    participant AA as Aave aTokens
 
-    style V fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
-    style W fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
-    style X fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-    style Y fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-    style Z fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
+    Note over V: ERC4626 Tokenized Vault
+
+    C->>V: totalAssets()
+    V->>AA: balanceOf(vault)
+    AA-->>V: aToken balance
+    V-->>C: Return total assets
+
+    C->>V: totalSupply()
+    V-->>C: Return total shares minted
+
+    C->>V: convertToShares(assets)
+    V-->>C: shares = assets * totalSupply / totalAssets
+
+    C->>V: convertToAssets(shares)
+    V-->>C: assets = shares * totalAssets / totalSupply
 ```
 
 #### DRAND Timelock Encryption
 
 ```mermaid
-graph TB
-    AA[User encrypts order] -->|AES-128 with dRand round R| AB[Ciphertext]
-    AC[dRand Network] -->|Publishes randomness at round R| AD[Public randomness]
-    AB -->|Decryptable after round R| AE[Executor decrypts]
-    AE -->|Extract: sharesAmount, tokenOut, amountOutMin, etc| AF[Execute swap]
-    
-    AG[Hash Chain Verification]
-    AG -->|hash prevHash, sharesAmount = nextHash| AH[Prevents chunk reuse]
-    AG -->|Mark prevHash as used nullifier| AH
+sequenceDiagram
+    participant U as User
+    participant D as dRand Network
+    participant E as Executor
+    participant T as TLswapRegister
 
-    style AA fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
-    style AB fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
-    style AC fill:#f0e6ff,stroke:#333,stroke-width:2px,color:#000
-    style AD fill:#f0e6ff,stroke:#333,stroke-width:2px,color:#000
-    style AE fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-    style AF fill:#cce5ff,stroke:#333,stroke-width:2px,color:#000
-    style AG fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
-    style AH fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
+    Note over U,D: Encryption Phase (before round R)
+    U->>U: 1. Generate order params
+    U->>U: 2. Encrypt with dRand round R public key
+    U->>T: 3. Submit ciphertext on-chain
+
+    Note over D,E: Timelock Release (at round R)
+    D->>D: 4. Generate randomness for round R
+    D-->>E: 5. Publish randomness
+    E->>E: 6. Decrypt ciphertext using randomness
+
+    Note over E,T: Verification & Execution
+    E->>T: 7. Submit decrypted params
+    T->>T: 8. Verify hash chain (prevHash → nextHash)
+    T->>T: 9. Mark prevHash as used nullifier
+    T->>T: 10. Execute swap with params
 ```
 
 ### Zero-Knowledge Circuits

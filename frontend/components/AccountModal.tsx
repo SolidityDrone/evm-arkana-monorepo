@@ -462,18 +462,18 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
 
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
-            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto w-full min-w-0">
-                <DialogHeader className="pb-4">
-                    <div className="flex items-center justify-between">
-                        <DialogTitle>Account Management</DialogTitle>
+            <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto w-[95vw] sm:w-full min-w-0 p-4 sm:p-6">
+                <DialogHeader className="pb-3 sm:pb-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                        <DialogTitle className="text-lg sm:text-xl">Account</DialogTitle>
                         <div className="flex items-center gap-2">
-                            <span className="text-xs text-muted-foreground font-mono uppercase">Mode:</span>
-                            <div className="flex gap-1 border border-border rounded p-0.5">
+                            <span className="text-[10px] sm:text-xs text-muted-foreground uppercase">Mode:</span>
+                            <div className="flex gap-1 border border-border rounded-lg p-0.5">
                                 <Button
                                     size="sm"
                                     variant={discoveryMode === 'mage' ? 'default' : 'ghost'}
                                     onClick={() => handleModeToggle('mage')}
-                                    className="h-7 px-3 text-xs"
+                                    className="h-7 px-2 sm:px-3 text-[10px] sm:text-xs"
                                 >
                                     Mage
                                 </Button>
@@ -481,7 +481,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                     size="sm"
                                     variant={discoveryMode === 'archon' ? 'default' : 'ghost'}
                                     onClick={() => handleModeToggle('archon')}
-                                    className="h-7 px-3 text-xs"
+                                    className="h-7 px-2 sm:px-3 text-[10px] sm:text-xs"
                                 >
                                     Archon
                                 </Button>
@@ -533,23 +533,23 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                             });
                                             
                                             return (
-                                                <div key={tokenAddress} className="border rounded p-3">
-                                                    <div className="flex justify-between items-start">
-                                                        <div className="flex-1">
+                                                <div key={tokenAddress} className="border border-border/40 rounded-xl p-3 sm:p-4">
+                                                    <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3">
+                                                        <div className="flex-1 min-w-0">
                                                             <div className="flex items-center gap-2 mb-1">
-                                                                <TokenIcon symbol={tokenSymbol} size={24} />
-                                                                <p className="text-sm font-sans font-bold text-foreground uppercase tracking-wider">
-                                                                    ${tokenSymbol}
+                                                                <TokenIcon symbol={tokenSymbol} size={20} />
+                                                                <p className="text-sm font-semibold text-foreground">
+                                                                    {tokenSymbol}
                                                                 </p>
                                                             </div>
-                                                            <p className="text-xs font-mono text-muted-foreground">
-                                                                ${tokenName}
+                                                            <p className="text-xs text-muted-foreground truncate">
+                                                                {tokenName}
                                                             </p>
-                                                            <p className="text-[10px] font-mono text-muted-foreground/60 mt-1 break-all">
-                                                                {tokenAddress}
+                                                            <p className="text-[9px] sm:text-[10px] font-mono text-muted-foreground/50 mt-1 truncate">
+                                                                {tokenAddress.slice(0, 10)}...{tokenAddress.slice(-8)}
                                                             </p>
-                                                            <p className="text-xs text-muted-foreground mt-2">
-                                                                Current Nonce: {tokenData.currentNonce?.toString() || 'N/A'}
+                                                            <p className="text-[10px] sm:text-xs text-muted-foreground mt-2">
+                                                                Nonce: {tokenData.currentNonce?.toString() || 'N/A'}
                                                             </p>
                                                             {currentBalanceEntry && (() => {
                                                                 const assetKey = `${tokenAddress.toLowerCase()}-${previousNonce.toString()}`;
@@ -558,101 +558,105 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                                                 const decimals = tokenInfo?.decimals || 18;
                                                                 
                                                                 return (
-                                                                    <div className="text-xs text-foreground font-semibold mt-1">
-                                                                        <p>Current Balance: {currentBalanceEntry.amount.toString()} shares (at nonce {previousNonce.toString()})</p>
-                                                                        {convertedValue !== undefined ? (
-                                                                            <p className="text-primary mt-0.5">
-                                                                                ≈ {formatTokenValue(convertedValue, decimals)} {tokenSymbol}
-                                                                            </p>
-                                                                        ) : isConverting ? (
-                                                                            <p className="text-muted-foreground mt-0.5">Converting...</p>
-                                                                        ) : null}
-                                                                    </div>
-                                                                );
-                                                            })()}
-                                                            <p className="text-xs text-muted-foreground mt-1">
-                                                                Balance Entries: {tokenData.balanceEntries.length}
-                                                            </p>
-                                                            {tokenData.balanceEntries.length > 0 && (() => {
-                                                                // Remove duplicates by keeping the last entry for each nonce
-                                                                const uniqueEntries = new Map<string | bigint, typeof tokenData.balanceEntries[0]>();
-                                                                for (const entry of tokenData.balanceEntries) {
-                                                                    uniqueEntries.set(entry.nonce, entry);
-                                                                }
-                                                                
-                                                                // Convert to array and sort by nonce
-                                                                const sortedEntries = Array.from(uniqueEntries.values()).sort((a, b) => {
-                                                                    const nonceA = typeof a.nonce === 'string' ? BigInt(a.nonce) : a.nonce;
-                                                                    const nonceB = typeof b.nonce === 'string' ? BigInt(b.nonce) : b.nonce;
-                                                                    if (nonceA < nonceB) return -1;
-                                                                    if (nonceA > nonceB) return 1;
-                                                                    return 0;
-                                                                });
-                                                                
-                                                                const decimals = tokenInfo?.decimals || 18;
-                                                                
-                                                                return (
-                                                                    <div className="mt-2 space-y-1">
-                                                                        {sortedEntries.map((entry) => {
-                                                                            const entryNonce = typeof entry.nonce === 'string' ? BigInt(entry.nonce) : entry.nonce;
-                                                                            const isCurrent = entryNonce === previousNonce;
-                                                                            const assetKey = `${tokenAddress.toLowerCase()}-${entryNonce.toString()}`;
-                                                                            const convertedValue = convertedAssets.get(assetKey);
-                                                                            const isConverting = isConvertingAssets.has(assetKey);
-                                                                            
-                                                                            return (
-                                                                                <div 
-                                                                                    key={`${tokenAddress}-nonce-${entry.nonce.toString()}`} 
-                                                                                    className={`text-xs font-mono ${isCurrent ? 'font-semibold text-foreground bg-primary/10 px-2 py-1 rounded border border-primary/20' : 'text-muted-foreground'}`}
-                                                                                >
-                                                                                    <div className="flex flex-wrap items-baseline gap-x-2">
-                                                                                        <span className="inline-block w-16">Nonce {entry.nonce.toString()}:</span>
-                                                                                        <span className={isCurrent ? 'text-primary' : ''}>
-                                                                                            {entry.amount.toString()} shares
-                                                                                        </span>
-                                                                                        {convertedValue !== undefined && (
-                                                                                            <span className={`${isCurrent ? 'text-primary/80' : 'text-muted-foreground/80'}`}>
-                                                                                                (≈ {formatTokenValue(convertedValue, decimals)} {tokenSymbol})
-                                                                                            </span>
-                                                                                        )}
-                                                                                        {isConverting && (
-                                                                                            <span className="text-muted-foreground/60">(...)</span>
-                                                                                        )}
-                                                                                        {isCurrent && <span className="text-accent">(current)</span>}
+                                                            <div className="text-[10px] sm:text-xs text-foreground font-semibold mt-1">
+                                                                                        <p className="break-words">{currentBalanceEntry.amount.toString()} shares</p>
+                                                                                        {convertedValue !== undefined ? (
+                                                                                            <p className="text-primary mt-0.5 text-sm sm:text-base font-bold">
+                                                                                                ≈ {formatTokenValue(convertedValue, decimals)} {tokenSymbol}
+                                                                                            </p>
+                                                                                        ) : isConverting ? (
+                                                                                            <p className="text-muted-foreground mt-0.5">Converting...</p>
+                                                                                        ) : null}
                                                                                     </div>
-                                                                                </div>
-                                                                            );
-                                                                        })}
-                                                                    </div>
                                                                 );
                                                             })()}
+                                                            <details className="mt-2">
+                                                                <summary className="text-[10px] sm:text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                                                                    {tokenData.balanceEntries.length} balance entries
+                                                                </summary>
+                                                                {tokenData.balanceEntries.length > 0 && (() => {
+                                                                    // Remove duplicates by keeping the last entry for each nonce
+                                                                    const uniqueEntries = new Map<string | bigint, typeof tokenData.balanceEntries[0]>();
+                                                                    for (const entry of tokenData.balanceEntries) {
+                                                                        uniqueEntries.set(entry.nonce, entry);
+                                                                    }
+                                                                    
+                                                                    // Convert to array and sort by nonce
+                                                                    const sortedEntries = Array.from(uniqueEntries.values()).sort((a, b) => {
+                                                                        const nonceA = typeof a.nonce === 'string' ? BigInt(a.nonce) : a.nonce;
+                                                                        const nonceB = typeof b.nonce === 'string' ? BigInt(b.nonce) : b.nonce;
+                                                                        if (nonceA < nonceB) return -1;
+                                                                        if (nonceA > nonceB) return 1;
+                                                                        return 0;
+                                                                    });
+                                                                    
+                                                                    const decimals = tokenInfo?.decimals || 18;
+                                                                    
+                                                                    return (
+                                                                        <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
+                                                                            {sortedEntries.map((entry) => {
+                                                                                const entryNonce = typeof entry.nonce === 'string' ? BigInt(entry.nonce) : entry.nonce;
+                                                                                const isCurrent = entryNonce === previousNonce;
+                                                                                const assetKey = `${tokenAddress.toLowerCase()}-${entryNonce.toString()}`;
+                                                                                const convertedValue = convertedAssets.get(assetKey);
+                                                                                const isConverting = isConvertingAssets.has(assetKey);
+                                                                                
+                                                                                return (
+                                                                                    <div 
+                                                                                        key={`${tokenAddress}-nonce-${entry.nonce.toString()}`} 
+                                                                                        className={`text-[10px] sm:text-xs font-mono ${isCurrent ? 'font-semibold text-foreground bg-primary/10 px-2 py-1 rounded-lg border border-primary/20' : 'text-muted-foreground px-2'}`}
+                                                                                    >
+                                                                                        <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-baseline gap-0.5 sm:gap-x-2">
+                                                                                            <span className="font-medium">#{entry.nonce.toString()}</span>
+                                                                                            <span className={isCurrent ? 'text-primary' : ''}>
+                                                                                                {entry.amount.toString()}
+                                                                                            </span>
+                                                                                            {convertedValue !== undefined && (
+                                                                                                <span className={`${isCurrent ? 'text-primary/80' : 'text-muted-foreground/80'}`}>
+                                                                                                    ≈ {formatTokenValue(convertedValue, decimals)}
+                                                                                                </span>
+                                                                                            )}
+                                                                                            {isConverting && (
+                                                                                                <span className="text-muted-foreground/60">...</span>
+                                                                                            )}
+                                                                                            {isCurrent && <span className="text-accent text-[9px]">current</span>}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    );
+                                                                })()}
+                                                            </details>
                                                         </div>
-                                                        <div className="flex gap-2">
+                                                        <div className="flex gap-2 flex-shrink-0">
                                                             <Button
                                                                 size="sm"
                                                                 variant="outline"
                                                                 onClick={() => handleDiscoverToken(tokenAddress)}
                                                                 disabled={isDiscoveringTokens.has(tokenAddress)}
+                                                                className="text-[10px] sm:text-xs px-2 sm:px-3 h-8"
                                                             >
-                                                                {isDiscoveringTokens.has(tokenAddress) ? 'Discovering...' : 'Refresh'}
+                                                                {isDiscoveringTokens.has(tokenAddress) ? '...' : 'Refresh'}
                                                             </Button>
                                                             <Button
                                                                 size="sm"
                                                                 variant="outline"
                                                                 onClick={() => toggleHistory(tokenAddress)}
                                                                 disabled={loadingHistoryToken === tokenAddress}
+                                                                className="text-[10px] sm:text-xs px-2 sm:px-3 h-8"
                                                             >
                                                                 {loadingHistoryToken === tokenAddress ? (
-                                                                    'Loading...'
+                                                                    '...'
                                                                 ) : expandedHistoryToken === tokenAddress.toLowerCase() ? (
                                                                     <>
-                                                                        <ChevronUp className="w-3 h-3 mr-1" />
-                                                                        Hide History
+                                                                        <ChevronUp className="w-3 h-3 sm:mr-1" />
+                                                                        <span className="hidden sm:inline">Hide</span>
                                                                     </>
                                                                 ) : (
                                                                     <>
-                                                                        <Clock className="w-3 h-3 mr-1" />
-                                                                        View History
+                                                                        <Clock className="w-3 h-3 sm:mr-1" />
+                                                                        <span className="hidden sm:inline">History</span>
                                                                     </>
                                                                 )}
                                                             </Button>
