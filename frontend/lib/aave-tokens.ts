@@ -1,5 +1,5 @@
 import { createPublicClient, http, Address, PublicClient } from 'viem';
-import { sepolia } from '@/config';
+import { sepolia, getActiveChain, getChainById, getRpcUrlForChain } from '@/config';
 import { getTokenSymbol, getTokenName, getTokenDecimals } from './token-metadata';
 
 // Aave v3 Pool ABI - minimal interface for getting reserves
@@ -91,9 +91,13 @@ export async function getAaveTokens(
   poolAddress: Address,
   publicClient?: PublicClient
 ): Promise<AaveTokenInfo[]> {
+  // Use the provided client or create one with the default chain
+  const defaultChain = getActiveChain();
+  const defaultRpcUrl = getRpcUrlForChain(defaultChain.id);
+  
   const client = publicClient || createPublicClient({
-    chain: sepolia,
-    transport: http('http://127.0.0.1:8545'),
+    chain: defaultChain,
+    transport: http(defaultRpcUrl),
   });
 
   try {

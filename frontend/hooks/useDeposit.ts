@@ -5,7 +5,7 @@ import { useAccount as useWagmiAccount, useWriteContract, useWaitForTransactionR
 import { useAccount as useAccountContext, useZkAddress } from '@/context/AccountProvider';
 import { useAccountState } from '@/context/AccountStateProvider';
 import { createPublicClient, http, parseAbi, Address } from 'viem';
-import { sepolia } from '@/config';
+import { sepolia, getActiveChain, getChainById, getRpcUrlForChain } from '@/config';
 import { Noir } from '@noir-lang/noir_js';
 import { CachedUltraHonkBackend } from '@/lib/cached-ultra-honk-backend';
 import depositCircuit from '@/lib/circuits/deposit.json';
@@ -1089,9 +1089,14 @@ export function useDeposit() {
                 return;
             }
 
+            // Use the connected chain if available, otherwise fall back to configured chain
+            const activeChainId = chainId || publicClient?.chain?.id || getActiveChain().id;
+            const activeChain = publicClient?.chain || getChainById(activeChainId);
+            const rpcUrl = getRpcUrlForChain(activeChainId);
+            
             const client = publicClient || createPublicClient({
-                chain: sepolia,
-                transport: http('http://127.0.0.1:8545')
+                chain: activeChain,
+                transport: http(rpcUrl)
             });
 
             // Convert user input to raw units for allowance check

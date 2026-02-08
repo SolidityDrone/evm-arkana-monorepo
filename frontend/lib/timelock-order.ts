@@ -47,6 +47,8 @@ export interface Order {
     recipient?: string;
     tokenOut?: string;
     executionFeeBps?: number;
+    /** Target dRand round for this specific order (optional, uses startRound + i*roundStep if not specified) */
+    targetRound?: number;
 }
 
 // Pool Key for Uniswap V4 liquidity
@@ -85,6 +87,8 @@ export interface LiquidityOrder {
     recipient?: string;
     // Swap directive to convert part of withdrawn token to second token
     swapDirective?: SwapDirective;
+    /** Target dRand round for this specific order (optional, uses startRound + i*roundStep if not specified) */
+    targetRound?: number;
 }
 
 export interface TimelockEncryption {
@@ -539,9 +543,9 @@ async function createTimelockEncryption(plaintext: string, targetRound: number):
 
 /**
  * Create nested encryption chain for sequential orders with hash chain verification
- * @param orders Array of order objects: [{sharesAmount, amountOutMin, slippageBps, deadline, recipient, tokenOut, executionFeeBps}, ...]
- * @param startRound Starting dRand round
- * @param roundStep Step between rounds (e.g., 1000)
+ * @param orders Array of order objects: [{sharesAmount, amountOutMin, slippageBps, deadline, recipient, tokenOut, executionFeeBps, targetRound?}, ...]
+ * @param startRound Starting dRand round (fallback if order.targetRound not specified)
+ * @param roundStep Step between rounds (fallback for orders without targetRound)
  * @param userKey User key (Field) for hash chain initialization
  * @param previousNonce Previous nonce (Field) for hash chain initialization
  * @returns Array of encrypted orders with nested ciphertexts and hash chain data
@@ -589,7 +593,8 @@ export async function createOrderChain(
     // Each order contains the ciphertext of the next order
     for (let i = orders.length - 1; i >= 0; i--) {
         const order = orders[i];
-        const round = startRound + (i * roundStep);
+        // Use order's specific targetRound if provided, otherwise fallback to startRound + step
+        const round = order.targetRound || (startRound + (i * roundStep));
         const chunkIndex = i; // Index in forward order (0 = first chunk)
 
         // Create order JSON
@@ -669,7 +674,8 @@ export async function createOrderChain(
     const orderHashes: `0x${string}`[] = [];
     for (let i = 0; i < orders.length; i++) {
         const order = orders[i];
-        const round = startRound + (i * roundStep);
+        // Use order's specific targetRound if provided, otherwise fallback to startRound + step
+        const round = order.targetRound || (startRound + (i * roundStep));
         
         const hash = computeOrderHash(
             BigInt(order.sharesAmount?.toString() || '0'),
@@ -745,7 +751,8 @@ export async function createLiquidityOrderChain(
     // Start from the last order and work backwards
     for (let i = orders.length - 1; i >= 0; i--) {
         const order = orders[i];
-        const round = startRound + (i * roundStep);
+        // Use order's specific targetRound if provided, otherwise fallback to startRound + step
+        const round = order.targetRound || (startRound + (i * roundStep));
         const chunkIndex = i;
 
         // Create liquidity order JSON with swap directive
@@ -822,7 +829,8 @@ export async function createLiquidityOrderChain(
     const orderHashes: `0x${string}`[] = [];
     for (let i = 0; i < orders.length; i++) {
         const order = orders[i];
-        const round = startRound + (i * roundStep);
+        // Use order's specific targetRound if provided, otherwise fallback to startRound + step
+        const round = order.targetRound || (startRound + (i * roundStep));
 
         if (!order.poolKey) throw new Error('Pool key is required for liquidity orders');
         

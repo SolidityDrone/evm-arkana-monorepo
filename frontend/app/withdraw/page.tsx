@@ -1750,6 +1750,8 @@ export default function WithdrawPage() {
                                 deadline: parseInt(order.deadline) || Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60),
                                 executionFeeBps: parseInt(order.executionFeeBps) || 10,
                                 recipient: order.recipient,
+                                // Use each order's individual targetRound
+                                targetRound: parseInt(order.targetRound) || undefined,
                             };
                             console.log(`📦 Order ${idx} full object:`, liquidityOrder);
                             return liquidityOrder;
@@ -1796,7 +1798,9 @@ export default function WithdrawPage() {
                                 deadline: parseInt(order.deadline) || Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60),
                                 recipient: order.recipient,
                                 tokenOut: order.tokenOut,
-                                executionFeeBps: parseInt(order.executionFeeBps) || 10
+                                executionFeeBps: parseInt(order.executionFeeBps) || 10,
+                                // Use each order's individual targetRound
+                                targetRound: parseInt(order.targetRound) || undefined
                             };
                         });
 

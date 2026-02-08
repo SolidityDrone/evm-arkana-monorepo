@@ -7,15 +7,88 @@ echo "Deploying Verifiers and Arkana"
 echo "=========================================="
 echo ""
 
-RPC_URL="http://localhost:8545"
-KEYSTORE="$HOME/.foundry/keystores/default_foundry"
-SENDER="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-
 # Load .env file if it exists
 if [ -f ".env" ]; then
     echo "Loading .env file..."
     export $(grep -v '^#' .env | xargs)
 fi
+
+# Check if deploying to Sepolia
+IS_SEPOLIA="${IS_SEPOLIA:-false}"
+if [ "$IS_SEPOLIA" = "true" ] || [ "$IS_SEPOLIA" = "1" ]; then
+    IS_SEPOLIA=true
+    CHAIN_ID=11155111
+    RPC_URL="${SEPOLIA_RPC_URL:-https://ethereum-sepolia-rpc.publicnode.com}"
+    ETHERSCAN_API_KEY="${ETHERSCAN_API_KEY:-}"
+    ETHERSCAN_URL="https://api-sepolia.etherscan.io/api"
+    echo "🌐 Deploying to SEPOLIA testnet"
+    echo "  RPC URL: $RPC_URL"
+    if [ -n "$ETHERSCAN_API_KEY" ]; then
+        echo "  Etherscan API Key: ${ETHERSCAN_API_KEY:0:10}... (configured)"
+    else
+        echo "  ⚠️  Etherscan API Key: NOT SET (verification will be skipped)"
+    fi
+else
+    IS_SEPOLIA=false
+    CHAIN_ID=31337
+    RPC_URL="${ANVIL_RPC_URL:-http://localhost:8545}"
+    echo "🏠 Deploying to ANVIL (local)"
+    echo "  RPC URL: $RPC_URL"
+fi
+
+KEYSTORE="${KEYSTORE:-$HOME/.foundry/keystores/arkdep}"
+SENDER="${SENDER:-0xcd3336b37f43b1bE8cdf65711F9D4fbd4Fbf86a3}"
+
+# Check balance if deploying to Sepolia
+if [ "$IS_SEPOLIA" = "true" ]; then
+    echo "Checking Sepolia balance..."
+    echo "----------------------------------------"
+    
+    # Get sender balance
+    BALANCE=$(cast balance "$SENDER" --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
+    BALANCE_ETH=$(cast --to-unit "$BALANCE" ether 2>/dev/null || echo "0")
+    
+    # Get current gas price
+    GAS_PRICE=$(cast gas-price --rpc-url "$RPC_URL" 2>/dev/null || echo "20000000000")
+    GAS_PRICE_GWEI=$(cast --to-unit "$GAS_PRICE" gwei 2>/dev/null || echo "20")
+    
+    echo "Sender address: $SENDER"
+    echo "Current balance: $BALANCE_ETH ETH"
+    echo "Current gas price: $GAS_PRICE_GWEI gwei"
+    echo ""
+    
+    # Rough estimate: ~10-15M gas total for all deployments
+    # At 20 gwei, that's ~0.2-0.3 ETH
+    ESTIMATED_GAS=15000000
+    ESTIMATED_COST=$(echo "scale=6; $ESTIMATED_GAS * $GAS_PRICE / 1000000000000000000" | bc 2>/dev/null || echo "0.3")
+    
+    echo "Rough estimate for all deployments:"
+    echo "  Estimated gas: ~$ESTIMATED_GAS"
+    echo "  Estimated cost: ~$ESTIMATED_COST ETH (at current gas price)"
+    echo ""
+    
+    # Check if balance is sufficient (need at least 0.1 ETH)
+    MIN_BALANCE=0.1
+    if (( $(echo "$BALANCE_ETH < $MIN_BALANCE" | bc -l 2>/dev/null || echo "1") )); then
+        echo "⚠️  WARNING: Low balance detected!"
+        echo "  You have: $BALANCE_ETH ETH"
+        echo "  Recommended minimum: $MIN_BALANCE ETH"
+        echo "  Estimated cost: ~$ESTIMATED_COST ETH"
+        echo ""
+        echo "You may not have enough for all deployments."
+        read -p "Continue anyway? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+    else
+        echo "✓ Balance appears sufficient"
+    fi
+    
+    echo ""
+fi
+
+echo ""
 
 # Token addresses (Sepolia) - can be overridden by .env
 export SEPOLIA_AAVE_POOL="${SEPOLIA_AAVE_POOL:-0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951}"
@@ -48,7 +121,7 @@ echo "----------------------------------------"
 TEMP_OUTPUT=$(mktemp)
 forge script script/DeployPoseidon2Huff.s.sol \
     -vv \
-    --skip test/ArkanaOps.t.sol src/Verifiers/**.sol src/merkle/LeanIMTPoseidon2.sol \
+    --skip test/Arkana.t.sol src/Verifiers/**.sol src/merkle/LeanIMTPoseidon2.sol \
     --ffi \
     --via-ir \
     --broadcast \
@@ -93,6 +166,15 @@ fi
 echo "✓ Huff Poseidon2 deployed at: $POSEIDON2_HUFF_ADDRESS (code size: $CODE_SIZE bytes)"
 export POSEIDON2_HUFF_ADDRESS
 
+# Verify on Etherscan if on Sepolia
+if [ "$IS_SEPOLIA" = "true" ] && [ -n "$ETHERSCAN_API_KEY" ]; then
+    echo ""
+    echo "Verifying Huff Poseidon2 on Etherscan..."
+    # Note: Huff contracts may not be verifiable via standard forge verify
+    # This is a placeholder - adjust based on your verification needs
+    echo "  ⚠️  Note: Huff contracts may require manual verification"
+fi
+
 echo ""
 echo "Step 2: Deploying Verifiers..."
 echo "----------------------------------------"
@@ -130,12 +212,17 @@ fi
 # Set trap to restore files on exit (success or failure)
 trap restore_merkle_files EXIT
 
+VERIFIER_OUTPUT=$(mktemp)
 forge script script/VerifierDeployer.s.sol \
     --skip "test/**" "src/Arkana.sol" "src/ArkanaVault.sol"  "src/tl-limit/**" \
     --broadcast \
     --rpc-url "$RPC_URL" \
     --keystore "$KEYSTORE" \
-    --sender "$SENDER"
+    --sender "$SENDER" 2>&1 | tee "$VERIFIER_OUTPUT"
+
+# Extract verifier addresses if needed for verification
+VERIFIER_ADDRESSES=$(grep -oE '0x[a-fA-F0-9]{40}' "$VERIFIER_OUTPUT" | sort -u)
+rm "$VERIFIER_OUTPUT"
 
 # Restore files (trap will also handle this, but doing it explicitly for clarity)
 restore_merkle_files
@@ -182,7 +269,7 @@ if [ -n "$INITIALIZE_VAULTS_TOKENS" ]; then
     # Export the environment variable so forge script can read it via vm.envString()
     export INITIALIZE_VAULTS_TOKENS
     forge script script/Arkana.s.sol \
-        --skip test/ArkanaOps.t.sol src/Verifiers/** src/merkle/LeanIMTPoseidon2.sol \
+        --skip test/Arkana.t.sol src/Verifiers/** src/merkle/LeanIMTPoseidon2.sol \
         --broadcast \
         --rpc-url "$RPC_URL" \
         --keystore "$KEYSTORE" \
@@ -192,7 +279,7 @@ else
     echo "No tokens found for vault initialization"
     echo "Make sure Sepolia token addresses are set in .env (SEPOLIA_EURS, SEPOLIA_USDC, etc.)"
     forge script script/Arkana.s.sol \
-        --skip test/ArkanaOps.t.sol src/Verifiers/** src/merkle/LeanIMTPoseidon2.sol \
+        --skip test/Arkana.t.sol src/Verifiers/** src/merkle/LeanIMTPoseidon2.sol \
         --broadcast \
         --rpc-url "$RPC_URL" \
         --keystore "$KEYSTORE" \
@@ -287,5 +374,101 @@ TLSWAP_REGISTER_ADDRESS=${TLSWAP_REGISTER_ADDRESS:-}
 ARKANA_ADDRESS=$ARKANA_ADDRESS
 EOF
     echo "Addresses saved to deployed_addresses.txt"
+fi
+
+# Verify contracts on Etherscan if on Sepolia
+if [ "$IS_SEPOLIA" = "true" ] && [ -n "$ETHERSCAN_API_KEY" ]; then
+    echo ""
+    echo "=========================================="
+    echo "Verifying contracts on Etherscan..."
+    echo "=========================================="
+    
+    # Wait a bit for contracts to be indexed
+    echo "Waiting 10 seconds for contracts to be indexed..."
+    sleep 10
+    
+    # Verify TLswapRegister contract
+    if [ -n "$TLSWAP_REGISTER_ADDRESS" ]; then
+        echo ""
+        echo "Verifying TLswapRegister contract at $TLSWAP_REGISTER_ADDRESS..."
+        forge verify-contract \
+            "$TLSWAP_REGISTER_ADDRESS" \
+            src/tl-limit/TLswapRegister.sol:TLswapRegister \
+            --chain-id 11155111 \
+            --etherscan-api-key "$ETHERSCAN_API_KEY" \
+            --compiler-version "$(forge --version | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')" \
+            --num-of-optimizations 200 \
+            --via-ir || echo "  ⚠️  TLswapRegister verification failed (may already be verified)"
+    fi
+    
+    # Verify Verifier contracts
+    echo ""
+    echo "Verifying Verifier contracts..."
+    
+    # Extract verifier addresses from deployment output if available
+    # These are deployed in VerifierDeployer.s.sol
+    ENTRY_VERIFIER=$(echo "$VERIFIER_ADDRESSES" | head -1)
+    DEPOSIT_VERIFIER=$(echo "$VERIFIER_ADDRESSES" | sed -n '2p')
+    SEND_VERIFIER=$(echo "$VERIFIER_ADDRESSES" | sed -n '3p')
+    WITHDRAW_VERIFIER=$(echo "$VERIFIER_ADDRESSES" | sed -n '4p')
+    
+    if [ -n "$ENTRY_VERIFIER" ]; then
+        echo "Verifying VerifierEntry at $ENTRY_VERIFIER..."
+        forge verify-contract \
+            "$ENTRY_VERIFIER" \
+            src/Verifiers/VerifierEntry.sol:UltraVerifier \
+            --chain-id 11155111 \
+            --etherscan-api-key "$ETHERSCAN_API_KEY" \
+            --num-of-optimizations 200 || echo "  ⚠️  VerifierEntry verification failed"
+    fi
+    
+    if [ -n "$DEPOSIT_VERIFIER" ]; then
+        echo "Verifying VerifierDeposit at $DEPOSIT_VERIFIER..."
+        forge verify-contract \
+            "$DEPOSIT_VERIFIER" \
+            src/Verifiers/VerifierDeposit.sol:UltraVerifier \
+            --chain-id 11155111 \
+            --etherscan-api-key "$ETHERSCAN_API_KEY" \
+            --num-of-optimizations 200 || echo "  ⚠️  VerifierDeposit verification failed"
+    fi
+
+    
+    if [ -n "$WITHDRAW_VERIFIER" ]; then
+        echo "Verifying VerifierWithdraw at $WITHDRAW_VERIFIER..."
+        forge verify-contract \
+            "$WITHDRAW_VERIFIER" \
+            src/Verifiers/VerifierWithdraw.sol:UltraVerifier \
+            --chain-id 11155111 \
+            --etherscan-api-key "$ETHERSCAN_API_KEY" \
+            --num-of-optimizations 200 || echo "  ⚠️  VerifierWithdraw verification failed"
+    fi
+    
+    echo ""
+    echo "✓ Verification process completed"
+    echo "  View contracts on Etherscan: https://sepolia.etherscan.io"
+else
+    if [ "$IS_SEPOLIA" = "true" ]; then
+        echo ""
+        echo "⚠️  Skipping Etherscan verification (ETHERSCAN_API_KEY not set)"
+    fi
+fi
+
+echo ""
+echo "=========================================="
+echo "Deployment script completed!"
+echo "=========================================="
+
+# Show final balance and gas summary if on Sepolia
+if [ "$IS_SEPOLIA" = "true" ]; then
+    FINAL_BALANCE=$(cast balance "$SENDER" --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
+    FINAL_BALANCE_ETH=$(cast --to-unit "$FINAL_BALANCE" ether 2>/dev/null || echo "0")
+    
+    echo ""
+    echo "Final balance: $FINAL_BALANCE_ETH ETH"
+    echo ""
+    echo "To check gas used for each transaction, view the broadcast JSON files:"
+    echo "  - Poseidon2: broadcast/DeployPoseidon2Huff.s.sol/11155111/run-latest.json"
+    echo "  - Verifiers: broadcast/VerifierDeployer.s.sol/11155111/run-latest.json"
+    echo "  - Arkana: broadcast/Arkana.s.sol/11155111/run-latest.json"
 fi
 

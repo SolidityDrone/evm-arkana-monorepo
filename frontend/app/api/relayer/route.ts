@@ -7,20 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createWalletClient, createPublicClient, http, parseAbi } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
-
-// Define a local anvil chain for development
-const anvil = {
-    id: 31337,
-    name: 'Anvil',
-    nativeCurrency: {
-        decimals: 18,
-        name: 'Ether',
-        symbol: 'ETH',
-    },
-    rpcUrls: {
-        default: { http: ['http://127.0.0.1:8545'] },
-    },
-} as const;
+import { anvil, getRpcUrl, IS_SEPOLIA } from '@/lib/rpc-config';
 
 /**
  * POST /api/relayer
@@ -80,9 +67,10 @@ export async function POST(request: NextRequest) {
 
         // Determine which chain to use
         const chain = chainId === 11155111 ? sepolia : anvil;
+        // Use configured RPC URL, but allow override for specific chain
         const rpcUrl = chainId === 11155111 
-            ? process.env.SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com'
-            : 'http://127.0.0.1:8545';
+            ? (process.env.SEPOLIA_RPC_URL || process.env.NEXT_PUBLIC_SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com')
+            : (process.env.NEXT_PUBLIC_ANVIL_RPC_URL || getRpcUrl());
 
         // Create clients
         const publicClient = createPublicClient({
@@ -219,4 +207,5 @@ export async function GET() {
         );
     }
 }
+
 

@@ -67,7 +67,8 @@ contract ArkanaDeployer is Script {
         verifiers[4] = VerifiersConst.ABSORB_VERIFIER;
 
         // protocol_fee: 0 for testing, discount_window: 1000 seconds
-        Arkana arkana = new Arkana(verifiers, 0, aavePool, 0, 1000, poseidon2Huff, multicall3, tlswapRegisterAddress);
+        Arkana arkana =
+            new Arkana(verifiers, 10000, aavePool, 100, 30 days, poseidon2Huff, multicall3, tlswapRegisterAddress);
         address arkanaAddress = address(arkana);
         console.log("Arkana deployed at:", arkanaAddress);
 
