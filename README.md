@@ -88,42 +88,81 @@ graph TB
 
 #### Timelock Swap (TL_SWAP) Flow
 
-```mermaid
-graph TB
-    L[User] -->|1. withdraw with is_tl_swap=true| M[Arkana Contract]
-    M -->|2. Virtual withdrawal - NO vault op| M
-    M -->|3. registerEncryptedOrder| N[TLswapRegister]
-    N -->|4. Store encrypted order| N
-    
-    O[dRand Network] -->|5. Publishes randomness at round R| P[Off-chain Executor]
-    P -->|6. Decrypts order using dRand| P
-    P -->|7. executeV4SwapIntent with params| N
-    
-    N -->|8. Verify hash chain| N
-    N -->|9. withdrawForSwap| M
-    M -->|10. burnShares + withdrawFromAave| Q[ArkanaVault]
-    Q -->|11. Withdraw from Aave| R[Aave Pool]
-    R -->|12. Return tokens| Q
-    Q -->|13. Transfer to TLswapRegister| N
-    
-    N -->|14. Approve & execute swap| S[Uniswap Router]
-    S -->|15. Swap tokens| S
-    S -->|16. Return swapped tokens| N
-    
-    N -->|17. Pay execution fee| P
-    N -->|18. Pay protocol fee| T[Protocol Owner]
-    N -->|19. Transfer remaining to recipient| U[Recipient]
+**Phase 1: Order Registration (User creates encrypted order)**
 
-    style L fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
-    style M fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
-    style N fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
-    style O fill:#f0e6ff,stroke:#333,stroke-width:2px,color:#000
-    style P fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-    style Q fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
-    style R fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
-    style S fill:#cce5ff,stroke:#333,stroke-width:2px,color:#000
-    style T fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-    style U fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
+```mermaid
+graph LR
+    A[User] --> B[Arkana]
+    B --> C[TLswapRegister]
+    
+    A -->|withdraw + ZK proof| B
+    B -->|no vault op yet| B
+    B -->|store encrypted order| C
+
+    style A fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
+    style B fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
+    style C fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
+```
+
+**Phase 2: Timelock Release (dRand reveals randomness)**
+
+```mermaid
+graph LR
+    D[dRand] --> E[Executor]
+    E --> F[TLswapRegister]
+    
+    D -->|randomness at round R| E
+    E -->|decrypt order| E
+    E -->|call executeV4SwapIntent| F
+
+    style D fill:#f0e6ff,stroke:#333,stroke-width:2px,color:#000
+    style E fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
+    style F fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
+```
+
+**Phase 3: Withdrawal (Shares → Tokens)**
+
+```mermaid
+graph LR
+    G[TLswapRegister] --> H[Arkana]
+    H --> I[Vault]
+    I --> J[Aave]
+    J --> I
+    I --> G
+    
+    G -->|withdrawForSwap| H
+    H -->|burn shares| I
+    I -->|withdraw| J
+    J -->|tokens| I
+    I -->|tokens| G
+
+    style G fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
+    style H fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
+    style I fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
+    style J fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
+```
+
+**Phase 4: Swap & Distribution**
+
+```mermaid
+graph LR
+    K[TLswapRegister] --> L[Uniswap V4]
+    L --> K
+    K --> M[Executor]
+    K --> N[Protocol]
+    K --> O[Recipient]
+    
+    K -->|swap tokens| L
+    L -->|output tokens| K
+    K -->|exec fee| M
+    K -->|protocol fee| N
+    K -->|remainder| O
+
+    style K fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
+    style L fill:#cce5ff,stroke:#333,stroke-width:2px,color:#000
+    style M fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
+    style N fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
+    style O fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
 ```
 
 #### Vault Asset Tracking
