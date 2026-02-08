@@ -55,23 +55,31 @@ struct V4ExactInputSingleParams {
 
 /// @notice Minimal interface for Uniswap V4 PositionManager
 interface IPositionManager {
-    struct MintParams {
-        PoolKey poolKey;
-        int24 tickLower;
-        int24 tickUpper;
-        uint256 liquidity;
-        uint256 amount0Max;
-        uint256 amount1Max;
-        address owner;
-        bytes hookData;
-    }
+    /// @notice Modify liquidities using encoded actions (mint, burn, increase, decrease)
+    function modifyLiquidities(bytes calldata unlockData, uint256 deadline) external payable;
 
-    function mint(MintParams calldata params, uint256 deadline, address recipient)
-        external
-        payable
-        returns (uint256 tokenId, uint128 liquidityMinted, uint256 amount0, uint256 amount1);
-
+    /// @notice Get the next token ID to be minted
     function nextTokenId() external view returns (uint256);
+}
+
+/// @notice PositionManager action constants
+library PositionManagerActions {
+    uint256 internal constant MINT_POSITION = 0x02;
+    uint256 internal constant SETTLE_PAIR = 0x0d;
+}
+
+/// @notice Swap directive for liquidity orders (to get second token before LP)
+struct SwapDirective {
+    /// @notice Exact amount of output tokens desired (EXACT_OUT swap)
+    uint256 amountOut;
+    /// @notice Maximum amount of input tokens willing to spend
+    uint256 amountInMax;
+    /// @notice Slippage tolerance in basis points (applied to amountInMax)
+    uint16 slippageBps;
+    /// @notice Token to swap to (the second token needed for LP)
+    address tokenOut;
+    /// @notice Pool fee for the swap (to identify correct V4 pool)
+    uint24 poolFee;
 }
 
 /**
@@ -310,195 +318,6 @@ contract TLswapRegister is ReentrancyGuard {
     }
 
     /**
-     * @notice Execute a swap intent
-     * @dev Called by off-chain executor after decrypting the intent from timelock ciphertext
-     * @dev Uses amountOutMin as target - swaps all available tokens to achieve best output
-     * @dev Verifies hash chain: hash(prevHash, sharesAmount) == nextHash
-     * @dev Verifies order integrity: keccak256(abi.encode(params)) == stored orderChunkHash
-     * @param orderId The order identifier (newNonceCommitment from withdraw circuit)
-     * @param chunkIndex Index of this chunk in the order (0-indexed)
-     * @param intentor Address that created the intent (from Arkana withdraw)
-     * @param tokenAddress Token address (for Arkana vault operations)
-     * @param sharesAmount Amount of shares to withdraw from Arkana (encrypted in ciphertext)
-     * @param tokenIn Token to swap from
-     * @param tokenOut Token to swap to
-     * @param amountOutMin Minimum amount out (target for swap)
-     * @param slippageBps Slippage in basis points (0-1000, representing 0-10%)
-     * @param deadline Deadline timestamp
-     * @param executionFeeBps Execution fee in basis points (paid to executor)
-     * @param recipient Address to receive swapped tokens
-     * @param drandRound dRand round when intent becomes decryptable
-     * @param swapCalldata The calldata to execute the swap (e.g., Uniswap Universal Router)
-     * @param swapTarget The target contract for the swap (e.g., Universal Router address)
-     * @param prevHash Previous hash in the hash chain (h_{i-1})
-     * @param nextHash Next hash in the hash chain (h_i) - should equal hash(prevHash, sharesAmount)
-     * @return amountOut The amount of tokens received by the recipient (after fees)
-     */
-    function executeSwapIntent(
-        bytes32 orderId,
-        uint256 chunkIndex,
-        address intentor,
-        address tokenAddress,
-        uint256 sharesAmount,
-        address tokenIn,
-        address tokenOut,
-        uint256 amountOutMin,
-        uint16 slippageBps,
-        uint256 deadline,
-        uint256 executionFeeBps,
-        address recipient,
-        uint256 drandRound,
-        bytes calldata swapCalldata,
-        address swapTarget,
-        uint256 prevHash,
-        uint256 nextHash
-    ) external nonReentrant returns (uint256 amountOut) {
-        // === ORDER INTEGRITY VALIDATION ===
-        // Validate that provided parameters match the stored hash (prevents executor tampering)
-        bytes32[] storage storedHashes = orderChunkHashes[orderId];
-        if (storedHashes.length == 0) {
-            revert OrderChunkNotFound();
-        }
-        if (chunkIndex >= storedHashes.length) {
-            revert OrderChunkNotFound();
-        }
-
-        // Compute hash of the provided order parameters
-        bytes32 computedHash = keccak256(
-            abi.encode(
-                sharesAmount, amountOutMin, slippageBps, deadline, executionFeeBps, recipient, tokenOut, drandRound
-            )
-        );
-
-        // Verify hash matches stored hash
-        if (computedHash != storedHashes[chunkIndex]) {
-            revert InvalidOrderHash();
-        }
-
-        // Validate deadline
-        if (deadline <= block.timestamp) {
-            revert IntentExpired();
-        }
-
-        // Validate amountOutMin is set
-        if (amountOutMin == 0) {
-            revert InvalidAmounts();
-        }
-
-        // Validate slippage (max 10% = 1000 bps)
-        if (slippageBps > MAX_SLIPPAGE_BPS) {
-            revert InvalidSlippage();
-        }
-
-        // Validate round is available (intent is decryptable)
-        if (!_isRoundAvailable(drandRound)) {
-            revert InvalidRound();
-        }
-
-        // Validate tokens
-        if (tokenIn == address(0) || tokenOut == address(0) || tokenIn == tokenOut) {
-            revert InvalidAmounts();
-        }
-
-        // Use contract's uniswapRouter if swapTarget is zero address
-        address actualSwapTarget = swapTarget;
-        if (actualSwapTarget == address(0)) {
-            actualSwapTarget = uniswapRouter;
-            if (actualSwapTarget == address(0)) {
-                revert SwapFailed(); // Neither provided nor configured
-            }
-        }
-
-        // === HASH CHAIN VERIFICATION ===
-        // Verify that prevHash hasn't been used before (nullifier check)
-        if (usedHashChainNodes[prevHash]) {
-            revert HashChainNodeAlreadyUsed();
-        }
-
-        // Verify hash chain: hash(prevHash, sharesAmount) == nextHash
-        // This ensures the chunk is part of the correct hash chain
-        Field.Type prevHashField = Field.toField(prevHash);
-        Field.Type sharesAmountField = Field.toField(sharesAmount);
-        Field.Type computedNextHash = poseidon2Hasher.hash_2(prevHashField, sharesAmountField);
-        uint256 computedNextHashUint = Field.toUint256(computedNextHash);
-
-        if (computedNextHashUint != nextHash) {
-            revert InvalidHashChain();
-        }
-
-        // Mark prevHash as used (nullifier) to prevent chunk reuse
-        usedHashChainNodes[prevHash] = true;
-
-        // Withdraw tokens from Arkana vault using sharesAmount
-        // This calls Arkana's function that withdraws from Aave and sends tokens to this contract
-        arkana.withdrawForSwap(tokenAddress, sharesAmount, address(this));
-
-        // Get the actual amount received (use all available tokens for swap)
-        uint256 availableAmount = IERC20(tokenIn).balanceOf(address(this));
-
-        if (availableAmount == 0) {
-            revert InvalidAmounts();
-        }
-
-        // Approve swap target to spend all available tokens
-        IERC20(tokenIn).approve(actualSwapTarget, 0);
-        IERC20(tokenIn).approve(actualSwapTarget, availableAmount);
-
-        // Get balance before swap (swap should send tokens to this contract)
-        uint256 balanceBefore = IERC20(tokenOut).balanceOf(address(this));
-
-        // Execute swap - use all available tokens to get best output
-        // NOTE: The swapCalldata must be configured to send output tokens to address(this),
-        // NOT to the recipient directly. The contract will distribute fees and remaining tokens.
-        (bool success,) = actualSwapTarget.call(swapCalldata);
-        if (!success) {
-            revert SwapFailed();
-        }
-
-        // Get balance after swap
-        uint256 balanceAfter = IERC20(tokenOut).balanceOf(address(this));
-        amountOut = balanceAfter - balanceBefore;
-
-        // Validate we got at least amountOutMin (with slippage tolerance)
-        // Calculate minimum acceptable output considering slippage
-        uint256 minAcceptableOut = (amountOutMin * (10000 - slippageBps)) / 10000;
-        if (amountOut < minAcceptableOut) {
-            revert InvalidSlippage();
-        }
-
-        // Calculate and deduct fees from amountOut
-        uint256 totalFees = 0;
-
-        // Calculate execution fee (if any)
-        if (executionFeeBps > 0) {
-            uint256 executionFeeAmount = (amountOut * executionFeeBps) / 10000;
-            if (executionFeeAmount > 0) {
-                IERC20(tokenOut).safeTransfer(msg.sender, executionFeeAmount);
-                totalFees += executionFeeAmount;
-            }
-        }
-
-        // Calculate protocol fee (if any)
-        if (protocolFeeBps > 0) {
-            uint256 protocolFeeAmount = (amountOut * protocolFeeBps) / 10000;
-            if (protocolFeeAmount > 0) {
-                IERC20(tokenOut).safeTransfer(owner, protocolFeeAmount);
-                totalFees += protocolFeeAmount;
-            }
-        }
-
-        // Transfer remaining tokens to recipient
-        uint256 recipientAmount = amountOut - totalFees;
-        if (recipientAmount > 0) {
-            IERC20(tokenOut).safeTransfer(recipient, recipientAmount);
-        }
-
-        emit SwapIntentExecuted(orderId, msg.sender, intentor, tokenIn, tokenOut, availableAmount, recipientAmount);
-
-        return recipientAmount;
-    }
-
-    /**
      * @notice Execute a V4 swap intent using Universal Router with proper calldata encoding
      * @dev This version builds the V4 swap calldata internally using pool parameters
      * @param orderId The order ID (nonce commitment)
@@ -713,9 +532,140 @@ contract TLswapRegister is ReentrancyGuard {
     }
 
     /**
+     * @notice Internal function to swap tokens for liquidity provision with slippage control
+     * @dev Uses encrypted swap directive parameters for proper slippage validation
+     */
+    function _executeV4SwapWithSlippage(
+        PoolKey memory poolKey,
+        bool zeroForOne,
+        uint128 amountIn,
+        uint128 amountOutMin,
+        uint16 slippageBps,
+        address tokenIn,
+        address tokenOut,
+        uint256 swapDeadline
+    ) internal {
+        require(uniswapRouter != address(0), "Router not set");
+        require(permit2 != address(0), "Permit2 not set");
+
+        // Step 1: Approve Permit2 to spend our tokens
+        IERC20(tokenIn).approve(permit2, type(uint256).max);
+
+        // Step 2: Approve Universal Router via Permit2
+        IPermit2(permit2)
+            .approve(
+                tokenIn,
+                uniswapRouter,
+                uint160(amountIn),
+                uint48(block.timestamp + 3600) // 1 hour expiration
+            );
+
+        // Calculate minimum acceptable output with slippage
+        uint256 minAcceptableOut = (uint256(amountOutMin) * (10000 - slippageBps)) / 10000;
+
+        // Step 3: Build V4 swap command
+        bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
+        bytes[] memory inputs = new bytes[](1);
+
+        // Encode actions: SWAP_EXACT_IN_SINGLE + SETTLE_ALL + TAKE_ALL
+        bytes memory actions =
+            abi.encodePacked(uint8(Actions.SWAP_EXACT_IN_SINGLE), uint8(Actions.SETTLE_ALL), uint8(Actions.TAKE_ALL));
+
+        // Prepare params for each action
+        bytes[] memory params = new bytes[](3);
+
+        // Param 0: ExactInputSingleParams with proper slippage
+        params[0] = abi.encode(
+            V4ExactInputSingleParams({
+                poolKey: poolKey,
+                zeroForOne: zeroForOne,
+                amountIn: amountIn,
+                amountOutMinimum: uint128(minAcceptableOut),
+                hookData: bytes("")
+            })
+        );
+
+        // Param 1: SETTLE_ALL (currency, maxAmount)
+        Currency settleCurrency = zeroForOne ? poolKey.currency0 : poolKey.currency1;
+        params[1] = abi.encode(settleCurrency, amountIn);
+
+        // Param 2: TAKE_ALL (currency, minAmount) - output goes to msg.sender (this contract)
+        Currency takeCurrency = zeroForOne ? poolKey.currency1 : poolKey.currency0;
+        params[2] = abi.encode(takeCurrency, minAcceptableOut);
+
+        inputs[0] = abi.encode(actions, params);
+
+        // Execute swap
+        IUniversalRouter(uniswapRouter).execute(commands, inputs, swapDeadline);
+    }
+
+    /**
+     * @notice Internal function to swap tokens using EXACT_OUT (specify desired output amount)
+     * @dev Useful when you need a specific amount of output tokens (e.g., for balanced LP)
+     * @param poolKey The pool to swap in
+     * @param zeroForOne Direction of swap (true = token0 -> token1)
+     * @param amountOut Exact amount of output tokens desired
+     * @param amountInMaximum Maximum input tokens willing to spend
+     * @param tokenIn Address of input token
+     * @param swapDeadline Deadline for the swap
+     */
+    function _executeV4SwapExactOut(
+        PoolKey memory poolKey,
+        bool zeroForOne,
+        uint128 amountOut,
+        uint128 amountInMaximum,
+        address tokenIn,
+        uint256 swapDeadline
+    ) internal {
+        require(uniswapRouter != address(0), "Router not set");
+        require(permit2 != address(0), "Permit2 not set");
+
+        // Step 1: Approve Permit2 to spend our tokens
+        IERC20(tokenIn).approve(permit2, type(uint256).max);
+
+        // Step 2: Approve Universal Router via Permit2
+        IPermit2(permit2).approve(tokenIn, uniswapRouter, uint160(amountInMaximum), uint48(block.timestamp + 3600));
+
+        // Step 3: Build V4 swap command with SWAP_EXACT_OUT_SINGLE
+        bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
+        bytes[] memory inputs = new bytes[](1);
+
+        // Encode actions: SWAP_EXACT_OUT_SINGLE + SETTLE_ALL + TAKE_ALL
+        bytes memory actions =
+            abi.encodePacked(uint8(Actions.SWAP_EXACT_OUT_SINGLE), uint8(Actions.SETTLE_ALL), uint8(Actions.TAKE_ALL));
+
+        bytes[] memory params = new bytes[](3);
+
+        // Param 0: ExactOutputSingleParams
+        params[0] = abi.encode(
+            V4ExactOutputSingleParams({
+                poolKey: poolKey,
+                zeroForOne: zeroForOne,
+                amountOut: amountOut,
+                amountInMaximum: amountInMaximum,
+                hookData: bytes("")
+            })
+        );
+
+        // Param 1: SETTLE_ALL (input currency, max amount)
+        Currency settleCurrency = zeroForOne ? poolKey.currency0 : poolKey.currency1;
+        params[1] = abi.encode(settleCurrency, amountInMaximum);
+
+        // Param 2: TAKE_ALL (output currency, exact amount we want)
+        Currency takeCurrency = zeroForOne ? poolKey.currency1 : poolKey.currency0;
+        params[2] = abi.encode(takeCurrency, amountOut);
+
+        inputs[0] = abi.encode(actions, params);
+
+        // Execute swap
+        IUniversalRouter(uniswapRouter).execute(commands, inputs, swapDeadline);
+    }
+
+    /**
      * @notice Execute a liquidity provision intent
      * @dev Called by off-chain executor after decrypting the intent from timelock ciphertext
      * @dev Adds liquidity to Uniswap V4 pool and transfers position NFT to recipient
+     * @dev Includes swap directive to convert part of withdrawn token to second token
      * @param orderId The order identifier (newNonceCommitment from withdraw circuit)
      * @param chunkIndex Index of this chunk in the order (0-indexed)
      * @param tokenAddress Token address (for Arkana vault operations)
@@ -725,10 +675,11 @@ contract TLswapRegister is ReentrancyGuard {
      * @param tickUpper Upper tick of the position
      * @param amount0Max Maximum amount of token0 to use
      * @param amount1Max Maximum amount of token1 to use
-     * @param deadline Deadline timestamp
+     * @param swapDirective Swap parameters to get second token (swapSharesAmount, amountOutMin, slippageBps, tokenOut)
+     * @param deadline Deadline timestamp (shared with swap)
      * @param executionFeeBps Execution fee in basis points (paid to executor)
      * @param recipient Address to receive the LP position NFT
-     * @param drandRound dRand round when intent becomes decryptable
+     * @param drandRound dRand round when intent becomes decryptable (shared with swap)
      * @param hookData Additional data for pool hooks
      * @param prevHash Previous hash in the hash chain
      * @param nextHash Next hash in the hash chain
@@ -744,6 +695,7 @@ contract TLswapRegister is ReentrancyGuard {
         int24 tickUpper,
         uint256 amount0Max,
         uint256 amount1Max,
+        SwapDirective calldata swapDirective,
         uint256 deadline,
         uint256 executionFeeBps,
         address recipient,
@@ -761,8 +713,10 @@ contract TLswapRegister is ReentrancyGuard {
             revert OrderChunkNotFound();
         }
 
-        // Compute hash of the provided liquidity parameters
-        // Hash includes: sharesAmount, poolKey hash, tickLower, tickUpper, deadline, executionFeeBps, recipient, drandRound
+        // Compute hash of the provided liquidity parameters (including swap directive)
+        // Hash includes: sharesAmount, poolKey hash, tickLower, tickUpper, amount0Max, amount1Max,
+        //                swapSharesAmount, swapAmountOutMin, swapSlippageBps, swapTokenOut,
+        //                deadline, executionFeeBps, recipient, drandRound
         bytes32 poolKeyHash = keccak256(
             abi.encode(
                 Currency.unwrap(poolKey.currency0),
@@ -780,6 +734,11 @@ contract TLswapRegister is ReentrancyGuard {
                 tickUpper,
                 amount0Max,
                 amount1Max,
+                swapDirective.amountOut,
+                swapDirective.amountInMax,
+                swapDirective.slippageBps,
+                swapDirective.tokenOut,
+                swapDirective.poolFee,
                 deadline,
                 executionFeeBps,
                 recipient,
@@ -827,45 +786,104 @@ contract TLswapRegister is ReentrancyGuard {
         // Withdraw tokens from Arkana vault
         arkana.withdrawForSwap(tokenAddress, sharesAmount, address(this));
 
-        // Get available amounts of both tokens
+        // Get pool tokens
         address token0 = Currency.unwrap(poolKey.currency0);
         address token1 = Currency.unwrap(poolKey.currency1);
+
+        // Execute swap directive if provided (to get second token for LP)
+        // The swap uses underlying token amounts (not shares)
+        if (swapDirective.amountOut > 0 && swapDirective.tokenOut != address(0)) {
+            // Determine swap direction based on tokenOut
+            address tokenIn = tokenAddress; // We withdrew this token
+            address tokenOut = swapDirective.tokenOut;
+
+            // Validate tokenOut is one of the pool tokens
+            require(tokenOut == token0 || tokenOut == token1, "Invalid swap tokenOut");
+            require(tokenIn == token0 || tokenIn == token1, "Withdrawn token not in pool");
+            require(tokenIn != tokenOut, "Cannot swap same token");
+
+            // Determine zeroForOne based on which token we're swapping
+            bool zeroForOne = (tokenIn == token0);
+
+            // Build a PoolKey for the swap using the swap directive's poolFee
+            // This allows swapping through a different fee tier pool if needed
+            PoolKey memory swapPoolKey = PoolKey({
+                currency0: poolKey.currency0,
+                currency1: poolKey.currency1,
+                fee: swapDirective.poolFee,
+                tickSpacing: poolKey.tickSpacing, // Use same tick spacing
+                hooks: poolKey.hooks
+            });
+
+            // Execute the swap using EXACT_OUT (specify desired output amount)
+            // This gives us a predictable amount of the second token for LP
+            // Note: amountInMax already accounts for slippage tolerance - don't modify it
+            if (uniswapRouter != address(0) && permit2 != address(0)) {
+                _executeV4SwapExactOut(
+                    swapPoolKey,
+                    zeroForOne,
+                    uint128(swapDirective.amountOut),
+                    uint128(swapDirective.amountInMax),
+                    tokenIn,
+                    deadline
+                );
+            }
+        }
+
+        // Get available amounts after swap
         uint256 available0 = IERC20(token0).balanceOf(address(this));
         uint256 available1 = IERC20(token1).balanceOf(address(this));
 
         // Approve position manager
-        IERC20(token0).approve(positionManager, available0);
-        IERC20(token1).approve(positionManager, available1);
+        if (available0 > 0) {
+            IERC20(token0).approve(positionManager, available0);
+        }
+        if (available1 > 0) {
+            IERC20(token1).approve(positionManager, available1);
+        }
 
         // Calculate liquidity based on available amounts
         // Note: Actual liquidity calculation depends on current pool price
         // For simplicity, we pass the amounts and let PositionManager handle it
         uint256 liquidityAmount = available0 < available1 ? available0 : available1; // Simplified
 
-        // Mint liquidity position
-        IPositionManager.MintParams memory params = IPositionManager.MintParams({
-            poolKey: poolKey,
-            tickLower: tickLower,
-            tickUpper: tickUpper,
-            liquidity: liquidityAmount,
-            amount0Max: amount0Max,
-            amount1Max: amount1Max,
-            owner: address(this), // Mint to this contract first
-            hookData: hookData
-        });
+        // Get the next token ID before minting
+        tokenId = IPositionManager(positionManager).nextTokenId();
 
-        uint128 liquidityMinted;
-        uint256 amount0Used;
-        uint256 amount1Used;
+        // Approve PositionManager via Permit2 for both tokens
+        IERC20(token0).approve(permit2, type(uint256).max);
+        IERC20(token1).approve(permit2, type(uint256).max);
+        IPermit2(permit2).approve(token0, positionManager, uint160(available0), uint48(block.timestamp + 3600));
+        IPermit2(permit2).approve(token1, positionManager, uint160(available1), uint48(block.timestamp + 3600));
 
-        try IPositionManager(positionManager).mint(params, deadline, address(this)) returns (
-            uint256 _tokenId, uint128 _liquidityMinted, uint256 _amount0, uint256 _amount1
-        ) {
-            tokenId = _tokenId;
-            liquidityMinted = _liquidityMinted;
-            amount0Used = _amount0;
-            amount1Used = _amount1;
-        } catch {
+        // Build modifyLiquidities call with MINT_POSITION + SETTLE_PAIR actions
+        bytes memory actions =
+            abi.encodePacked(uint8(PositionManagerActions.MINT_POSITION), uint8(PositionManagerActions.SETTLE_PAIR));
+        bytes[] memory params = new bytes[](2);
+
+        // Param 0: MintParams - (poolKey, tickLower, tickUpper, liquidity, amount0Max, amount1Max, owner, hookData)
+        params[0] = abi.encode(
+            poolKey,
+            tickLower,
+            tickUpper,
+            liquidityAmount,
+            uint128(amount0Max),
+            uint128(amount1Max),
+            address(this), // owner - mint to this contract first
+            hookData
+        );
+
+        // Param 1: SETTLE_PAIR (currency0, currency1)
+        params[1] = abi.encode(poolKey.currency0, poolKey.currency1);
+
+        // Encode the full unlockData
+        bytes memory unlockData = abi.encode(actions, params);
+
+        // Execute mint via modifyLiquidities
+        try IPositionManager(positionManager).modifyLiquidities(unlockData, deadline) {
+        // Success - tokenId was set above
+        }
+        catch {
             revert LiquidityProvisionFailed();
         }
 
@@ -886,8 +904,12 @@ contract TLswapRegister is ReentrancyGuard {
         // Pay execution fee (from remaining tokens if any, or handled separately)
         // Note: For LP operations, execution fee could be handled differently
 
+        // Calculate amounts used (what was spent from available)
+        uint256 amount0Used = available0 - IERC20(token0).balanceOf(address(this));
+        uint256 amount1Used = available1 - IERC20(token1).balanceOf(address(this));
+
         emit LiquidityProvisionExecuted(
-            orderId, msg.sender, recipient, tokenId, liquidityMinted, amount0Used, amount1Used
+            orderId, msg.sender, recipient, tokenId, uint128(liquidityAmount), amount0Used, amount1Used
         );
 
         return tokenId;

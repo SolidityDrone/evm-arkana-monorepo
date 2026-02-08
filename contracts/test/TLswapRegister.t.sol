@@ -188,7 +188,8 @@ contract TLswapRegisterTest is Test {
 
         // Must be called by Arkana
         vm.prank(address(arkana));
-        bytes32 orderId = tlswapRegister.registerEncryptedOrder(newNonceCommitment, ciphertext, orderHashes, tokenIn, operationType);
+        bytes32 orderId =
+            tlswapRegister.registerEncryptedOrder(newNonceCommitment, ciphertext, orderHashes, tokenIn, operationType);
 
         assertEq(orderId, newNonceCommitment, "Order ID should match newNonceCommitment");
         assertEq(
@@ -211,7 +212,8 @@ contract TLswapRegisterTest is Test {
         uint8 operationType = 1; // LIQUIDITY
 
         vm.prank(address(arkana));
-        bytes32 orderId = tlswapRegister.registerEncryptedOrder(newNonceCommitment, ciphertext, orderHashes, tokenIn, operationType);
+        bytes32 orderId =
+            tlswapRegister.registerEncryptedOrder(newNonceCommitment, ciphertext, orderHashes, tokenIn, operationType);
 
         assertEq(orderId, newNonceCommitment, "Order ID should match newNonceCommitment");
         // Check operation type is stored correctly

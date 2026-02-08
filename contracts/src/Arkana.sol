@@ -1073,6 +1073,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         return rootAfterNoteLeaf;
     }
 
+    //TODO: contract size is too vig, should rework the contract structure, but i have no time atm. Ideally absorb alone is useless would be better to combo with Withdraw / Send
     //function absorb(bytes calldata proof, bytes32[] calldata publicInputs) public {}
     //TODO::to implement later while prioritizing more important stuff
 

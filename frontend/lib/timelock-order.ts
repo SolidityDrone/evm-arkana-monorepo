@@ -58,7 +58,21 @@ export interface PoolKey {
     hooks: string;
 }
 
-// Liquidity order parameters
+// Swap directive for liquidity orders - EXACT_OUT swap (to get second token)
+export interface SwapDirective {
+    // Exact amount of output tokens desired (EXACT_OUT swap)
+    amountOut: string | bigint;
+    // Maximum amount of input tokens willing to spend
+    amountInMax: string | bigint;
+    // Slippage tolerance in basis points (applied to amountInMax)
+    slippageBps: number;
+    // Token to swap to (the second token needed for LP)
+    tokenOut: string;
+    // Pool fee for the swap (to identify correct V4 pool)
+    poolFee: number;
+}
+
+// Liquidity order parameters (includes swap directive to get second token)
 export interface LiquidityOrder {
     sharesAmount?: string | bigint;
     poolKey?: PoolKey;
@@ -69,6 +83,8 @@ export interface LiquidityOrder {
     deadline?: number;
     executionFeeBps?: number;
     recipient?: string;
+    // Swap directive to convert part of withdrawn token to second token
+    swapDirective?: SwapDirective;
 }
 
 export interface TimelockEncryption {
@@ -151,7 +167,10 @@ export function computeOrderHash(
 
 /**
  * Compute keccak256 hash of LIQUIDITY order parameters for integrity validation
- * Must match Solidity: keccak256(abi.encode(sharesAmount, poolKeyHash, tickLower, tickUpper, amount0Max, amount1Max, deadline, executionFeeBps, recipient, drandRound))
+ * Includes swap directive parameters for getting the second token
+ * Must match Solidity: keccak256(abi.encode(sharesAmount, poolKeyHash, tickLower, tickUpper, amount0Max, amount1Max, 
+ *                                           swapSharesAmount, swapAmountOutMin, swapSlippageBps, swapTokenOut,
+ *                                           deadline, executionFeeBps, recipient, drandRound))
  */
 export function computeLiquidityOrderHash(
     sharesAmount: bigint,
@@ -160,6 +179,7 @@ export function computeLiquidityOrderHash(
     tickUpper: number,
     amount0Max: bigint,
     amount1Max: bigint,
+    swapDirective: SwapDirective | undefined,
     deadline: number,
     executionFeeBps: number,
     recipient: string,
@@ -178,9 +198,17 @@ export function computeLiquidityOrderHash(
     );
     const poolKeyHash = keccak256(poolKeyEncoded);
 
-    // Encode all parameters
+    // Extract swap directive values (default to 0 if not provided)
+    // EXACT_OUT swap: amountOut is the exact output, amountInMax is max input
+    const swapAmountOut = swapDirective ? BigInt(swapDirective.amountOut.toString()) : 0n;
+    const swapAmountInMax = swapDirective ? BigInt(swapDirective.amountInMax.toString()) : 0n;
+    const swapSlippageBps = swapDirective ? swapDirective.slippageBps : 0;
+    const swapTokenOut = swapDirective ? swapDirective.tokenOut : '0x0000000000000000000000000000000000000000';
+    const swapPoolFee = swapDirective ? swapDirective.poolFee : 0;
+
+    // Encode all parameters including swap directive
     const encoded = encodeAbiParameters(
-        parseAbiParameters('uint256, bytes32, int24, int24, uint256, uint256, uint256, uint256, address, uint256'),
+        parseAbiParameters('uint256, bytes32, int24, int24, uint256, uint256, uint256, uint256, uint16, address, uint24, uint256, uint256, address, uint256'),
         [
             sharesAmount,
             poolKeyHash,
@@ -188,6 +216,11 @@ export function computeLiquidityOrderHash(
             tickUpper,
             amount0Max,
             amount1Max,
+            swapAmountOut,
+            swapAmountInMax,
+            swapSlippageBps,
+            swapTokenOut as `0x${string}`,
+            swapPoolFee,
             BigInt(deadline),
             BigInt(executionFeeBps),
             recipient as `0x${string}`,
@@ -715,7 +748,7 @@ export async function createLiquidityOrderChain(
         const round = startRound + (i * roundStep);
         const chunkIndex = i;
 
-        // Create liquidity order JSON
+        // Create liquidity order JSON with swap directive
         const orderData: any = {
             operationType: OperationType.LIQUIDITY,
             sharesAmount: order.sharesAmount?.toString() || '0',
@@ -724,6 +757,14 @@ export async function createLiquidityOrderChain(
             tickUpper: order.tickUpper || 0,
             amount0Max: order.amount0Max?.toString() || '0',
             amount1Max: order.amount1Max?.toString() || '0',
+            // Swap directive for getting second token (EXACT_OUT - uses same deadline/round as LP)
+            swapDirective: order.swapDirective ? {
+                amountOut: order.swapDirective.amountOut.toString(),
+                amountInMax: order.swapDirective.amountInMax.toString(),
+                slippageBps: order.swapDirective.slippageBps,
+                tokenOut: order.swapDirective.tokenOut,
+                poolFee: order.swapDirective.poolFee
+            } : null,
             deadline: order.deadline || 0,
             executionFeeBps: order.executionFeeBps || 0,
             recipient: order.recipient || '',
@@ -777,7 +818,7 @@ export async function createLiquidityOrderChain(
         encryptedOrders.unshift(encryptedOrder);
     }
 
-    // Compute keccak256 hashes for each liquidity order chunk
+    // Compute keccak256 hashes for each liquidity order chunk (including swap directive)
     const orderHashes: `0x${string}`[] = [];
     for (let i = 0; i < orders.length; i++) {
         const order = orders[i];
@@ -792,6 +833,7 @@ export async function createLiquidityOrderChain(
             order.tickUpper || 0,
             BigInt(order.amount0Max?.toString() || '0'),
             BigInt(order.amount1Max?.toString() || '0'),
+            order.swapDirective, // Include swap directive in hash
             order.deadline || 0,
             order.executionFeeBps || 0,
             order.recipient || '',

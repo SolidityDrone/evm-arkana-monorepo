@@ -14,7 +14,9 @@ import {
     getCurrentRound,
     getRoundTimestamp,
     type DecryptedOrder,
-    type EncryptedOrderData
+    type EncryptedOrderData,
+    isSwapOrder,
+    isLiquidityOrder
 } from '@/lib/timelock-decrypt';
 import { ensureBufferPolyfill } from '@/lib/buffer-polyfill';
 import { Button } from '@/components/ui/button';
@@ -46,6 +48,7 @@ interface OrderStatus {
     pendingChunks: PendingChunk[];
     nonceCommitment?: string;
     currentRound: number;
+    operationType?: number; // 0 = SWAP, 1 = LIQUIDITY
 }
 
 export function DecryptOrder() {
@@ -71,11 +74,11 @@ export function DecryptOrder() {
     const [executingChunk, setExecutingChunk] = useState<number | null>(null);
     const [executeError, setExecuteError] = useState<string | null>(null);
     const [simulationResult, setSimulationResult] = useState<{ chunkIndex: number; success: boolean; error?: string } | null>(null);
-    
+
     // Transaction execution
     const { writeContract, data: txHash, isPending: isExecuting, error: executeTxError } = useWriteContract();
-    const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({ 
-        hash: txHash 
+    const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({
+        hash: txHash
     });
 
     // Derive user key from signature on mount
@@ -222,7 +225,26 @@ export function DecryptOrder() {
 
             // Compute nonce commitment
             const commitment = await computeNonceCommitment(selectedToken, nonce);
-            setStatus(prev => ({ ...prev, nonceCommitment: commitment }));
+
+            // Fetch operation type from contract
+            let operationType: number | undefined;
+            if (publicClient) {
+                try {
+                    operationType = await publicClient.readContract({
+                        address: TLSWAP_REGISTER_ADDRESS as Address,
+                        abi: TLSWAP_REGISTER_ABI,
+                        functionName: 'orderOperationType',
+                        args: [commitment as `0x${string}`],
+                    }) as number;
+                } catch (e) {
+                    console.warn('Could not fetch operation type, defaulting to SWAP:', e);
+                    operationType = 0; // Default to SWAP
+                }
+            } else {
+                operationType = 0; // Default to SWAP if no public client
+            }
+
+            setStatus(prev => ({ ...prev, nonceCommitment: commitment, operationType }));
 
             // Fetch data from contract
             const ipfsCid = await fetchEncryptedOrder(commitment);
@@ -263,6 +285,18 @@ export function DecryptOrder() {
 
         try {
             const order = chunk.order;
+
+            // Check if this is a swap order (only swaps can be simulated with executeV4SwapIntent)
+            if (!isSwapOrder(order)) {
+                setSimulationResult({
+                    chunkIndex: chunk.chunkIndex,
+                    success: false,
+                    error: 'Liquidity operations use executeLiquidityProvision (not swap simulation)'
+                });
+                setExecutingChunk(null);
+                return;
+            }
+
             // executeV4SwapIntent builds swap calldata internally from poolKey
 
             // First check if order hashes are registered and get operation type + router
@@ -304,17 +338,6 @@ export function DecryptOrder() {
                     chunkIndex: chunk.chunkIndex,
                     success: false,
                     error: 'No order hashes registered. Did you withdraw with orderHashes?'
-                });
-                setExecutingChunk(null);
-                return;
-            }
-
-            // Check if this is a liquidity operation
-            if (operationType === 1) {
-                setSimulationResult({
-                    chunkIndex: chunk.chunkIndex,
-                    success: false,
-                    error: 'Liquidity operations use executeLiquidityProvision (not swap simulation)'
                 });
                 setExecutingChunk(null);
                 return;
@@ -458,6 +481,550 @@ address hooks = 0x0000000000000000000000000000000000000000;
             setExecutingChunk(null);
         }
     }, [status.nonceCommitment, selectedToken, walletAddress, publicClient]);
+
+    // Execute swap intent (sends actual transaction)
+    const handleExecuteSwap = useCallback(async (chunk: DecryptedChunk) => {
+        if (!status.nonceCommitment || !selectedToken || !walletAddress || !publicClient) {
+            setExecuteError('Missing required data for execution');
+            return;
+        }
+
+        setExecutingChunk(chunk.chunkIndex);
+        setExecuteError(null);
+
+        try {
+            const order = chunk.order;
+
+            // Check if this is a swap order (only swaps can be executed with executeV4SwapIntent)
+            if (!isSwapOrder(order)) {
+                setExecuteError('Liquidity operations use executeLiquidityProvision (not swap execution)');
+                setExecutingChunk(null);
+                return;
+            }
+
+            // Fetch stored hashes and tokenIn from contract
+            const [storedHashes, tokenIn, uniswapRouter] = await Promise.all([
+                publicClient.readContract({
+                    address: TLSWAP_REGISTER_ADDRESS as Address,
+                    abi: TLSWAP_REGISTER_ABI,
+                    functionName: 'getOrderChunkHashes',
+                    args: [status.nonceCommitment as `0x${string}`]
+                }) as Promise<readonly `0x${string}`[]>,
+                publicClient.readContract({
+                    address: TLSWAP_REGISTER_ADDRESS as Address,
+                    abi: TLSWAP_REGISTER_ABI,
+                    functionName: 'orderTokenIn',
+                    args: [status.nonceCommitment as `0x${string}`]
+                }) as Promise<Address>,
+                publicClient.readContract({
+                    address: TLSWAP_REGISTER_ADDRESS as Address,
+                    abi: TLSWAP_REGISTER_ABI,
+                    functionName: 'uniswapRouter',
+                    args: []
+                }) as Promise<Address>
+            ]);
+
+            if (!uniswapRouter || uniswapRouter === '0x0000000000000000000000000000000000000000') {
+                setExecuteError('Uniswap router not configured in TLswapRegister contract');
+                setExecutingChunk(null);
+                return;
+            }
+
+            // Use tokenIn from contract, fallback to selectedToken if not set
+            const actualTokenIn = tokenIn && tokenIn !== '0x0000000000000000000000000000000000000000'
+                ? tokenIn
+                : selectedToken as Address;
+
+            // Build PoolKey: currency0 must be < currency1 (sorted by address)
+            const tokenInLower = actualTokenIn.toLowerCase();
+            const tokenOutLower = (order.tokenOut as string).toLowerCase();
+            const currency0 = tokenInLower < tokenOutLower ? actualTokenIn : order.tokenOut as Address;
+            const currency1 = tokenInLower < tokenOutLower ? order.tokenOut as Address : actualTokenIn;
+
+            const poolKey = {
+                currency0: currency0 as Address,
+                currency1: currency1 as Address,
+                fee: 3000, // 0.3% fee tier
+                tickSpacing: 60, // Common tick spacing for 0.3% pools
+                hooks: '0x0000000000000000000000000000000000000000' as Address, // No hooks
+            };
+
+            console.log('🚀 Executing V4 swap intent:', {
+                orderId: status.nonceCommitment,
+                chunkIndex: chunk.chunkIndex,
+                poolKey,
+                sharesAmount: order.sharesAmount,
+                amountOutMin: order.amountOutMin,
+            });
+            console.log('📋 FOUNDRY TEST PARAMETERS:');
+            console.log('-----------------------------');
+            console.log(`bytes32 orderId = ${status.nonceCommitment};`);
+            console.log(`uint256 chunkIndex = ${chunk.chunkIndex};`);
+            console.log(`address intentor = ${walletAddress};`);
+            console.log(`address tokenAddress = ${selectedToken};`);
+            console.log(`uint256 sharesAmount = ${order.sharesAmount};`);
+            console.log(`address tokenIn = ${actualTokenIn};`);
+            console.log(`address tokenOut = ${order.tokenOut};`);
+            console.log(`uint256 amountOutMin = ${order.amountOutMin};`);
+            console.log(`uint16 slippageBps = ${order.slippageBps};`);
+            console.log(`uint256 deadline = ${order.deadline};`);
+            console.log(`uint256 executionFeeBps = ${order.executionFeeBps};`);
+            console.log(`address recipient = ${order.recipient};`);
+            console.log(`uint256 drandRound = ${chunk.round};`);
+            console.log(`uint256 prevHash = ${order.prevHash};`);
+            console.log(`uint256 nextHash = ${order.nextHash};`);
+            console.log(`// PoolKey:`);
+            console.log(`address currency0 = ${currency0};`);
+            console.log(`address currency1 = ${currency1};`);
+            console.log(`uint24 fee = 3000;`);
+            console.log(`int24 tickSpacing = 60;`);
+            console.log(`address hooks = 0x0000000000000000000000000000000000000000;`);
+            console.log('-----------------------------');
+
+            // Send transaction
+            writeContract({
+                address: TLSWAP_REGISTER_ADDRESS as Address,
+                abi: TLSWAP_REGISTER_ABI,
+                functionName: 'executeV4SwapIntent',
+                args: [
+                    status.nonceCommitment as `0x${string}`,
+                    BigInt(chunk.chunkIndex),
+                    walletAddress,
+                    selectedToken as Address,
+                    BigInt(order.sharesAmount),
+                    poolKey, // PoolKey tuple
+                    BigInt(order.amountOutMin),
+                    order.slippageBps,
+                    BigInt(order.deadline),
+                    BigInt(order.executionFeeBps),
+                    order.recipient as Address,
+                    BigInt(chunk.round),
+                    BigInt(order.prevHash),
+                    BigInt(order.nextHash),
+                ],
+            });
+        } catch (e: any) {
+            let errorMsg = 'Execution failed';
+            const errorName = e?.cause?.data?.errorName || e?.data?.errorName;
+
+            const errorMap: Record<string, string> = {
+                'OrderChunkNotFound': 'Order chunk hashes not registered on-chain',
+                'InvalidOrderHash': 'Order params do not match registered hash (tamper check)',
+                'IntentExpired': 'Order deadline has passed',
+                'InvalidAmounts': 'Invalid amounts (amountOutMin=0 or tokenIn==tokenOut)',
+                'InvalidSlippage': 'Slippage > 10% (1000 bps)',
+                'InvalidRound': 'dRand round not yet available',
+                'HashChainNodeAlreadyUsed': 'This hash chain node already executed',
+            };
+
+            if (errorName && errorMap[errorName]) {
+                errorMsg = errorMap[errorName];
+            } else if (e?.cause?.reason) {
+                errorMsg = e.cause.reason;
+            } else if (errorName) {
+                errorMsg = errorName;
+            } else if (e?.shortMessage) {
+                errorMsg = e.shortMessage;
+            }
+
+            console.error('Execution error:', e);
+            setExecuteError(errorMsg);
+        } finally {
+            setExecutingChunk(null);
+        }
+    }, [status.nonceCommitment, selectedToken, walletAddress, publicClient, writeContract]);
+
+    // Simulate liquidity provision execution
+    const handleSimulateLiquidity = useCallback(async (chunk: DecryptedChunk) => {
+        if (!status.nonceCommitment || !selectedToken || !walletAddress || !publicClient) {
+            setExecuteError('Missing required data for simulation');
+            return;
+        }
+
+        setExecutingChunk(chunk.chunkIndex);
+        setExecuteError(null);
+        setSimulationResult(null);
+
+        try {
+            const order = chunk.order;
+
+            if (!isLiquidityOrder(order)) {
+                setSimulationResult({
+                    chunkIndex: chunk.chunkIndex,
+                    success: false,
+                    error: 'Order is not a liquidity order'
+                });
+                setExecutingChunk(null);
+                return;
+            }
+
+            // Fetch stored hashes and tokenIn from contract
+            const [storedHashes, tokenIn] = await Promise.all([
+                publicClient.readContract({
+                    address: TLSWAP_REGISTER_ADDRESS as Address,
+                    abi: TLSWAP_REGISTER_ABI,
+                    functionName: 'getOrderChunkHashes',
+                    args: [status.nonceCommitment as `0x${string}`],
+                }) as Promise<`0x${string}`[]>,
+                publicClient.readContract({
+                    address: TLSWAP_REGISTER_ADDRESS as Address,
+                    abi: TLSWAP_REGISTER_ABI,
+                    functionName: 'orderTokenIn',
+                    args: [status.nonceCommitment as `0x${string}`],
+                }) as Promise<Address>,
+            ]);
+
+            if (!storedHashes || storedHashes.length === 0) {
+                setSimulationResult({
+                    chunkIndex: chunk.chunkIndex,
+                    success: false,
+                    error: 'No order hashes registered. Did you withdraw with orderHashes?'
+                });
+                setExecutingChunk(null);
+                return;
+            }
+
+            // Validate required fields
+            console.log('🔍 Validating order for simulation:', {
+                sharesAmount: order.sharesAmount,
+                poolKey: order.poolKey,
+                tickLower: order.tickLower,
+                tickUpper: order.tickUpper,
+                amount0Max: order.amount0Max,
+                amount1Max: order.amount1Max,
+                swapDirective: order.swapDirective,
+                deadline: order.deadline,
+                recipient: order.recipient,
+                fullOrder: order,
+            });
+            
+            if (!order.sharesAmount) {
+                setSimulationResult({
+                    chunkIndex: chunk.chunkIndex,
+                    success: false,
+                    error: 'Order missing sharesAmount. Please create a new order.'
+                });
+                setExecutingChunk(null);
+                return;
+            }
+
+            // Use tokenIn from contract, fallback to selectedToken if not set
+            const actualTokenIn = tokenIn && tokenIn !== '0x0000000000000000000000000000000000000000'
+                ? tokenIn
+                : selectedToken as Address;
+
+            const poolKey = {
+                currency0: order.poolKey?.currency0 as Address,
+                currency1: order.poolKey?.currency1 as Address,
+                fee: order.poolKey?.fee || 0,
+                tickSpacing: order.poolKey?.tickSpacing || 0,
+                hooks: (order.poolKey?.hooks || '0x0000000000000000000000000000000000000000') as Address,
+            };
+
+            // Build swap directive (defaults to zero if not provided)
+            const swapDirective = {
+                amountOut: BigInt(order.swapDirective?.amountOut || '0'),
+                amountInMax: BigInt(order.swapDirective?.amountInMax || '0'),
+                slippageBps: order.swapDirective?.slippageBps || 0,
+                tokenOut: (order.swapDirective?.tokenOut || '0x0000000000000000000000000000000000000000') as Address,
+                poolFee: order.swapDirective?.poolFee || 0,
+            };
+
+            const simArgs = {
+                orderId: status.nonceCommitment,
+                chunkIndex: chunk.chunkIndex,
+                storedHash: storedHashes[chunk.chunkIndex] || 'N/A',
+                intentor: walletAddress,
+                tokenAddress: selectedToken,
+                sharesAmount: order.sharesAmount,
+                tokenIn: actualTokenIn,
+                poolKey,
+                tickLower: order.tickLower,
+                tickUpper: order.tickUpper,
+                amount0Max: order.amount0Max,
+                amount1Max: order.amount1Max,
+                swapDirective,
+                deadline: order.deadline,
+                executionFeeBps: order.executionFeeBps,
+                recipient: order.recipient,
+                drandRound: chunk.round,
+                prevHash: order.prevHash,
+                nextHash: order.nextHash,
+            };
+
+            console.log('🔍 Simulating liquidity provision with args:', simArgs);
+            console.log('📋 FOUNDRY TEST PARAMETERS:');
+            console.log('-----------------------------');
+            console.log(`bytes32 orderId = ${status.nonceCommitment};`);
+            console.log(`uint256 chunkIndex = ${chunk.chunkIndex};`);
+            console.log(`address tokenAddress = ${selectedToken};`);
+            console.log(`uint256 sharesAmount = ${order.sharesAmount};`);
+            console.log(`PoolKey memory poolKey = PoolKey({`);
+            console.log(`    currency0: ${poolKey.currency0},`);
+            console.log(`    currency1: ${poolKey.currency1},`);
+            console.log(`    fee: ${poolKey.fee},`);
+            console.log(`    tickSpacing: ${poolKey.tickSpacing},`);
+            console.log(`    hooks: ${poolKey.hooks}`);
+            console.log(`});`);
+            console.log(`int24 tickLower = ${order.tickLower};`);
+            console.log(`int24 tickUpper = ${order.tickUpper};`);
+            console.log(`uint256 amount0Max = ${order.amount0Max};`);
+            console.log(`uint256 amount1Max = ${order.amount1Max};`);
+            console.log(`SwapDirective memory swapDirective = SwapDirective({`);
+            console.log(`    amountOut: ${swapDirective.amountOut},`);
+            console.log(`    amountInMax: ${swapDirective.amountInMax},`);
+            console.log(`    slippageBps: ${swapDirective.slippageBps},`);
+            console.log(`    tokenOut: ${swapDirective.tokenOut},`);
+            console.log(`    poolFee: ${swapDirective.poolFee}`);
+            console.log(`});`);
+            console.log(`uint256 deadline = ${order.deadline};`);
+            console.log(`uint256 executionFeeBps = ${order.executionFeeBps};`);
+            console.log(`address recipient = ${order.recipient};`);
+            console.log(`uint256 drandRound = ${chunk.round};`);
+            console.log(`bytes memory hookData = "";`);
+            console.log(`uint256 prevHash = ${order.prevHash};`);
+            console.log(`uint256 nextHash = ${order.nextHash};`);
+            console.log('-----------------------------');
+
+            await publicClient.simulateContract({
+                address: TLSWAP_REGISTER_ADDRESS as Address,
+                abi: TLSWAP_REGISTER_ABI,
+                functionName: 'executeLiquidityProvision',
+                account: walletAddress,
+                args: [
+                    status.nonceCommitment as `0x${string}`,
+                    BigInt(chunk.chunkIndex),
+                    selectedToken as Address,
+                    BigInt(order.sharesAmount || '0'),
+                    poolKey,
+                    order.tickLower || 0,
+                    order.tickUpper || 0,
+                    BigInt(order.amount0Max || '0'),
+                    BigInt(order.amount1Max || '0'),
+                    swapDirective,
+                    BigInt(order.deadline || 0),
+                    BigInt(order.executionFeeBps || 0),
+                    order.recipient as Address,
+                    BigInt(chunk.round),
+                    '0x' as `0x${string}`, // hookData
+                    BigInt(order.prevHash || '0'),
+                    BigInt(order.nextHash || '0'),
+                ],
+            });
+
+            setSimulationResult({ chunkIndex: chunk.chunkIndex, success: true });
+        } catch (e: any) {
+            let errorMsg = 'Simulation failed';
+            const errorName = e?.cause?.data?.errorName || e?.data?.errorName;
+
+            const errorMap: Record<string, string> = {
+                'OrderChunkNotFound': 'Order chunk hashes not registered on-chain',
+                'InvalidOrderHash': 'Order params do not match registered hash (tamper check)',
+                'IntentExpired': 'Order deadline has passed',
+                'InvalidAmounts': 'Invalid amounts',
+                'InvalidSlippage': 'Slippage > 10% (1000 bps)',
+                'InvalidRound': 'dRand round not yet available',
+                'HashChainNodeAlreadyUsed': 'This hash chain node already executed',
+            };
+
+            if (errorName && errorMap[errorName]) {
+                errorMsg = errorMap[errorName];
+            } else if (e?.cause?.reason) {
+                errorMsg = e.cause.reason;
+            } else if (errorName) {
+                errorMsg = errorName;
+            } else if (e?.shortMessage) {
+                errorMsg = e.shortMessage;
+            }
+
+            console.error('Simulation error:', { errorName, cause: e?.cause, data: e?.cause?.data });
+            setSimulationResult({ chunkIndex: chunk.chunkIndex, success: false, error: errorMsg });
+        } finally {
+            setExecutingChunk(null);
+        }
+    }, [status.nonceCommitment, selectedToken, walletAddress, publicClient]);
+
+    // Execute liquidity provision (sends actual transaction)
+    const handleExecuteLiquidity = useCallback(async (chunk: DecryptedChunk) => {
+        if (!status.nonceCommitment || !selectedToken || !walletAddress || !publicClient) {
+            setExecuteError('Missing required data for execution');
+            return;
+        }
+
+        setExecutingChunk(chunk.chunkIndex);
+        setExecuteError(null);
+
+        try {
+            const order = chunk.order;
+
+            if (!isLiquidityOrder(order)) {
+                setExecuteError('Order is not a liquidity order');
+                setExecutingChunk(null);
+                return;
+            }
+
+            // Fetch stored hashes and tokenIn from contract
+            const [storedHashes, tokenIn] = await Promise.all([
+                publicClient.readContract({
+                    address: TLSWAP_REGISTER_ADDRESS as Address,
+                    abi: TLSWAP_REGISTER_ABI,
+                    functionName: 'getOrderChunkHashes',
+                    args: [status.nonceCommitment as `0x${string}`]
+                }) as Promise<readonly `0x${string}`[]>,
+                publicClient.readContract({
+                    address: TLSWAP_REGISTER_ADDRESS as Address,
+                    abi: TLSWAP_REGISTER_ABI,
+                    functionName: 'orderTokenIn',
+                    args: [status.nonceCommitment as `0x${string}`]
+                }) as Promise<Address>
+            ]);
+
+            // Validate required fields
+            if (!order.sharesAmount) {
+                setExecuteError('Order missing sharesAmount. Please create a new order.');
+                setExecutingChunk(null);
+                return;
+            }
+
+            // Use tokenIn from contract, fallback to selectedToken if not set
+            const actualTokenIn = tokenIn && tokenIn !== '0x0000000000000000000000000000000000000000'
+                ? tokenIn
+                : selectedToken as Address;
+
+            const poolKey = {
+                currency0: (order.poolKey?.currency0 || '0x0000000000000000000000000000000000000000') as Address,
+                currency1: (order.poolKey?.currency1 || '0x0000000000000000000000000000000000000000') as Address,
+                fee: order.poolKey?.fee || 0,
+                tickSpacing: order.poolKey?.tickSpacing || 0,
+                hooks: (order.poolKey?.hooks || '0x0000000000000000000000000000000000000000') as Address,
+            };
+
+            // Build swap directive (defaults to zero if not provided)
+            const swapDirective = {
+                amountOut: BigInt(order.swapDirective?.amountOut || '0'),
+                amountInMax: BigInt(order.swapDirective?.amountInMax || '0'),
+                slippageBps: order.swapDirective?.slippageBps || 0,
+                tokenOut: (order.swapDirective?.tokenOut || '0x0000000000000000000000000000000000000000') as Address,
+                poolFee: order.swapDirective?.poolFee || 0,
+            };
+
+            console.log('🚀 Executing liquidity provision:', {
+                orderId: status.nonceCommitment,
+                chunkIndex: chunk.chunkIndex,
+                poolKey,
+                sharesAmount: order.sharesAmount,
+                tickLower: order.tickLower,
+                tickUpper: order.tickUpper,
+                amount0Max: order.amount0Max,
+                amount1Max: order.amount1Max,
+                swapDirective,
+            });
+            console.log('📋 FOUNDRY TEST PARAMETERS:');
+            console.log('-----------------------------');
+            console.log(`bytes32 orderId = ${status.nonceCommitment};`);
+            console.log(`uint256 chunkIndex = ${chunk.chunkIndex};`);
+            console.log(`address tokenAddress = ${selectedToken};`);
+            console.log(`uint256 sharesAmount = ${order.sharesAmount};`);
+            console.log(`PoolKey memory poolKey = PoolKey({`);
+            console.log(`    currency0: ${poolKey.currency0},`);
+            console.log(`    currency1: ${poolKey.currency1},`);
+            console.log(`    fee: ${poolKey.fee},`);
+            console.log(`    tickSpacing: ${poolKey.tickSpacing},`);
+            console.log(`    hooks: ${poolKey.hooks}`);
+            console.log(`});`);
+            console.log(`int24 tickLower = ${order.tickLower};`);
+            console.log(`int24 tickUpper = ${order.tickUpper};`);
+            console.log(`uint256 amount0Max = ${order.amount0Max};`);
+            console.log(`uint256 amount1Max = ${order.amount1Max};`);
+            console.log(`SwapDirective memory swapDirective = SwapDirective({`);
+            console.log(`    amountOut: ${swapDirective.amountOut},`);
+            console.log(`    amountInMax: ${swapDirective.amountInMax},`);
+            console.log(`    slippageBps: ${swapDirective.slippageBps},`);
+            console.log(`    tokenOut: ${swapDirective.tokenOut},`);
+            console.log(`    poolFee: ${swapDirective.poolFee}`);
+            console.log(`});`);
+            console.log(`uint256 deadline = ${order.deadline};`);
+            console.log(`uint256 executionFeeBps = ${order.executionFeeBps};`);
+            console.log(`address recipient = ${order.recipient};`);
+            console.log(`uint256 drandRound = ${chunk.round};`);
+            console.log(`bytes memory hookData = "";`);
+            console.log(`uint256 prevHash = ${order.prevHash};`);
+            console.log(`uint256 nextHash = ${order.nextHash};`);
+            console.log('-----------------------------');
+
+            // Validate all parameters before sending
+            console.log('🔍 Pre-transaction validation:', {
+                'status.nonceCommitment': status.nonceCommitment,
+                'chunk.chunkIndex': chunk.chunkIndex,
+                'selectedToken': selectedToken,
+                'order.sharesAmount': order.sharesAmount,
+                'order.tickLower': order.tickLower,
+                'order.tickUpper': order.tickUpper,
+                'order.amount0Max': order.amount0Max,
+                'order.amount1Max': order.amount1Max,
+                'order.deadline': order.deadline,
+                'order.executionFeeBps': order.executionFeeBps,
+                'order.recipient': order.recipient,
+                'chunk.round': chunk.round,
+                'order.prevHash': order.prevHash,
+                'order.nextHash': order.nextHash,
+            });
+
+            // Send transaction
+            writeContract({
+                address: TLSWAP_REGISTER_ADDRESS as Address,
+                abi: TLSWAP_REGISTER_ABI,
+                functionName: 'executeLiquidityProvision',
+                args: [
+                    status.nonceCommitment as `0x${string}`,
+                    BigInt(chunk.chunkIndex),
+                    selectedToken as Address,
+                    BigInt(order.sharesAmount || '0'),
+                    poolKey,
+                    order.tickLower || 0,
+                    order.tickUpper || 0,
+                    BigInt(order.amount0Max || '0'),
+                    BigInt(order.amount1Max || '0'),
+                    swapDirective,
+                    BigInt(order.deadline || 0),
+                    BigInt(order.executionFeeBps || 0),
+                    order.recipient as Address,
+                    BigInt(chunk.round),
+                    '0x' as `0x${string}`, // hookData
+                    BigInt(order.prevHash || '0'),
+                    BigInt(order.nextHash || '0'),
+                ],
+            });
+        } catch (e: any) {
+            let errorMsg = 'Execution failed';
+            const errorName = e?.cause?.data?.errorName || e?.data?.errorName;
+
+            const errorMap: Record<string, string> = {
+                'OrderChunkNotFound': 'Order chunk hashes not registered on-chain',
+                'InvalidOrderHash': 'Order params do not match registered hash (tamper check)',
+                'IntentExpired': 'Order deadline has passed',
+                'InvalidAmounts': 'Invalid amounts',
+                'InvalidSlippage': 'Slippage > 10% (1000 bps)',
+                'InvalidRound': 'dRand round not yet available',
+                'HashChainNodeAlreadyUsed': 'This hash chain node already executed',
+            };
+
+            if (errorName && errorMap[errorName]) {
+                errorMsg = errorMap[errorName];
+            } else if (e?.cause?.reason) {
+                errorMsg = e.cause.reason;
+            } else if (errorName) {
+                errorMsg = errorName;
+            } else if (e?.shortMessage) {
+                errorMsg = e.shortMessage;
+            }
+
+            console.error('Execution error:', e);
+            setExecuteError(errorMsg);
+        } finally {
+            setExecutingChunk(null);
+        }
+    }, [status.nonceCommitment, selectedToken, walletAddress, publicClient, writeContract]);
 
     // Format timestamp
     const formatTime = (date: Date) => date.toLocaleString();
@@ -623,25 +1190,52 @@ address hooks = 0x0000000000000000000000000000000000000000;
                                         </span>
                                     </button>
 
-                                    {/* Simulate Button */}
-                                    <Button
-                                        onClick={() => handleSimulateSwap(chunk)}
-                                        disabled={executingChunk !== null}
-                                        className="bg-accent hover:bg-accent/90 text-accent-foreground"
-                                        size="sm"
-                                    >
-                                        {executingChunk === chunk.chunkIndex ? (
-                                            <>
-                                                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                                                Simulating...
-                                            </>
-                                        ) : (
-                                            <>
-                                                <Zap className="w-4 h-4 mr-1" />
-                                                Simulate
-                                            </>
-                                        )}
-                                    </Button>
+                                    <div className="flex gap-2">
+                                        {/* Simulate Button */}
+                                        <Button
+                                            onClick={() => isSwapOrder(chunk.order) ? handleSimulateSwap(chunk) : handleSimulateLiquidity(chunk)}
+                                            disabled={executingChunk !== null || isExecuting || isConfirming}
+                                            className="bg-accent hover:bg-accent/90 text-accent-foreground"
+                                            size="sm"
+                                        >
+                                            {executingChunk === chunk.chunkIndex ? (
+                                                <>
+                                                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                                                    Simulating...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Zap className="w-4 h-4 mr-1" />
+                                                    Simulate
+                                                </>
+                                            )}
+                                        </Button>
+
+                                        {/* Execute Button */}
+                                        <Button
+                                            onClick={() => isSwapOrder(chunk.order) ? handleExecuteSwap(chunk) : handleExecuteLiquidity(chunk)}
+                                            disabled={executingChunk !== null || isExecuting || isConfirming}
+                                            className="bg-primary hover:bg-primary/90 text-primary-foreground"
+                                            size="sm"
+                                        >
+                                            {isExecuting && executingChunk === chunk.chunkIndex ? (
+                                                <>
+                                                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                                                    Executing...
+                                                </>
+                                            ) : isConfirming && txHash ? (
+                                                <>
+                                                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                                                    Confirming...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Zap className="w-4 h-4 mr-1" />
+                                                    {isSwapOrder(chunk.order) ? 'Execute Swap' : 'Execute Liquidity'}
+                                                </>
+                                            )}
+                                        </Button>
+                                    </div>
                                 </div>
 
                                 {/* Simulation Result */}
@@ -651,16 +1245,93 @@ address hooks = 0x0000000000000000000000000000000000000000;
                                     </div>
                                 )}
 
+                                {/* Transaction Status */}
+                                {txHash && (
+                                    <div className="px-3 py-2 text-xs bg-primary/10 border border-primary/30 rounded-sm">
+                                        {isConfirming ? (
+                                            <div className="flex items-center gap-2 text-primary">
+                                                <Loader2 className="w-3 h-3 animate-spin" />
+                                                <span>Transaction submitted, waiting for confirmation...</span>
+                                            </div>
+                                        ) : isConfirmed ? (
+                                            <div className="flex items-center gap-2 text-primary">
+                                                <CheckCircle2 className="w-3 h-3" />
+                                                <span>Transaction confirmed!</span>
+                                            </div>
+                                        ) : (
+                                            <div className="flex items-center gap-2 text-primary">
+                                                <Loader2 className="w-3 h-3 animate-spin" />
+                                                <span>Transaction submitted</span>
+                                            </div>
+                                        )}
+                                        <div className="mt-1 flex items-center gap-2">
+                                            <code className="text-xs text-primary/70 break-all">{txHash}</code>
+                                            <a
+                                                href={`https://sepolia.etherscan.io/tx/${txHash}`}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="text-primary hover:text-primary/80"
+                                            >
+                                                <ExternalLink className="w-3 h-3" />
+                                            </a>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Transaction Error */}
+                                {executeTxError && (
+                                    <div className="px-3 py-2 text-xs bg-destructive/10 text-destructive border border-destructive/30 rounded-sm">
+                                        Transaction error: {executeTxError.message || 'Unknown error'}
+                                    </div>
+                                )}
+
                                 {expandedChunks.has(chunk.chunkIndex) && (
                                     <div className="p-4 space-y-3 bg-card/50">
                                         <div className="grid gap-2 text-sm">
                                             <OrderField label="Shares Amount" value={chunk.order.sharesAmount} />
-                                            <OrderField label="Amount Out Min" value={chunk.order.amountOutMin} />
-                                            <OrderField label="Slippage (BPS)" value={chunk.order.slippageBps.toString()} />
+
+                                            {/* Swap-specific fields */}
+                                            {isSwapOrder(chunk.order) && (
+                                                <>
+                                                    <OrderField label="Amount Out Min" value={chunk.order.amountOutMin} />
+                                                    <OrderField label="Slippage (BPS)" value={chunk.order.slippageBps.toString()} />
+                                                    <OrderField label="Token Out" value={chunk.order.tokenOut} mono />
+                                                </>
+                                            )}
+
+                                            {/* Liquidity-specific fields */}
+                                            {isLiquidityOrder(chunk.order) && (
+                                                <>
+                                                    <OrderField label="Currency 0" value={chunk.order.poolKey.currency0} mono />
+                                                    <OrderField label="Currency 1" value={chunk.order.poolKey.currency1} mono />
+                                                    <OrderField label="Pool Fee" value={chunk.order.poolKey.fee.toString()} />
+                                                    <OrderField label="Tick Spacing" value={chunk.order.poolKey.tickSpacing.toString()} />
+                                                    <OrderField label="Hooks" value={chunk.order.poolKey.hooks} mono />
+                                                    <OrderField label="Tick Lower" value={chunk.order.tickLower.toString()} />
+                                                    <OrderField label="Tick Upper" value={chunk.order.tickUpper.toString()} />
+                                                    <OrderField label="Amount 0 Max" value={chunk.order.amount0Max} />
+                                                    <OrderField label="Amount 1 Max" value={chunk.order.amount1Max} />
+                                                    
+                                                    {/* Swap Directive (EXACT_OUT - to get second token) */}
+                                                    {chunk.order.swapDirective && (
+                                                        <div className="mt-2 pt-2 border-t border-border/30">
+                                                            <span className="text-muted-foreground text-xs font-semibold">Swap Directive (EXACT_OUT Pre-LP)</span>
+                                                            <div className="mt-1 space-y-1">
+                                                                <OrderField label="Amount Out (exact)" value={chunk.order.swapDirective.amountOut} />
+                                                                <OrderField label="Max Input" value={chunk.order.swapDirective.amountInMax} />
+                                                                <OrderField label="Slippage (BPS)" value={chunk.order.swapDirective.slippageBps.toString()} />
+                                                                <OrderField label="Token Out" value={chunk.order.swapDirective.tokenOut} mono />
+                                                                <OrderField label="Pool Fee" value={chunk.order.swapDirective.poolFee.toString()} />
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </>
+                                            )}
+
+                                            {/* Common fields */}
                                             <OrderField label="Deadline" value={new Date(chunk.order.deadline * 1000).toLocaleString()} />
                                             <OrderField label="Recipient" value={chunk.order.recipient} mono />
                                             <OrderField label="Token In" value={selectedToken || 'Loading...'} mono />
-                                            <OrderField label="Token Out" value={chunk.order.tokenOut} mono />
                                             <OrderField label="Execution Fee (BPS)" value={chunk.order.executionFeeBps.toString()} />
                                         </div>
 
@@ -681,7 +1352,7 @@ address hooks = 0x0000000000000000000000000000000000000000;
                                                 </div>
                                             </div>
                                             <p className="text-xs text-muted-foreground mt-2 italic">
-                                                Click &quot;Execute&quot; to test swap with these decrypted params
+                                                Use &quot;Simulate&quot; to test or &quot;Execute Swap&quot; to send the transaction
                                             </p>
                                         </div>
                                     </div>

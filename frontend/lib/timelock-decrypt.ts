@@ -180,7 +180,7 @@ export interface EncryptedOrderData {
     timelock: TimelockData;
 }
 
-export interface DecryptedOrder {
+export interface DecryptedSwapOrder {
     sharesAmount: string;
     amountOutMin: string;
     slippageBps: number;
@@ -191,6 +191,51 @@ export interface DecryptedOrder {
     prevHash: string;
     nextHash: string;
     nextCiphertext?: string;
+}
+
+export interface DecryptedLiquidityOrder {
+    sharesAmount: string;
+    poolKey: {
+        currency0: string;
+        currency1: string;
+        fee: number;
+        tickSpacing: number;
+        hooks: string;
+    };
+    tickLower: number;
+    tickUpper: number;
+    amount0Max: string;
+    amount1Max: string;
+    // Swap directive to get second token before LP
+    swapDirective?: {
+        amountIn: string;
+        amountOutMin: string;
+        slippageBps: number;
+        tokenOut: string;
+        poolFee: number;
+    };
+    deadline: number;
+    executionFeeBps: number;
+    recipient: string;
+    prevHash: string;
+    nextHash: string;
+    nextCiphertext?: string;
+}
+
+export type DecryptedOrder = DecryptedSwapOrder | DecryptedLiquidityOrder;
+
+/**
+ * Type guard to check if an order is a swap order
+ */
+export function isSwapOrder(order: DecryptedOrder): order is DecryptedSwapOrder {
+    return 'tokenOut' in order && 'amountOutMin' in order && 'slippageBps' in order;
+}
+
+/**
+ * Type guard to check if an order is a liquidity order
+ */
+export function isLiquidityOrder(order: DecryptedOrder): order is DecryptedLiquidityOrder {
+    return 'poolKey' in order && 'tickLower' in order && 'tickUpper' in order;
 }
 
 /**

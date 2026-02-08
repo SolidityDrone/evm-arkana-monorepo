@@ -75,6 +75,7 @@ export default function WithdrawPage() {
     const [receiverFeeAmount, setReceiverFeeAmount] = useState('');
     const [arbitraryCalldata, setArbitraryCalldata] = useState('');
     const [arbitraryCalldataHash, setArbitraryCalldataHash] = useState<string>('0x0');
+    const [isCustomSpell, setIsCustomSpell] = useState(false);
     const [isTlSwap, setIsTlSwap] = useState(false);
     const [tlOperationType, setTlOperationType] = useState<'swap' | 'liquidity'>('swap'); // 0 = SWAP, 1 = LIQUIDITY
     const [tlSwapSharesAmounts, setTlSwapSharesAmounts] = useState<string[]>(Array(10).fill('0'));
@@ -96,6 +97,13 @@ export default function WithdrawPage() {
         hooks: string;
         tickLower: string;
         tickUpper: string;
+        amount1Max: string;  // Max amount of second token (USDC) for LP - should match swapAmountOut
+        // Swap directive for liquidity (to get second token) - EXACT_OUT swap
+        swapAmountOut: string;  // Exact amount of second token to receive
+        swapAmountInMax: string;  // Maximum amount of first token to spend
+        swapSlippageBps: string;
+        swapTokenOut: string;
+        swapPoolFee: string;
     }>>([{
         sharesAmount: '',
         amountOutMin: '',
@@ -105,14 +113,21 @@ export default function WithdrawPage() {
         tokenOut: '',
         slippageBps: '50',
         executionFeeBps: '10',
-        // Liquidity defaults
+        // Liquidity defaults - working values from test
         currency0: '',
         currency1: '',
         poolFee: '3000',
         tickSpacing: '60',
         hooks: '0x0000000000000000000000000000000000000000',
-        tickLower: '-887220',
-        tickUpper: '887220',
+        tickLower: '55560',  // Narrow range around current tick (56160 ± 600)
+        tickUpper: '56760',
+        amount1Max: '300000',  // Max USDC for LP (raw units, 6 decimals) - should match swapAmountOut
+        // Swap directive defaults - EXACT_OUT (specify output amount in human-readable format)
+        swapAmountOut: '0.3',      // 0.3 USDC (will be converted to raw units: 300000)
+        swapAmountInMax: '0.00015', // Max 0.00015 WBTC (will be converted to raw units: 15000)
+        swapSlippageBps: '500',   // 5% slippage
+        swapTokenOut: '',
+        swapPoolFee: '3000',
     }]);
     const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
     const [tokenName, setTokenName] = useState<string>('');
@@ -174,12 +189,16 @@ export default function WithdrawPage() {
         }
     }, [isConfirmed, txHash, toast]);
 
-    // Show modal on error
+    // Show modal on error (only during actual transaction submission)
+    // Only show if we have a transaction hash (tx was sent) or are actively submitting
     React.useEffect(() => {
-        if (txError) {
+        if (txError && (hash || isSubmitting || isPending || isConfirming)) {
             setShowTransactionModal(true);
+        } else if (!txError && !isSubmitting && !isPending && !isConfirming) {
+            // Close modal when error is cleared and no transaction is in progress
+            setShowTransactionModal(false);
         }
-    }, [txError]);
+    }, [txError, isSubmitting, isPending, isConfirming, hash]);
 
     // Initialize userKey from existing signature when component mounts (if user is already signed)
     React.useEffect(() => {
@@ -502,16 +521,30 @@ export default function WithdrawPage() {
         }
     }, [tokenAddress, publicClient, aaveTokens]);
 
-    // Load tokenOut info when tokenOut addresses change in TL orders
+    // Load tokenOut info when tokenOut addresses change in TL orders (for swap and liquidity operations)
     useEffect(() => {
         const loadTokenOutInfo = async () => {
             if (!publicClient || tlOrders.length === 0) return;
 
-            const tokenOutAddresses = new Set(
-                tlOrders
-                    .map(order => order.tokenOut?.trim())
-                    .filter((addr): addr is string => !!addr && addr.length === 42 && addr.startsWith('0x'))
-            );
+            // Collect all token addresses that need decimals loaded
+            // For swap mode: order.tokenOut
+            // For liquidity mode: order.swapTokenOut (the second token in swap directive)
+            const tokenOutAddresses = new Set<string>();
+
+            tlOrders.forEach(order => {
+                if (tlOperationType === 'swap' && order.tokenOut?.trim()) {
+                    const addr = order.tokenOut.trim();
+                    if (addr.length === 42 && addr.startsWith('0x')) {
+                        tokenOutAddresses.add(addr);
+                    }
+                }
+                if (tlOperationType === 'liquidity' && order.swapTokenOut?.trim()) {
+                    const addr = order.swapTokenOut.trim();
+                    if (addr.length === 42 && addr.startsWith('0x')) {
+                        tokenOutAddresses.add(addr);
+                    }
+                }
+            });
 
             for (const tokenOutAddr of tokenOutAddresses) {
                 const tokenOutAddrLower = tokenOutAddr.toLowerCase();
@@ -626,7 +659,7 @@ export default function WithdrawPage() {
         };
 
         loadTokenOutInfo();
-    }, [tlOrders, publicClient, aaveTokens, tokenOutInfo, tokenOutDecimals]);
+    }, [tlOrders, publicClient, aaveTokens, tokenOutInfo, tokenOutDecimals, tlOperationType]);
 
     // Update txHash when hash changes
     React.useEffect(() => {
@@ -635,13 +668,13 @@ export default function WithdrawPage() {
         }
     }, [hash]);
 
-    // Update error when writeError changes
+    // Update error when writeError changes (only during actual submission)
     React.useEffect(() => {
-        if (writeError) {
+        if (writeError && isSubmitting) {
             setTxError(writeError.message || 'Transaction failed');
             setIsSubmitting(false);
         }
-    }, [writeError]);
+    }, [writeError, isSubmitting]);
 
     // Reset submitting state when transaction completes
     React.useEffect(() => {
@@ -1241,15 +1274,13 @@ export default function WithdrawPage() {
                 return;
             }
 
-            // Validate that all orders have required fields
+            // Validate that all orders have required fields based on operation type
             for (let i = 0; i < numOrders; i++) {
                 const order = tlOrders[i];
+
+                // Common fields for both swap and liquidity
                 if (!order.sharesAmount || parseFloat(order.sharesAmount) <= 0) {
                     setProofError(`Order ${i + 1}: Shares amount is required and must be greater than 0`);
-                    return;
-                }
-                if (!order.amountOutMin || parseFloat(order.amountOutMin) <= 0) {
-                    setProofError(`Order ${i + 1}: Amount Out Min is required and must be greater than 0`);
                     return;
                 }
                 if (!order.targetRound || parseInt(order.targetRound) <= 0) {
@@ -1264,9 +1295,49 @@ export default function WithdrawPage() {
                     setProofError(`Order ${i + 1}: Valid recipient address is required`);
                     return;
                 }
-                if (!order.tokenOut || !order.tokenOut.startsWith('0x')) {
-                    setProofError(`Order ${i + 1}: Valid token out address is required`);
-                    return;
+
+                // Swap-specific validation
+                if (tlOperationType === 'swap') {
+                    if (!order.amountOutMin || parseFloat(order.amountOutMin) <= 0) {
+                        setProofError(`Order ${i + 1}: Amount Out Min is required and must be greater than 0`);
+                        return;
+                    }
+                    if (!order.tokenOut || !order.tokenOut.startsWith('0x')) {
+                        setProofError(`Order ${i + 1}: Valid token out address is required`);
+                        return;
+                    }
+                }
+
+                // Liquidity-specific validation
+                if (tlOperationType === 'liquidity') {
+                    if (!order.currency0 || !order.currency0.startsWith('0x')) {
+                        setProofError(`Order ${i + 1}: Valid currency0 address is required`);
+                        return;
+                    }
+                    if (!order.currency1 || !order.currency1.startsWith('0x')) {
+                        setProofError(`Order ${i + 1}: Valid currency1 address is required`);
+                        return;
+                    }
+                    if (!order.poolFee || parseInt(order.poolFee) <= 0) {
+                        setProofError(`Order ${i + 1}: Pool fee is required and must be greater than 0`);
+                        return;
+                    }
+                    if (!order.tickSpacing || parseInt(order.tickSpacing) <= 0) {
+                        setProofError(`Order ${i + 1}: Tick spacing is required and must be greater than 0`);
+                        return;
+                    }
+                    if (!order.tickLower || parseInt(order.tickLower) === undefined) {
+                        setProofError(`Order ${i + 1}: Tick lower is required`);
+                        return;
+                    }
+                    if (!order.tickUpper || parseInt(order.tickUpper) === undefined) {
+                        setProofError(`Order ${i + 1}: Tick upper is required`);
+                        return;
+                    }
+                    if (parseInt(order.tickLower) >= parseInt(order.tickUpper)) {
+                        setProofError(`Order ${i + 1}: Tick lower must be less than tick upper`);
+                        return;
+                    }
                 }
             }
         }
@@ -1289,6 +1360,7 @@ export default function WithdrawPage() {
         try {
             setIsProving(true);
             setProofError(null);
+            setTxError(null); // Clear any stale transaction errors
             setProvingTime(null);
             // Reset IPFS and ciphertext state for new proof
             setIpfsCid(null);
@@ -1566,8 +1638,10 @@ export default function WithdrawPage() {
 
                     if (tlOperationType === 'liquidity') {
                         // Create LIQUIDITY orders for Uniswap V4
+                        console.log('📦 Creating liquidity orders with inputs.tl_swap_shares_amounts:', inputs.tl_swap_shares_amounts);
                         const liquidityOrders: LiquidityOrder[] = tlOrders.slice(0, numOrders).map((order, idx) => {
                             const calculatedShares = inputs.tl_swap_shares_amounts[idx] || '0';
+                            console.log(`📦 Order ${idx}: calculatedShares = ${calculatedShares}`);
 
                             // Build PoolKey from order fields
                             const poolKey: PoolKey = {
@@ -1578,19 +1652,107 @@ export default function WithdrawPage() {
                                 hooks: order.hooks || '0x0000000000000000000000000000000000000000',
                             };
 
-                            return {
+                            // Build swap directive if provided (EXACT_OUT swap)
+                            // swapAmountOut: exact amount of second token to receive
+                            // swapAmountInMax: maximum amount of first token to spend
+                            let swapDirective = undefined;
+                            if (order.swapAmountOut && order.swapTokenOut) {
+                                const swapTokenOutLower = order.swapTokenOut.toLowerCase();
+
+                                // Require output token decimals to be available for conversion
+                                if (!tokenOutDecimals[swapTokenOutLower]) {
+                                    throw new Error(`Order ${idx + 1}: Token decimals for swapTokenOut (${order.swapTokenOut}) are required. Please validate the output token first.`);
+                                }
+                                // Require input token decimals to be available for conversion
+                                if (tokenDecimals === null) {
+                                    throw new Error(`Order ${idx + 1}: Token decimals are required for max input conversion. Please validate the input token first.`);
+                                }
+
+                                let amountOutRaw: string | bigint = '0';
+                                let amountInMaxRaw: string | bigint = '0';
+
+                                // Convert swapAmountOut from human-readable format to raw units
+                                // Uses output token decimals
+                                try {
+                                    const decimals = tokenOutDecimals[swapTokenOutLower];
+                                    const sanitizedAmount = order.swapAmountOut.trim().replace(',', '.');
+                                    if (/^\d+\.?\d*$/.test(sanitizedAmount)) {
+                                        const parts = sanitizedAmount.split('.');
+                                        const integerPart = parts[0] || '0';
+                                        const decimalPart = parts[1] || '';
+                                        const limitedDecimal = decimalPart.slice(0, decimals);
+                                        const paddedDecimal = limitedDecimal.padEnd(decimals, '0');
+                                        amountOutRaw = (BigInt(integerPart) * BigInt(10 ** decimals) + BigInt(paddedDecimal)).toString();
+                                    } else {
+                                        throw new Error(`Invalid swapAmountOut format: ${order.swapAmountOut}. Expected a number.`);
+                                    }
+                                } catch (error) {
+                                    console.error(`Error converting swapAmountOut for order ${idx}:`, error);
+                                    throw new Error(`Order ${idx + 1}: Failed to convert swapAmountOut "${order.swapAmountOut}": ${error instanceof Error ? error.message : String(error)}`);
+                                }
+
+                                // Convert swapAmountInMax from human-readable format to raw units
+                                // Uses input token decimals (tokenDecimals)
+                                if (order.swapAmountInMax) {
+                                    try {
+                                        const sanitizedAmount = order.swapAmountInMax.trim().replace(',', '.');
+                                        if (/^\d+\.?\d*$/.test(sanitizedAmount)) {
+                                            const parts = sanitizedAmount.split('.');
+                                            const integerPart = parts[0] || '0';
+                                            const decimalPart = parts[1] || '';
+                                            const limitedDecimal = decimalPart.slice(0, tokenDecimals);
+                                            const paddedDecimal = limitedDecimal.padEnd(tokenDecimals, '0');
+                                            amountInMaxRaw = (BigInt(integerPart) * BigInt(10 ** tokenDecimals) + BigInt(paddedDecimal)).toString();
+                                        } else {
+                                            throw new Error(`Invalid swapAmountInMax format: ${order.swapAmountInMax}. Expected a number.`);
+                                        }
+                                    } catch (error) {
+                                        console.error(`Error converting swapAmountInMax for order ${idx}:`, error);
+                                        throw new Error(`Order ${idx + 1}: Failed to convert swapAmountInMax "${order.swapAmountInMax}": ${error instanceof Error ? error.message : String(error)}`);
+                                    }
+                                }
+
+                                // Default swap pool fee to main pool fee if not explicitly set
+                                const swapPoolFee = order.swapPoolFee
+                                    ? parseInt(order.swapPoolFee)
+                                    : (parseInt(order.poolFee) || 3000);
+
+                                swapDirective = {
+                                    amountOut: amountOutRaw,
+                                    amountInMax: amountInMaxRaw,
+                                    slippageBps: parseInt(order.swapSlippageBps) || 500,
+                                    tokenOut: order.swapTokenOut,
+                                    poolFee: swapPoolFee,
+                                };
+
+                                console.log(`📊 Swap Directive (EXACT_OUT) for Order ${idx + 1}:`, {
+                                    inputSwapAmountOut: order.swapAmountOut,
+                                    inputSwapAmountInMax: order.swapAmountInMax,
+                                    tokenDecimals,
+                                    swapTokenOutDecimals: tokenOutDecimals[swapTokenOutLower],
+                                    convertedAmountOutRaw: amountOutRaw,
+                                    convertedAmountInMaxRaw: amountInMaxRaw,
+                                    swapDirective,
+                                });
+                            }
+
+                            const liquidityOrder = {
                                 sharesAmount: calculatedShares,
                                 poolKey,
                                 tickLower: parseInt(order.tickLower) || -887220,
                                 tickUpper: parseInt(order.tickUpper) || 887220,
                                 amount0Max: BigInt(calculatedShares), // Use shares as max (will be converted on withdrawal)
-                                amount1Max: BigInt(0), // Single-sided liquidity from vault
+                                amount1Max: BigInt(order.amount1Max || '0'), // Max amount of second token (from swap)
+                                swapDirective, // Include swap directive for getting second token
                                 deadline: parseInt(order.deadline) || Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60),
                                 executionFeeBps: parseInt(order.executionFeeBps) || 10,
                                 recipient: order.recipient,
                             };
+                            console.log(`📦 Order ${idx} full object:`, liquidityOrder);
+                            return liquidityOrder;
                         });
 
+                        console.log('📦 Final liquidityOrders array:', liquidityOrders);
                         orderChainResult = await createLiquidityOrderChain(
                             liquidityOrders,
                             startRound,
@@ -1898,12 +2060,13 @@ export default function WithdrawPage() {
                 setIsSimulating(false);
             }
 
-            // Send transaction
+            // Send transaction with increased gas limit (3M for complex withdraw operations)
             writeContract({
                 address: ArkanaAddress as `0x${string}`,
                 abi: ArkanaAbi,
                 functionName: 'withdraw',
                 args: [proofBytes as `0x${string}`, publicInputsBytes32 as readonly `0x${string}`[], callDataBytes],
+                gas: BigInt(3_000_000), // 3M gas limit
             });
 
         } catch (error) {
@@ -2197,28 +2360,62 @@ export default function WithdrawPage() {
                                                         />
                                                     </div>
 
-                                                    {/* Arbitrary Calldata Input - Hide when TL Swap is enabled */}
-                                                    {!isTlSwap && (
-                                                        <div>
-                                                            <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider mb-1 sm:mb-2">
-                                                                ARBITRARY CALLDATA (HEX, OPTIONAL)
-                                                            </label>
-                                                            <Input
-                                                                type="text"
-                                                                value={arbitraryCalldata}
-                                                                onChange={(e) => setArbitraryCalldata(e.target.value)}
-                                                                placeholder="0x..."
-                                                                className="text-xs sm:text-sm w-full"
+                                                    {/* Custom Spell Checkbox */}
+                                                    <div className="space-y-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <Image
+                                                                src="/spell.png"
+                                                                alt="Spell"
+                                                                width={24}
+                                                                height={24}
+                                                                className="flex-shrink-0"
                                                             />
-                                                            {arbitraryCalldata && arbitraryCalldata.trim() !== '' && (
-                                                                <p className="text-[10px] font-mono text-muted-foreground/60 mt-1">
-                                                                    Hash (31 bytes): {arbitraryCalldataHash}
-                                                                </p>
-                                                            )}
+                                                            <input
+                                                                type="checkbox"
+                                                                id="isCustomSpell"
+                                                                checked={isCustomSpell}
+                                                                onChange={(e) => {
+                                                                    const checked = e.target.checked;
+                                                                    setIsCustomSpell(checked);
+                                                                    // Clear timelock operation when Custom Spell is enabled
+                                                                    if (checked) {
+                                                                        setIsTlSwap(false);
+                                                                    }
+                                                                    // Clear arbitrary calldata when unchecked
+                                                                    if (!checked) {
+                                                                        setArbitraryCalldata('');
+                                                                        setArbitraryCalldataHash('0x0');
+                                                                    }
+                                                                }}
+                                                                className="w-4 h-4 rounded border-primary/50 bg-card/40 text-primary focus:ring-primary/50 flex-shrink-0"
+                                                            />
+                                                            <label htmlFor="isCustomSpell" className="text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider cursor-pointer">
+                                                                Custom Spell
+                                                            </label>
                                                         </div>
-                                                    )}
+                                                        {/* Arbitrary Calldata Input - Show only when Custom Spell is enabled */}
+                                                        {isCustomSpell && (
+                                                            <div className="ml-6 border-l-2 border-primary/30 pl-3 py-2">
+                                                                <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider mb-1 sm:mb-2">
+                                                                    ARBITRARY CALLDATA (HEX)
+                                                                </label>
+                                                                <Input
+                                                                    type="text"
+                                                                    value={arbitraryCalldata}
+                                                                    onChange={(e) => setArbitraryCalldata(e.target.value)}
+                                                                    placeholder="0x..."
+                                                                    className="text-xs sm:text-sm w-full"
+                                                                />
+                                                                {arbitraryCalldata && arbitraryCalldata.trim() !== '' && (
+                                                                    <p className="text-[10px] font-mono text-muted-foreground/60 mt-1">
+                                                                        Hash (31 bytes): {arbitraryCalldataHash}
+                                                                    </p>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                    </div>
 
-                                                    {/* TL Swap Checkbox */}
+                                                    {/* Timelock Operation Checkbox */}
                                                     <div className="space-y-2">
                                                         <div className="flex items-center gap-2">
                                                             <Image
@@ -2235,8 +2432,9 @@ export default function WithdrawPage() {
                                                                 onChange={(e) => {
                                                                     const checked = e.target.checked;
                                                                     setIsTlSwap(checked);
-                                                                    // Clear arbitrary calldata when TL Swap is enabled
+                                                                    // Clear Custom Spell when Timelock Operation is enabled
                                                                     if (checked) {
+                                                                        setIsCustomSpell(false);
                                                                         setArbitraryCalldata('');
                                                                         setArbitraryCalldataHash('0x0');
                                                                     }
@@ -2244,7 +2442,7 @@ export default function WithdrawPage() {
                                                                 className="w-4 h-4 rounded border-primary/50 bg-card/40 text-primary focus:ring-primary/50 flex-shrink-0"
                                                             />
                                                             <label htmlFor="isTlSwap" className="text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider cursor-pointer">
-                                                                Timelocked Swap
+                                                                Timelock Operation
                                                             </label>
                                                         </div>
                                                         {isTlSwap && (
@@ -2317,8 +2515,15 @@ export default function WithdrawPage() {
                                                                                         poolFee: '3000',
                                                                                         tickSpacing: '60',
                                                                                         hooks: '0x0000000000000000000000000000000000000000',
-                                                                                        tickLower: '-887220',
-                                                                                        tickUpper: '887220',
+                                                                                        tickLower: '55560',  // Narrow range around current tick
+                                                                                        tickUpper: '56760',
+                                                                                        amount1Max: '300000',  // Max USDC for LP (raw units)
+                                                                                        // Swap directive defaults (EXACT_OUT - human-readable)
+                                                                                        swapAmountOut: '0.3',      // 0.3 USDC
+                                                                                        swapAmountInMax: '0.00015', // Max 0.00015 WBTC
+                                                                                        swapSlippageBps: '500',   // 5%
+                                                                                        swapTokenOut: '',
+                                                                                        swapPoolFee: '3000',
                                                                                     });
                                                                                 }
                                                                             } else {
@@ -2610,6 +2815,128 @@ export default function WithdrawPage() {
                                                                                             </p>
                                                                                         </div>
                                                                                     </div>
+
+                                                                                    {/* Amount1Max Field */}
+                                                                                    <div className="mt-2">
+                                                                                        <label className="block text-[10px] font-mono text-muted-foreground mb-1">Max Token1 for LP (raw units)</label>
+                                                                                        <Input
+                                                                                            type="text"
+                                                                                            placeholder="300000"
+                                                                                            className="text-xs w-full"
+                                                                                            value={order.amount1Max}
+                                                                                            onChange={(e) => {
+                                                                                                const newOrders = [...tlOrders];
+                                                                                                newOrders[index].amount1Max = e.target.value;
+                                                                                                setTlOrders(newOrders);
+                                                                                            }}
+                                                                                        />
+                                                                                        <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                            Max amount of second token (currency1) to use for LP. Should match or exceed swapAmountOut in raw units. E.g., 300000 = 0.3 USDC (6 decimals)
+                                                                                        </p>
+                                                                                    </div>
+
+                                                                                    {/* Swap Directive Section */}
+                                                                                    <div className="mt-3 pt-3 border-t border-accent/20">
+                                                                                        <p className="text-[10px] font-mono text-accent uppercase tracking-wider mb-2">
+                                                                                            🔄 Swap Directive (Get Second Token)
+                                                                                        </p>
+                                                                                        <p className="text-[9px] font-mono text-muted-foreground/70 mb-2">
+                                                                                            Swap part of withdrawn underlying tokens to get the second token for LP
+                                                                                        </p>
+                                                                                        <div className="grid grid-cols-2 gap-2">
+                                                                                            <div>
+                                                                                                <label className="block text-[10px] font-mono text-muted-foreground mb-1">Amount Out (exact)</label>
+                                                                                                <Input
+                                                                                                    type="text"
+                                                                                                    placeholder="0.3"
+                                                                                                    className="text-xs w-full"
+                                                                                                    value={order.swapAmountOut}
+                                                                                                    onChange={(e) => {
+                                                                                                        const newOrders = [...tlOrders];
+                                                                                                        newOrders[index].swapAmountOut = e.target.value;
+                                                                                                        setTlOrders(newOrders);
+                                                                                                    }}
+                                                                                                />
+                                                                                                <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                    Exact second token amount (human-readable, e.g., 0.3 USDC)
+                                                                                                </p>
+                                                                                            </div>
+                                                                                            <div>
+                                                                                                <label className="block text-[10px] font-mono text-muted-foreground mb-1">Token Out (Second Token)</label>
+                                                                                                <Input
+                                                                                                    type="text"
+                                                                                                    placeholder="0x..."
+                                                                                                    className="text-xs w-full font-mono"
+                                                                                                    value={order.swapTokenOut}
+                                                                                                    onChange={(e) => {
+                                                                                                        const newOrders = [...tlOrders];
+                                                                                                        newOrders[index].swapTokenOut = e.target.value;
+                                                                                                        setTlOrders(newOrders);
+                                                                                                    }}
+                                                                                                />
+                                                                                                <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                    Must be currency0 or currency1
+                                                                                                </p>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                        <div className="grid grid-cols-3 gap-2 mt-2">
+                                                                                            <div>
+                                                                                                <label className="block text-[10px] font-mono text-muted-foreground mb-1">Max Input</label>
+                                                                                                <Input
+                                                                                                    type="text"
+                                                                                                    placeholder="0.00015"
+                                                                                                    className="text-xs w-full"
+                                                                                                    value={order.swapAmountInMax}
+                                                                                                    onChange={(e) => {
+                                                                                                        const newOrders = [...tlOrders];
+                                                                                                        newOrders[index].swapAmountInMax = e.target.value;
+                                                                                                        setTlOrders(newOrders);
+                                                                                                    }}
+                                                                                                />
+                                                                                                <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                    Max first token to spend (human-readable, e.g., 0.00015 WBTC)
+                                                                                                </p>
+                                                                                            </div>
+                                                                                            <div>
+                                                                                                <label className="block text-[10px] font-mono text-muted-foreground mb-1">Slippage (bps)</label>
+                                                                                                <Input
+                                                                                                    type="number"
+                                                                                                    placeholder="500"
+                                                                                                    className="text-xs w-full"
+                                                                                                    value={order.swapSlippageBps}
+                                                                                                    onChange={(e) => {
+                                                                                                        const newOrders = [...tlOrders];
+                                                                                                        newOrders[index].swapSlippageBps = e.target.value;
+                                                                                                        setTlOrders(newOrders);
+                                                                                                    }}
+                                                                                                />
+                                                                                                <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                    500 = 5%
+                                                                                                </p>
+                                                                                            </div>
+                                                                                            <div>
+                                                                                                <label className="block text-[10px] font-mono text-muted-foreground mb-1">Pool Fee (bps)</label>
+                                                                                                <Input
+                                                                                                    type="number"
+                                                                                                    placeholder={order.poolFee || "500"}
+                                                                                                    className="text-xs w-full"
+                                                                                                    value={order.swapPoolFee || order.poolFee}
+                                                                                                    onChange={(e) => {
+                                                                                                        const newOrders = [...tlOrders];
+                                                                                                        newOrders[index].swapPoolFee = e.target.value;
+                                                                                                        setTlOrders(newOrders);
+                                                                                                    }}
+                                                                                                />
+                                                                                                <p className="text-[9px] font-mono text-muted-foreground/60 mt-1">
+                                                                                                    Same as LP pool fee
+                                                                                                </p>
+                                                                                            </div>
+                                                                                        </div>
+                                                                                        <p className="text-[9px] font-mono text-yellow-500/80 mt-2 p-2 bg-yellow-500/10 rounded border border-yellow-500/20">
+                                                                                            ⚠️ Swap uses same pool as LP. Set Pool Fee to match the LP Pool Fee above (e.g., 500 for 0.05% tier)
+                                                                                        </p>
+                                                                                    </div>
+
                                                                                     <p className="text-[9px] font-mono text-accent/70 mt-2 p-2 bg-accent/10 rounded">
                                                                                         💡 LP position NFT will be transferred to recipient after execution
                                                                                     </p>
