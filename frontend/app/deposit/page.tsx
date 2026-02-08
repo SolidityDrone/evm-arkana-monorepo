@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useDeposit } from '@/hooks/useDeposit';
 import { useAaveTokens } from '@/hooks/useAaveTokens';
 import { useZkAddress } from '@/context/AccountProvider';
@@ -13,6 +13,8 @@ import TransactionModal from '@/components/TransactionModal';
 import { useToast } from '@/components/Toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { TokenIcon } from '@/lib/token-icons';
+import { encodeFunctionData } from 'viem';
+import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 
 export default function DepositPage() {
     const { toast } = useToast();
@@ -64,6 +66,9 @@ export default function DepositPage() {
     const { tokens: aaveTokens, isLoading: isLoadingTokens } = useAaveTokens();
     const [showTokenSelector, setShowTokenSelector] = useState(false);
     const [showTransactionModal, setShowTransactionModal] = useState(false);
+    const [isRelayerSubmitting, setIsRelayerSubmitting] = useState(false);
+    const [relayerTxHash, setRelayerTxHash] = useState<string | null>(null);
+    const [relayerError, setRelayerError] = useState<string | null>(null);
 
     // Show modal when proof is generating, transaction is pending, confirming, or confirmed
     React.useEffect(() => {
@@ -133,6 +138,68 @@ export default function DepositPage() {
     }, [amount, tokenDecimals]);
 
     const needsApproval = allowance !== null && allowance < requiredAmount && requiredAmount > BigInt(0);
+
+    // Handle deposit via relayer
+    const handleDepositViaRelayer = useCallback(async () => {
+        if (!proof || !publicInputs || publicInputs.length === 0) {
+            setRelayerError('Proof and public inputs are required');
+            return;
+        }
+
+        try {
+            setIsRelayerSubmitting(true);
+            setRelayerError(null);
+            setRelayerTxHash(null);
+            setShowTransactionModal(true);
+
+            // Prepare calldata exactly as handleDeposit does
+            const proofBytes = `0x${proof}`;
+            const slicedInputs = publicInputs.slice(0, 11);
+            const publicInputsBytes32 = slicedInputs.map((input: string) => {
+                const hex = input.startsWith('0x') ? input.slice(2) : input;
+                return `0x${hex.padStart(64, '0')}` as `0x${string}`;
+            });
+
+            // Encode the function call
+            const calldata = encodeFunctionData({
+                abi: ArkanaAbi,
+                functionName: 'deposit',
+                args: [proofBytes as `0x${string}`, publicInputsBytes32 as readonly `0x${string}`[]],
+            });
+
+            console.log('📤 Sending deposit via relayer...');
+            console.log('  Contract:', ArkanaAddress);
+            console.log('  Calldata length:', calldata.length);
+
+            // Send to relayer API
+            const response = await fetch('/api/relayer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    to: ArkanaAddress,
+                    data: calldata,
+                    gasLimit: '3000000',
+                }),
+            });
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || 'Relayer request failed');
+            }
+
+            console.log('✅ Relayer transaction successful:', result.hash);
+            setRelayerTxHash(result.hash);
+            toast('DEPOSIT TRANSACTION CONFIRMED (VIA RELAYER)', 'success');
+
+        } catch (error) {
+            console.error('Error in handleDepositViaRelayer:', error);
+            const errorMessage = error instanceof Error ? error.message : 'Failed to send via relayer';
+            setRelayerError(errorMessage);
+        } finally {
+            setIsRelayerSubmitting(false);
+        }
+    }, [proof, publicInputs, toast]);
 
     return (
         <div className="min-h-screen pt-24 pb-12 px-4 sm:px-6 lg:px-8 w-full overflow-x-hidden relative">
@@ -449,28 +516,17 @@ export default function DepositPage() {
                                                         </div>
                                                     )}
 
-                                                    {/* Generate Proof / Send Transaction Button */}
-                                                    <SpellButton
-                                                        onClick={proof ? handleDeposit : proveDeposit}
-                                                        disabled={Boolean(
-                                                            proof
-                                                                ? isPending || isConfirming || isSubmitting || isSimulating || !proof || !publicInputs.length || needsApproval
-                                                                : isProving || isInitializing || isCalculatingInputs || !tokenAddress || !amount || (isTokenInitialized === false) || (isTokenInitialized === true && tokenCurrentNonce === null)
-                                                        )}
-                                                        variant="primary"
-                                                        className="w-full text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                                    >
-                                                        {proof
-                                                            ? isSimulating
-                                                                ? 'SIMULATING TRANSACTION...'
-                                                                : isPending || isSubmitting
-                                                                    ? 'PREPARING TRANSACTION...'
-                                                                    : isConfirming
-                                                                        ? 'CONFIRMING TRANSACTION...'
-                                                                        : needsApproval
-                                                                            ? 'APPROVE TOKEN FIRST'
-                                                                            : 'DEPOSIT ON ARKANA CONTRACT'
-                                                            : isCalculatingInputs
+                                                    {/* Generate Proof Button (when no proof yet) */}
+                                                    {!proof && (
+                                                        <SpellButton
+                                                            onClick={proveDeposit}
+                                                            disabled={Boolean(
+                                                                isProving || isInitializing || isCalculatingInputs || !tokenAddress || !amount || (isTokenInitialized === false) || (isTokenInitialized === true && tokenCurrentNonce === null)
+                                                            )}
+                                                            variant="primary"
+                                                            className="w-full text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        >
+                                                            {isCalculatingInputs
                                                                 ? 'CALCULATING INPUTS...'
                                                                 : isProving
                                                                     ? `GENERATING PROOF... (${currentProvingTime}MS)`
@@ -479,7 +535,55 @@ export default function DepositPage() {
                                                                         : isTokenInitialized === false
                                                                             ? 'TOKEN NOT INITIALIZED'
                                                                             : 'GENERATE DEPOSIT PROOF'}
-                                                    </SpellButton>
+                                                        </SpellButton>
+                                                    )}
+
+                                                    {/* Send Transaction Buttons (when proof is ready) */}
+                                                    {proof && publicInputs.length > 0 && (
+                                                        <div className="space-y-2">
+                                                            {needsApproval ? (
+                                                                <p className="text-xs font-mono text-yellow-500 text-center uppercase tracking-wider mb-2">
+                                                                    ⚠ APPROVE TOKEN FIRST
+                                                                </p>
+                                                            ) : (
+                                                                <>
+                                                                    {/* Send to Relayer Button */}
+                                                                    <SpellButton
+                                                                        onClick={handleDepositViaRelayer}
+                                                                        disabled={Boolean(
+                                                                            isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting || needsApproval
+                                                                        )}
+                                                                        variant="primary"
+                                                                        className="w-full text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                                                    >
+                                                                        {isRelayerSubmitting
+                                                                            ? 'SENDING VIA RELAYER...'
+                                                                            : relayerTxHash
+                                                                                ? '✓ SENT VIA RELAYER'
+                                                                                : 'SEND TO RELAYER'}
+                                                                    </SpellButton>
+
+                                                                    {/* Send yourself (Test) Button */}
+                                                                    <SpellButton
+                                                                        onClick={handleDeposit}
+                                                                        disabled={Boolean(
+                                                                            isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting || needsApproval
+                                                                        )}
+                                                                        variant="secondary"
+                                                                        className="w-full text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                                                    >
+                                                                        {isSimulating
+                                                                            ? 'SIMULATING...'
+                                                                            : isPending || isSubmitting
+                                                                                ? 'PREPARING...'
+                                                                                : isConfirming
+                                                                                    ? 'CONFIRMING...'
+                                                                                    : 'SEND YOURSELF (TEST)'}
+                                                                    </SpellButton>
+                                                                </>
+                                                            )}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </CardContent>
                                         </Card>
@@ -551,11 +655,11 @@ export default function DepositPage() {
                 isOpen={showTransactionModal}
                 onClose={() => setShowTransactionModal(false)}
                 isProving={isProving}
-                isPending={isPending || isSubmitting}
+                isPending={isPending || isSubmitting || isRelayerSubmitting}
                 isConfirming={isConfirming}
-                isConfirmed={isConfirmed}
-                txHash={txHash}
-                error={txError || proofError || null}
+                isConfirmed={isConfirmed || !!relayerTxHash}
+                txHash={txHash || relayerTxHash}
+                error={txError || proofError || relayerError || null}
                 transactionType="DEPOSIT"
             />
         </div>

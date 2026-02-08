@@ -88,81 +88,40 @@ graph TB
 
 #### Timelock Swap (TL_SWAP) Flow
 
-**Phase 1: Order Registration (User creates encrypted order)**
-
 ```mermaid
-graph LR
-    A[User] --> B[Arkana]
-    B --> C[TLswapRegister]
-    
-    A -->|withdraw + ZK proof| B
-    B -->|no vault op yet| B
-    B -->|store encrypted order| C
+sequenceDiagram
+    participant U as User
+    participant A as Arkana
+    participant T as TLswapRegister
+    participant D as dRand
+    participant E as Executor
+    participant V as Vault
+    participant AA as Aave
+    participant S as Uniswap
+    participant R as Recipient
 
-    style A fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
-    style B fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
-    style C fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
-```
+    Note over U,T: Phase 1: Registration
+    U->>A: 1. withdraw(ZK proof, is_tl_swap=true)
+    A->>A: 2. Virtual withdrawal (no vault op)
+    A->>T: 3. registerEncryptedOrder(ciphertext)
 
-**Phase 2: Timelock Release (dRand reveals randomness)**
+    Note over D,T: Phase 2: Timelock Release
+    D-->>E: 4. Randomness published at round R
+    E->>E: 5. Decrypt order off-chain
+    E->>T: 6. executeV4SwapIntent(params)
 
-```mermaid
-graph LR
-    D[dRand] --> E[Executor]
-    E --> F[TLswapRegister]
-    
-    D -->|randomness at round R| E
-    E -->|decrypt order| E
-    E -->|call executeV4SwapIntent| F
+    Note over T,AA: Phase 3: Withdrawal
+    T->>A: 7. withdrawForSwap(shares)
+    A->>V: 8. burnShares + withdraw
+    V->>AA: 9. Redeem from Aave
+    AA-->>V: 10. Return tokens
+    V-->>T: 11. Transfer tokens
 
-    style D fill:#f0e6ff,stroke:#333,stroke-width:2px,color:#000
-    style E fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-    style F fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
-```
-
-**Phase 3: Withdrawal (Shares → Tokens)**
-
-```mermaid
-graph LR
-    G[TLswapRegister] --> H[Arkana]
-    H --> I[Vault]
-    I --> J[Aave]
-    J --> I
-    I --> G
-    
-    G -->|withdrawForSwap| H
-    H -->|burn shares| I
-    I -->|withdraw| J
-    J -->|tokens| I
-    I -->|tokens| G
-
-    style G fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
-    style H fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
-    style I fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
-    style J fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
-```
-
-**Phase 4: Swap & Distribution**
-
-```mermaid
-graph LR
-    K[TLswapRegister] --> L[Uniswap V4]
-    L --> K
-    K --> M[Executor]
-    K --> N[Protocol]
-    K --> O[Recipient]
-    
-    K -->|swap tokens| L
-    L -->|output tokens| K
-    K -->|exec fee| M
-    K -->|protocol fee| N
-    K -->|remainder| O
-
-    style K fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
-    style L fill:#cce5ff,stroke:#333,stroke-width:2px,color:#000
-    style M fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-    style N fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-    style O fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
+    Note over T,R: Phase 4: Swap & Distribute
+    T->>S: 12. Swap via Universal Router
+    S-->>T: 13. Return output tokens
+    T-->>E: 14. Pay execution fee
+    T-->>R: 15. Transfer remainder
 ```
 
 #### Vault Asset Tracking

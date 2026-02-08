@@ -5,7 +5,7 @@ import { useZkAddress, useAccount as useAccountContext } from '@/context/Account
 import { useAccountState } from '@/context/AccountStateProvider';
 import { useAccountSigning } from '@/hooks/useAccountSigning';
 import { useAccount as useWagmiAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from 'wagmi';
-import { parseAbi, Address, keccak256 } from 'viem';
+import { parseAbi, Address, keccak256, encodeFunctionData } from 'viem';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -44,6 +44,9 @@ export default function WithdrawPage() {
     const publicClient = usePublicClient();
     const [showTokenSelector, setShowTokenSelector] = useState(false);
     const [showTransactionModal, setShowTransactionModal] = useState(false);
+    const [isRelayerSubmitting, setIsRelayerSubmitting] = useState(false);
+    const [relayerTxHash, setRelayerTxHash] = useState<string | null>(null);
+    const [relayerError, setRelayerError] = useState<string | null>(null);
 
     // Account context
     const { account } = useAccountContext();
@@ -2076,6 +2079,97 @@ export default function WithdrawPage() {
         }
     };
 
+    // Handle withdraw via relayer
+    const handleWithdrawViaRelayer = async () => {
+        if (!proof || !publicInputs || publicInputs.length === 0) {
+            setRelayerError('Proof and public inputs are required');
+            return;
+        }
+
+        // For TL-Swap, ensure IPFS upload completed
+        if (isTlSwap) {
+            if (isUploadingToIPFS) {
+                setRelayerError('IPFS upload in progress. Please wait...');
+                return;
+            }
+            if (!ipfsCid || !tlSwapCiphertext) {
+                setRelayerError('IPFS upload required for TL-Swap. Please generate proof first.');
+                return;
+            }
+        }
+
+        try {
+            setIsRelayerSubmitting(true);
+            setRelayerError(null);
+            setRelayerTxHash(null);
+            setShowTransactionModal(true);
+
+            const proofBytes = `0x${proof}`;
+            const slicedInputs = publicInputs.slice(0, 17);
+            const publicInputsBytes32 = slicedInputs.map((input: string) => {
+                const hex = input.startsWith('0x') ? input.slice(2) : input;
+                return `0x${hex.padStart(64, '0')}` as `0x${string}`;
+            });
+
+            // Prepare calldata
+            let callDataBytes: `0x${string}`;
+            if (isTlSwap && tlSwapCiphertext) {
+                const ciphertextBytes = Buffer.from(tlSwapCiphertext, 'utf-8');
+                const orderHashesArray = tlOrderHashes || [];
+                const operationType = tlOperationType === 'swap' ? 0 : 1;
+
+                const { encodeAbiParameters, parseAbiParameters } = await import('viem');
+                callDataBytes = encodeAbiParameters(
+                    parseAbiParameters('bytes, bytes32[], uint8'),
+                    [`0x${ciphertextBytes.toString('hex')}`, orderHashesArray, operationType]
+                );
+            } else if (arbitraryCalldata && arbitraryCalldata.trim() !== '') {
+                callDataBytes = (arbitraryCalldata.startsWith('0x') ? arbitraryCalldata : `0x${arbitraryCalldata}`) as `0x${string}`;
+            } else {
+                callDataBytes = '0x' as `0x${string}`;
+            }
+
+            // Encode the function call
+            const calldata = encodeFunctionData({
+                abi: ArkanaAbi,
+                functionName: 'withdraw',
+                args: [proofBytes as `0x${string}`, publicInputsBytes32 as readonly `0x${string}`[], callDataBytes],
+            });
+
+            console.log('📤 Sending withdraw via relayer...');
+            console.log('  Contract:', ArkanaAddress);
+            console.log('  Calldata length:', calldata.length);
+
+            // Send to relayer API
+            const response = await fetch('/api/relayer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    to: ArkanaAddress,
+                    data: calldata,
+                    gasLimit: '3000000',
+                }),
+            });
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || 'Relayer request failed');
+            }
+
+            console.log('✅ Relayer transaction successful:', result.hash);
+            setRelayerTxHash(result.hash);
+            toast('WITHDRAW TRANSACTION CONFIRMED (VIA RELAYER)', 'success');
+
+        } catch (error) {
+            console.error('Error in handleWithdrawViaRelayer:', error);
+            const errorMessage = error instanceof Error ? error.message : 'Failed to send via relayer';
+            setRelayerError(errorMessage);
+        } finally {
+            setIsRelayerSubmitting(false);
+        }
+    };
+
     return (
         <div className="min-h-screen pt-24 pb-12 px-4 sm:px-6 lg:px-8 w-full overflow-x-hidden relative">
             {/* Subtle ambient glow */}
@@ -3259,26 +3353,17 @@ export default function WithdrawPage() {
                                                         </div>
                                                     )}
 
-                                                    {/* Generate Proof / Withdraw Button */}
-                                                    <SpellButton
-                                                        onClick={proof ? handleWithdraw : proveWithdraw}
-                                                        disabled={Boolean(
-                                                            proof
-                                                                ? isPending || isConfirming || isSubmitting || isSimulating || !publicInputs.length
-                                                                : isProving || isInitializing || isCalculatingInputs || isDiscoveringToken || isLoadingUserKey || !tokenAddress || !amount || !receiverAddress || !receiverFeeAmount || tokenNonce === null || !zkAddress || (!contextUserKey && !account?.signature)
-                                                        )}
-                                                        variant="primary"
-                                                        className="w-full text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                                    >
-                                                        {proof
-                                                            ? isSimulating
-                                                                ? 'SIMULATING TRANSACTION...'
-                                                                : isSubmitting
-                                                                    ? 'PREPARING TRANSACTION...'
-                                                                    : isConfirming
-                                                                        ? 'CONFIRMING TRANSACTION...'
-                                                                        : 'WITHDRAW ON ARKANA'
-                                                            : isDiscoveringToken
+                                                    {/* Generate Proof Button (when no proof yet) */}
+                                                    {!proof && (
+                                                        <SpellButton
+                                                            onClick={proveWithdraw}
+                                                            disabled={Boolean(
+                                                                isProving || isInitializing || isCalculatingInputs || isDiscoveringToken || isLoadingUserKey || !tokenAddress || !amount || !receiverAddress || !receiverFeeAmount || tokenNonce === null || !zkAddress || (!contextUserKey && !account?.signature)
+                                                            )}
+                                                            variant="primary"
+                                                            className="w-full text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        >
+                                                            {isDiscoveringToken
                                                                 ? (
                                                                     <span className="flex items-center gap-2">
                                                                         <div className="animate-spin rounded-full h-3 w-3 border-2 border-current border-t-transparent"></div>
@@ -3301,7 +3386,47 @@ export default function WithdrawPage() {
                                                                                 : !zkAddress || (!contextUserKey && !account?.signature)
                                                                                     ? 'PLEASE SIGN MESSAGE FIRST'
                                                                                     : 'GENERATE WITHDRAW PROOF'}
-                                                    </SpellButton>
+                                                        </SpellButton>
+                                                    )}
+
+                                                    {/* Send Transaction Buttons (when proof is ready) */}
+                                                    {proof && publicInputs.length > 0 && (
+                                                        <div className="space-y-2">
+                                                            {/* Send to Relayer Button */}
+                                                            <SpellButton
+                                                                onClick={handleWithdrawViaRelayer}
+                                                                disabled={Boolean(
+                                                                    isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting || isUploadingToIPFS
+                                                                )}
+                                                                variant="primary"
+                                                                className="w-full text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                                            >
+                                                                {isRelayerSubmitting
+                                                                    ? 'SENDING VIA RELAYER...'
+                                                                    : relayerTxHash
+                                                                        ? '✓ SENT VIA RELAYER'
+                                                                        : 'SEND TO RELAYER'}
+                                                            </SpellButton>
+
+                                                            {/* Send yourself (Test) Button */}
+                                                            <SpellButton
+                                                                onClick={handleWithdraw}
+                                                                disabled={Boolean(
+                                                                    isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting || isUploadingToIPFS
+                                                                )}
+                                                                variant="secondary"
+                                                                className="w-full text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                                            >
+                                                                {isSimulating
+                                                                    ? 'SIMULATING...'
+                                                                    : isSubmitting
+                                                                        ? 'PREPARING...'
+                                                                        : isConfirming
+                                                                            ? 'CONFIRMING...'
+                                                                            : 'SEND YOURSELF (TEST)'}
+                                                            </SpellButton>
+                                                        </div>
+                                                    )}
 
                                                     {/* Transaction Status */}
                                                     {txHash && (
@@ -3354,11 +3479,11 @@ export default function WithdrawPage() {
                 isOpen={showTransactionModal}
                 onClose={() => setShowTransactionModal(false)}
                 isProving={isProving}
-                isPending={isPending || isSubmitting}
+                isPending={isPending || isSubmitting || isRelayerSubmitting}
                 isConfirming={isConfirming}
-                isConfirmed={isConfirmed}
-                txHash={txHash}
-                error={txError || proofError || null}
+                isConfirmed={isConfirmed || !!relayerTxHash}
+                txHash={txHash || relayerTxHash}
+                error={txError || proofError || relayerError || null}
                 transactionType="WITHDRAW"
             />
 
