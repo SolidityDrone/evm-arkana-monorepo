@@ -1,0 +1,66 @@
+MIT License
+
+Copyright (c) 2026 Arkana Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+ADDITIONAL DISCLAIMERS FOR SMART CONTRACTS AND DEFI PROTOCOLS:
+
+THIS SOFTWARE INCLUDES SMART CONTRACTS THAT INTERACT WITH BLOCKCHAIN NETWORKS
+AND DECENTRALIZED FINANCE (DEFI) PROTOCOLS. BY USING THIS SOFTWARE, YOU
+ACKNOWLEDGE AND AGREE THAT:
+
+1. NO SECURITY AUDIT: This software has NOT undergone comprehensive security
+   audits. It may contain bugs, vulnerabilities, or other defects that could
+   result in the total loss of funds or other damages.
+
+2. EXPERIMENTAL SOFTWARE: This is experimental software provided for educational
+   and research purposes. It is NOT production-ready and should NOT be used with
+   real funds or in production environments.
+
+3. NO FINANCIAL ADVICE: This software does not constitute financial, investment,
+   legal, or tax advice. Any use of this software is at your own risk.
+
+4. NO LIABILITY FOR LOSSES: The authors, contributors, and copyright holders
+   shall NOT be liable for any direct, indirect, incidental, special, exemplary,
+   or consequential damages (including, but not limited to, procurement of
+   substitute goods or services; loss of use, data, or profits; or business
+   interruption) arising from the use, modification, or distribution of this
+   software, including but not limited to:
+   - Loss of cryptocurrency or digital assets
+   - Loss of private keys or access credentials
+   - Smart contract vulnerabilities or exploits
+   - Network failures or blockchain reorganizations
+   - Regulatory actions or legal consequences
+
+5. MODIFICATIONS AT YOUR OWN RISK: Any modifications, forks, or derivative
+   works of this software are the sole responsibility of the modifier. The
+   original authors assume no responsibility for modified versions.
+
+6. NO WARRANTY OF SECURITY: There is no warranty that this software is secure,
+   safe, or free from vulnerabilities. Users are responsible for conducting
+   their own security assessments.
+
+7. COMPLIANCE: Users are solely responsible for ensuring compliance with all
+   applicable laws and regulations in their jurisdiction.
+
+BY USING THIS SOFTWARE, YOU EXPRESSLY AGREE TO THESE TERMS AND ACKNOWLEDGE THAT
+YOU HAVE READ, UNDERSTOOD, AND ACCEPT THE RISKS ASSOCIATED WITH USING THIS
+SOFTWARE.
+

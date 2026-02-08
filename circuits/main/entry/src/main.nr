@@ -23,7 +23,6 @@ pub fn main(
     
     // Create Pedersen commitment: m1*G + m2*H + m3*D + m4*K + r*J
     // where m1=0 (shares), m2=0 (nullifier), m3=spending_key, m4=0 (unlocks_at), r=nonce_commitment
-    let unlocks_at = 0 as Field;
     let balance_commitment = pedersen_commitment_5(
         0, // shares to be written by contract
         0, // nullifier

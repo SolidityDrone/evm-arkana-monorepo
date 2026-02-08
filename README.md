@@ -524,34 +524,66 @@ Circuit Side (private):           Contract Side (public):
 ━━━━━━━━━━━━━━━━━━━━━━━          ━━━━━━━━━━━━━━━━━━━━━━━━━━
                                  
 partial_commit =                 full_commit = 
-  Pedersen(secret, nonce)          partial_commit ⊕ 
-                                   Pedersen(amount, token, ...)
+  Pedersen(0, 0,                  partial_commit + 
+   spending_key,                  shares*G + 
+   0,                              unlocks_at*K
+   nonce_commitment)               
                                  
 Private values stay              Public values added on-chain
 inside the circuit               using Grumpkin point addition
+                                 
+                                 Then: hash(final_commit) → leaf
 ```
 
 #### How It Works
 
 1. **In the ZK Circuit** (private values):
    ```noir
-   // User's secret key and nonce → partial commitment point
-   let partial = pedersen([user_secret, nonce]);
+   // Compute spending_key from user_key, chain_id, and token_address
+   let spending_key = poseidon2_hash([user_key, chain_id, token_address]);
+   
+   // Compute nonce_commitment
+   let nonce_commitment = poseidon2_hash([spending_key, nonce, token_address]);
+   
+   // Create partial Pedersen commitment with private values
+   // commitment = 0*G + 0*H + spending_key*D + 0*K + nonce_commitment*J
+   let balance_commitment = pedersen_commitment_5(
+       0,              // shares (to be added on-chain)
+       0,              // nullifier
+       spending_key,   // private spending key
+       0,              // unlocks_at (to be added on-chain)
+       nonce_commitment // private nonce commitment
+   );
    ```
 
 2. **On-Chain** (public values):
    ```solidity
-   // Add public values using Grumpkin curve point addition
-   // partial_point + amount_point + token_point = full_commitment
-   bytes32 fullCommit = GrumpkinAdd(partialCommit, publicPart);
+   // Get the partial commitment point from circuit
+   Grumpkin.G1Point memory balanceCommitment = 
+       Grumpkin.G1Point(balanceCommitmentX, balanceCommitmentY);
+   
+   // Add shares*G to the commitment (public value)
+   Grumpkin.G1Point memory sharesCommitment = Grumpkin.getTerm(G, shares);
+   Grumpkin.G1Point memory commitmentWithShares = 
+       Grumpkin.add(balanceCommitment, sharesCommitment);
+   
+   // Add unlocks_at*K to the commitment (public value)
+   Grumpkin.G1Point memory unlocksAtCommitment = Grumpkin.getTerm(K, unlocks_at);
+   Grumpkin.G1Point memory finalCommitment = 
+       Grumpkin.add(commitmentWithShares, unlocksAtCommitment);
+   
+   // Hash the final commitment point to create Merkle tree leaf
+   uint256 leaf = poseidon2_hash([finalCommitment.x, finalCommitment.y]);
    ```
 
 3. **Security**: 
-   - The partial commitment hides `user_secret` and `nonce` (ZK proof)
+   - The partial commitment hides `spending_key` and `nonce_commitment` (ZK proof)
+   - Public values (`shares` and `unlocks_at`) are added on-chain using Grumpkin point addition
    - Grumpkin's discrete log problem ensures you can't reverse-engineer private values
    - Point addition is binding: `A + B = C` means changing any input changes output
+   - The final commitment point is hashed to create the Merkle tree leaf
 
-This approach reduces circuit complexity by ~40% while maintaining the same security guarantees.
+This approach reduces circuit complexity by computing the commitment in two phases (private + public) while maintaining the same security guarantees.
 
 ## Features
 
