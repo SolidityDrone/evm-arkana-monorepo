@@ -46,213 +46,124 @@ Registry for timelock-encrypted operations:
 
 The following diagrams illustrate how the protocol works:
 
+#### Deposit Flow
+
 ```mermaid
 graph TB
+    A[User] -->|1. Transfer tokens| B[Arkana Contract]
+    B -->|2. Approve tokens| C[ArkanaVault]
+    C -->|3. supplyToAave| D[Aave Pool]
+    D -->|4. Returns aTokens| C
+    C -->|5. Holds aTokens as assets| C
+    B -->|6. mintShares| C
+    C -->|7. Mints ERC4626 shares| E[Arkana holds shares]
 
-    subgraph "DEPOSIT FLOW"
+    style A fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
+    style B fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
+    style C fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
+    style D fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
+    style E fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
+```
 
-        A[User] -->|1. Transfer tokens| B[Arkana Contract]
+#### Withdraw Flow
 
-        B -->|2. Approve tokens| C[ArkanaVault]
+```mermaid
+graph TB
+    F[User] -->|1. ZK Proof + withdraw| G[Arkana Contract]
+    G -->|2. convertToAssets| H[ArkanaVault]
+    G -->|3. burnShares| H
+    H -->|4. withdrawFromAave| I[Aave Pool]
+    I -->|5. Burns aTokens, returns tokens| H
+    H -->|6. Transfer tokens| G
+    G -->|7a. Pay relayer fee| J[Relayer]
+    G -->|7b. Transfer to receiver| K[Receiver Address]
 
-        C -->|3. supplyToAave| D[Aave Pool]
+    style F fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
+    style G fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
+    style H fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
+    style I fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
+    style J fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
+    style K fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
+```
 
-        D -->|4. Returns aTokens| C
+#### Timelock Swap (TL_SWAP) Flow
 
-        C -->|5. Holds aTokens as assets| C
-
-        B -->|6. mintShares| C
-
-        C -->|7. Mints ERC4626 shares| E[Arkana holds shares]
-
-        
-
-        style A fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
-
-        style B fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
-
-        style C fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
-
-        style D fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
-
-        style E fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
-
-    end
-
+```mermaid
+graph TB
+    L[User] -->|1. withdraw with is_tl_swap=true| M[Arkana Contract]
+    M -->|2. Virtual withdrawal - NO vault op| M
+    M -->|3. registerEncryptedOrder| N[TLswapRegister]
+    N -->|4. Store encrypted order| N
     
-
-    subgraph "WITHDRAW FLOW"
-
-        F[User] -->|1. ZK Proof + withdraw| G[Arkana Contract]
-
-        G -->|2. convertToAssets| H[ArkanaVault]
-
-        G -->|3. burnShares| H
-
-        H -->|4. withdrawFromAave| I[Aave Pool]
-
-        I -->|5. Burns aTokens, returns tokens| H
-
-        H -->|6. Transfer tokens| G
-
-        G -->|7a. Pay relayer fee| J[Relayer]
-
-        G -->|7b. Transfer to receiver| K[Receiver Address]
-
-        
-
-        style F fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
-
-        style G fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
-
-        style H fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
-
-        style I fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
-
-        style J fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-
-        style K fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
-
-    end
-
+    O[dRand Network] -->|5. Publishes randomness at round R| P[Off-chain Executor]
+    P -->|6. Decrypts order using dRand| P
+    P -->|7. executeV4SwapIntent with params| N
     
-
-    subgraph "TIMELOCK SWAP (TL_SWAP) FLOW"
-
-        L[User] -->|1. withdraw with is_tl_swap=true| M[Arkana Contract]
-
-        M -->|2. Virtual withdrawal - NO vault op| M
-
-        M -->|3. registerEncryptedOrder| N[TLswapRegister]
-
-        N -->|4. Store encrypted order| N
-
-        
-
-        O[dRand Network] -->|5. Publishes randomness at round R| P[Off-chain Executor]
-
-        P -->|6. Decrypts order using dRand| P
-
-        P -->|7. executeV4SwapIntent with params| N
-
-        
-
-        N -->|8. Verify hash chain| N
-
-        N -->|9. withdrawForSwap| M
-
-        M -->|10. burnShares + withdrawFromAave| Q[ArkanaVault]
-
-        Q -->|11. Withdraw from Aave| R[Aave Pool]
-
-        R -->|12. Return tokens| Q
-
-        Q -->|13. Transfer to TLswapRegister| N
-
-        
-
-        N -->|14. Approve & execute swap| S[Uniswap Router]
-
-        S -->|15. Swap tokens| S
-
-        S -->|16. Return swapped tokens| N
-
-        
-
-        N -->|17. Pay execution fee| P
-
-        N -->|18. Pay protocol fee| T[Protocol Owner]
-
-        N -->|19. Transfer remaining to recipient| U[Recipient]
-
-        
-
-        style L fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
-
-        style M fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
-
-        style N fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
-
-        style O fill:#f0e6ff,stroke:#333,stroke-width:2px,color:#000
-
-        style P fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-
-        style Q fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
-
-        style R fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
-
-        style S fill:#cce5ff,stroke:#333,stroke-width:2px,color:#000
-
-        style T fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-
-        style U fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
-
-    end
-
+    N -->|8. Verify hash chain| N
+    N -->|9. withdrawForSwap| M
+    M -->|10. burnShares + withdrawFromAave| Q[ArkanaVault]
+    Q -->|11. Withdraw from Aave| R[Aave Pool]
+    R -->|12. Return tokens| Q
+    Q -->|13. Transfer to TLswapRegister| N
     
+    N -->|14. Approve & execute swap| S[Uniswap Router]
+    S -->|15. Swap tokens| S
+    S -->|16. Return swapped tokens| N
+    
+    N -->|17. Pay execution fee| P
+    N -->|18. Pay protocol fee| T[Protocol Owner]
+    N -->|19. Transfer remaining to recipient| U[Recipient]
 
-    subgraph "VAULT ASSET TRACKING"
+    style L fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
+    style M fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
+    style N fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
+    style O fill:#f0e6ff,stroke:#333,stroke-width:2px,color:#000
+    style P fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
+    style Q fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
+    style R fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
+    style S fill:#cce5ff,stroke:#333,stroke-width:2px,color:#000
+    style T fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
+    style U fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
+```
 
-        V[ArkanaVault ERC4626]
+#### Vault Asset Tracking
 
-        V -->|asset = aToken| W[Holds aTokens from Aave]
+```mermaid
+graph TB
+    V[ArkanaVault ERC4626]
+    V -->|asset = aToken| W[Holds aTokens from Aave]
+    V -->|totalAssets| X[Returns vault's aToken balance]
+    V -->|totalSupply| Y[Returns total shares minted]
+    V -->|convertToShares/Assets| Z[Uses ERC4626 standard formula]
 
-        V -->|totalAssets| X[Returns vault's aToken balance]
+    style V fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
+    style W fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
+    style X fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
+    style Y fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
+    style Z fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
+```
 
-        V -->|totalSupply| Y[Returns total shares minted]
+#### DRAND Timelock Encryption
 
-        V -->|convertToShares/Assets| Z[Uses ERC4626 standard formula]
+```mermaid
+graph TB
+    AA[User encrypts order] -->|AES-128 with dRand round R| AB[Ciphertext]
+    AC[dRand Network] -->|Publishes randomness at round R| AD[Public randomness]
+    AB -->|Decryptable after round R| AE[Executor decrypts]
+    AE -->|Extract: sharesAmount, tokenOut, amountOutMin, etc| AF[Execute swap]
+    
+    AG[Hash Chain Verification]
+    AG -->|hash prevHash, sharesAmount = nextHash| AH[Prevents chunk reuse]
+    AG -->|Mark prevHash as used nullifier| AH
 
-        
-
-        style V fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
-
-        style W fill:#f8d7da,stroke:#333,stroke-width:2px,color:#000
-
-        style X fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-
-        style Y fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-
-        style Z fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-
-    end
-    subgraph "DRAND TIMELOCK ENCRYPTION"
-
-        AA[User encrypts order] -->|AES-128 with dRand round R| AB[Ciphertext]
-
-        AC[dRand Network] -->|Publishes randomness at round R| AD[Public randomness]
-
-        AB -->|Decryptable after round R| AE[Executor decrypts]
-
-        AE -->|Extract: sharesAmount, tokenOut, amountOutMin, etc| AF[Execute swap]
-
-        
-
-        AG[Hash Chain Verification]
-
-        AG -->|hash prevHash, sharesAmount = nextHash| AH[Prevents chunk reuse]
-
-        AG -->|Mark prevHash as used nullifier| AH
-
-        
-
-        style AA fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
-
-        style AB fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
-
-        style AC fill:#f0e6ff,stroke:#333,stroke-width:2px,color:#000
-
-        style AD fill:#f0e6ff,stroke:#333,stroke-width:2px,color:#000
-
-        style AE fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
-
-        style AF fill:#cce5ff,stroke:#333,stroke-width:2px,color:#000
-
-        style AG fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
-
-        style AH fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
-
-    end
+    style AA fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000
+    style AB fill:#ffe8cc,stroke:#333,stroke-width:2px,color:#000
+    style AC fill:#f0e6ff,stroke:#333,stroke-width:2px,color:#000
+    style AD fill:#f0e6ff,stroke:#333,stroke-width:2px,color:#000
+    style AE fill:#e7e7e7,stroke:#333,stroke-width:2px,color:#000
+    style AF fill:#cce5ff,stroke:#333,stroke-width:2px,color:#000
+    style AG fill:#fff3cd,stroke:#333,stroke-width:2px,color:#000
+    style AH fill:#d4edda,stroke:#333,stroke-width:2px,color:#000
 ```
 
 ### Zero-Knowledge Circuits
