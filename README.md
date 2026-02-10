@@ -515,9 +515,9 @@ Traditional approach: Compute entire commitment inside the circuit
 commitment = Pedersen(secret, amount, nonce, token, ...)
 ```
 
-**Problem**: Full Pedersen inside Noir circuits is expensive (many constraints) and inflexible—any change to committed fields requires circuit recompilation.
+**Problem**: How do we know the exact number of shares?
 
-Arkana's approach: Split computation using elliptic curve homomorphism
+Arkana's approach: Split computation using  homomorphism
 
 ```
 Circuit Side (private):           Contract Side (public):
@@ -576,14 +576,12 @@ inside the circuit               using Grumpkin point addition
    uint256 leaf = poseidon2_hash([finalCommitment.x, finalCommitment.y]);
    ```
 
-3. **Security**: 
-   - The partial commitment hides `spending_key` and `nonce_commitment` (ZK proof)
-   - Public values (`shares` and `unlocks_at`) are added on-chain using Grumpkin point addition
-   - Grumpkin's discrete log problem ensures you can't reverse-engineer private values
-   - Point addition is binding: `A + B = C` means changing any input changes output
-   - The final commitment point is hashed to create the Merkle tree leaf
+## Why
 
-This approach reduces circuit complexity by computing the commitment in two phases (private + public) while maintaining the same security guarantees.
+Because you can't know exactly the amount of shares to be minted into your position, we split the pedersen vector commitment into 2 step that way, so there's no race condition and the amount of shares is always accurate before being written into the leaf. 
+
+
+
 
 ## Features
 
@@ -917,18 +915,22 @@ For a production deployment, consider:
 
 ## Development Roadmap & TODO
 
+### Circom2 
+- [ ] Port the circuits in circom2 to avoid Noir infeasable verification gas cost. This will also enable more cheap use of alt_bn_128 precompiles vs grumpkin implementation, which comes at cost
+
 ### Circuit Development
 - [ ] Complete circuits for `absorb → send` operation flow
 - [ ] Complete circuits for `absorb → withdraw` operation flow
+- [ ] Multisig capabilities 
+- [ ] EdDSA to validate circuit inputs ?
 
 ### Contract Improvements
 - [ ] Add whitelist functionality (currently removed to bootstrap tests)
 - [ ] Refactor main contract to use delegate calls to avoid the 24kb contract size limit
-- [ ] Implement ECDSA/EdDSA signature validation for user authentication
 - [ ] Review and audit the share-to-asset conversion ratio logic
 
 ### Protocol Features
-- [ ] Integrate peer-to-peer (P2P) private transfers between users
+- [ ] Integrate peer-to-peer (P2P) private transfers between users with send/absorb circuits as starting point
 - [ ] Reintegrate timelock-enforced encryption from `feat/DrandExperiment` branch
   - Links should always be revealed on Multicall3 for transparency
   - Execution should be traceable to prevent abuse
