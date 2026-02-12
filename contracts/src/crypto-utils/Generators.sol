@@ -3,29 +3,29 @@ pragma solidity ^0.8.13;
 
 /**
  * @title Generators
- * @dev Pedersen commitment generators for Grumpkin curve
- * @notice These generators match the output of Noir's derive_generators("PEDERSEN_COMMITMENT_5", 0) at /circuits/lib/pedersen-commitments tests
+ * @dev Pedersen commitment generators for Baby Jubjub curve
+ * @notice These generators match circomlib's standard Pedersen generators used in Circom circuits
  */
 library Generators {
     // Generator G (for shares)
-    uint256 public constant G_X = 0x0949873ea2ea8f16b075c794aecf36efd5da1c9c8679737e7ec1aff775cc3b5c;
-    uint256 public constant G_Y = 0x1336d7f5bf34c2fe63e44461e86dd0a86b852c30d9c7213dd6c5d434ea3f9d38;
+    uint256 public constant G_X = 10457101036533406547632367118273992217979173478358440826365724437999023779287;
+    uint256 public constant G_Y = 19824078218392094440610104313265183977899662750282163392862422243483260492317;
 
     // Generator H (for nullifier)
-    uint256 public constant H_X = 0x229d4910f0d7e6fd2bed571a885241049eee73d5f9adc0d9ef2ce724aa1df3fa;
-    uint256 public constant H_Y = 0x20f8c9b24f986b93052ab51f5068bc690e35e9508d5b0951b0d4cad1ea04b28e;
+    uint256 public constant H_X = 2671756056509184035029146175565761955751135805354291559563293617232983272177;
+    uint256 public constant H_Y = 2663205510731142763556352975002641716101654201788071096152948830924149045094;
 
     // Generator D (for spending_key)
-    uint256 public constant D_X = 0x2bcc449b1a2840cf9327f846fe78db60aad3ddecff43c3c3facd13aba3cb1479;
-    uint256 public constant D_Y = 0x25e9a7bcc28000fc69f14bbe8a2ec561fd854ea6489f38e63ba4a40d34113717;
+    uint256 public constant D_X = 5802099305472655231388284418920769829666717045250560929368476121199858275951;
+    uint256 public constant D_Y = 5980429700218124965372158798884772646841287887664001482443826541541529227896;
 
     // Generator K (for unlocks_at)
-    uint256 public constant K_X = 0x19355291a8bf98b3533c01d677b184a4f6a4c5dd2d40f8b51c4ba0af75b89ed3;
-    uint256 public constant K_Y = 0x060541537d013b7d1a38b19db2a6be1f49e0002f84b0cc237a87c288154329a7;
+    uint256 public constant K_X = 7107336197374528537877327281242680114152313102022415488494307685842428166594;
+    uint256 public constant K_Y = 2857869773864086953506483169737724679646433914307247183624878062391496185654;
 
     // Generator J (for nonce_commitment)
-    uint256 public constant J_X = 0x10ed9cb73e6d8d98631a692fbc5761871595a39b9e7ab703d177c9ba9a44837f;
-    uint256 public constant J_Y = 0x1f76373da7dd8eef4dfada6743746d262ead94c38dd4192a9308aee33ea11594;
+    uint256 public constant J_X = 20265828622013100949498132415626198973119240347465898028410217039057588424236;
+    uint256 public constant J_Y = 1160461593266035632937973507065134938065359936056410650153315956301179689506;
 
     /**
      * @dev Get generator G as a struct

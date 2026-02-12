@@ -1,0 +1,57 @@
+# Compiled artifacts
+*.r1cs
+*.sym
+*.wasm
+*.wtns
+*.zkey
+*.ptau
+*.json
+!package.json
+!pnpm-lock.yaml
+!tsconfig.json
+
+# Build directories
+**/_cpp/
+**/_js/
+**/build/
+**/artifacts/
+**/out/
+
+# Node modules
+node_modules/
+.pnpm-store/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated files
+**/generated/
+**/*_generated.*
+
+# Test artifacts
+test/**/*.r1cs
+test/**/*.sym
+test/**/*.wasm
+test/**/*.wtns
+test/**/*_cpp/
+test/**/*_js/
+test/**/*.zkey
+test/**/*.ptau
+test/artifacts/
+!test/artifacts/.gitkeep
+
+# Main circuit artifacts (keep source, ignore compiled)
+main/**/*.r1cs
+main/**/*.sym
+main/**/*.wasm
+main/**/*_cpp/
+main/**/*_js/
+
