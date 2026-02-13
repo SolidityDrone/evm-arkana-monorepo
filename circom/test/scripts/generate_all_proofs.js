@@ -118,16 +118,13 @@ const PUBLIC_SIGNAL_NAMES = {
         'note_commitment_y'
     ],
     absorb_send: [
-        // Public inputs (9)
+        // Public inputs (6)
         'token_address',
         'chain_id',
         'expected_root',
-        'note_stack_x',
-        'note_stack_y',
         'receiver_public_key_x',
         'receiver_public_key_y',
         'relayer_fee_amount',
-        'send_relayer_fee_amount',
         // Public outputs (11)
         'new_commitment_leaf',
         'new_nonce_commitment',
@@ -142,18 +139,15 @@ const PUBLIC_SIGNAL_NAMES = {
         'note_commitment_y'
     ],
     absorb_withdraw: [
-        // Public inputs (11)
+        // Public inputs (8)
         'token_address',
         'amount',
         'chain_id',
         'expected_root',
-        'note_stack_x',
-        'note_stack_y',
         'declared_time_reference',
         'arbitrary_calldata_hash',
         'receiver_address',
         'relayer_fee_amount',
-        'withdraw_relayer_fee_amount',
         // Public outputs (7)
         'commitment_x',
         'commitment_y',
@@ -443,8 +437,7 @@ async function getInputsFromFlow(circuitName, sharedState = {}) {
         const myPublicKey3 = await calculatePublicKey(senderPrivateKey3);
 
         const absorbSendAmount = hexToDecimal("0x1e"); // 30
-        const absorbRelayerFee = hexToDecimal("0x05"); // 5
-        const sendRelayerFee = hexToDecimal("0x01"); // 1
+        const relayerFee = "1"; // Single fee for absorb+send
 
         const sendMerkleProof = await generateMerkleProof(send.new_commitment_leaf, 2, send.treeDepth, send.allLeaves, send.treeSize, hashWrapper);
         const noteStackMerkleProof = await generateMerkleProof(send.note_stack_leaf, 3, send.treeDepth, send.allLeaves, send.treeSize, hashWrapper);
@@ -470,8 +463,7 @@ async function getInputsFromFlow(circuitName, sharedState = {}) {
             note_stack_x: send.note_stack_x,
             note_stack_y: send.note_stack_y,
             receiver_public_key: myPublicKey3,
-            relayer_fee_amount: absorbRelayerFee,
-            send_relayer_fee_amount: sendRelayerFee
+            relayer_fee_amount: relayerFee
         };
     }
 
@@ -480,8 +472,7 @@ async function getInputsFromFlow(circuitName, sharedState = {}) {
         const { send } = sharedState;
 
         const absorbWithdrawAmount = hexToDecimal("0x1e"); // 30
-        const absorbRelayerFee = hexToDecimal("0x05"); // 5
-        const withdrawRelayerFee = hexToDecimal("0x01"); // 1
+        const relayerFee = "1"; // Single fee for absorb+withdraw
 
         const sendMerkleProof = await generateMerkleProof(send.new_commitment_leaf, 2, send.treeDepth, send.allLeaves, send.treeSize, hashWrapper);
         const noteStackMerkleProof = await generateMerkleProof(send.note_stack_leaf, 3, send.treeDepth, send.allLeaves, send.treeSize, hashWrapper);
@@ -509,8 +500,7 @@ async function getInputsFromFlow(circuitName, sharedState = {}) {
             declared_time_reference: "1000000",
             arbitrary_calldata_hash: hexToDecimal("0x1234567890abcdef"),
             receiver_address: hexToDecimal("0x742d35cc6634c0532925a3b8d4c9db96c4b4d8b6"),
-            relayer_fee_amount: absorbRelayerFee,
-            withdraw_relayer_fee_amount: withdrawRelayerFee
+            relayer_fee_amount: relayerFee
         };
     }
 

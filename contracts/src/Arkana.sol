@@ -28,10 +28,10 @@ interface IVerifierSend {
     function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[17] calldata _pubSignals) external view returns (bool);
 }
 interface IVerifierAbsorbSend {
-    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[20] calldata _pubSignals) external view returns (bool);
+    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[17] calldata _pubSignals) external view returns (bool);
 }
 interface IVerifierAbsorbWithdraw {
-    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[18] calldata _pubSignals) external view returns (bool);
+    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[15] calldata _pubSignals) external view returns (bool);
 }
 
 contract Arkana is AccessControl, ReentrancyGuard {
@@ -774,15 +774,15 @@ contract Arkana is AccessControl, ReentrancyGuard {
         );
     }
 
-    /// @notice Absorb+Withdraw: absorb notes then withdraw to receiver (same as withdraw with two relayer fees)
+    /// @notice Absorb+Withdraw: absorb notes then withdraw to receiver (same as withdraw with single relayer fee)
     /// @param pA,pB,pC Groth16 proof points (Circom/snarkjs format)
-    /// @param publicSignals [token_address, amount, chain_id, expected_root, declared_time_reference, arbitrary_calldata_hash, receiver_address, relayer_fee_amount, withdraw_relayer_fee_amount, commitment[2], new_nonce_commitment, encrypted_state[2], nonce_discovery_entry[2]] (18 elements, last 2 may be padding)
+    /// @param publicSignals [token_address, amount, chain_id, expected_root, declared_time_reference, arbitrary_calldata_hash, receiver_address, relayer_fee_amount, commitment[2], new_nonce_commitment, encrypted_state[2], nonce_discovery_entry[2]] (15 elements, same layout as withdraw)
     /// @param call Multicall3 calldata (if any)
     function absorbWithdraw(
         uint256[2] calldata pA,
         uint256[2][2] calldata pB,
         uint256[2] calldata pC,
-        uint256[18] calldata publicSignals,
+        uint256[15] calldata publicSignals,
         bytes calldata call
     ) public nonReentrant returns (uint256 newRoot) {
         require(IVerifierAbsorbWithdraw(verifiersByIndex[5]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
@@ -795,16 +795,15 @@ contract Arkana is AccessControl, ReentrancyGuard {
         bytes32 arbitraryCalldataHash = bytes32(publicSignals[5]);
         address receiverAddress = address(uint160(publicSignals[6]));
         uint256 relayerFeeAmount = publicSignals[7];
-        uint256 withdrawRelayerFeeAmount = publicSignals[8];
 
         WithdrawOutputs memory outputs = WithdrawOutputs({
-            pedersenCommitmentX: publicSignals[9],
-            pedersenCommitmentY: publicSignals[10],
-            newNonceCommitment: publicSignals[11],
-            encryptedBalance: bytes32(publicSignals[12]),
-            encryptedNullifier: bytes32(publicSignals[13]),
-            nonceDiscoveryEntryX: publicSignals[14],
-            nonceDiscoveryEntryY: publicSignals[15]
+            pedersenCommitmentX: publicSignals[8],
+            pedersenCommitmentY: publicSignals[9],
+            newNonceCommitment: publicSignals[10],
+            encryptedBalance: bytes32(publicSignals[11]),
+            encryptedNullifier: bytes32(publicSignals[12]),
+            nonceDiscoveryEntryX: publicSignals[13],
+            nonceDiscoveryEntryY: publicSignals[14]
         });
 
         if (chainId != block.chainid) {
@@ -837,9 +836,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
             tokenAddress, outputs.nonceDiscoveryEntryX, outputs.nonceDiscoveryEntryY, outputs.newNonceCommitment
         );
 
-        uint256 totalRelayerFeeShares = relayerFeeAmount + withdrawRelayerFeeAmount;
         _handleWithdrawal(
-            tokenAddress, amount, totalRelayerFeeShares, receiverAddress, call, arbitraryCalldataHash
+            tokenAddress, amount, relayerFeeAmount, receiverAddress, call, arbitraryCalldataHash
         );
 
         operationInfo[bytes32(outputs.newNonceCommitment)] =
@@ -1033,12 +1031,12 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
     /// @notice Absorb+Send: absorb notes into balance then send to receiver (same state updates as send; circuit proves absorb + send)
     /// @param pA,pB,pC Groth16 proof points (Circom/snarkjs format)
-    /// @param publicSignals [token_address, chain_id, expected_root, receiver_public_key[2], relayer_fee_amount, send_relayer_fee_amount, new_commitment_leaf, new_nonce_commitment, encrypted_note[3], sender_pub_key[2], nonce_discovery_entry[2], note_commitment[2]] (20 elements, last 2 may be padding)
+    /// @param publicSignals [token_address, chain_id, expected_root, receiver_public_key[2], relayer_fee_amount, new_commitment_leaf, new_nonce_commitment, encrypted_note[3], sender_pub_key[2], nonce_discovery_entry[2], note_commitment[2]] (17 elements, same layout as send)
     function absorbSend(
         uint256[2] calldata pA,
         uint256[2][2] calldata pB,
         uint256[2] calldata pC,
-        uint256[20] calldata publicSignals
+        uint256[17] calldata publicSignals
     ) public nonReentrant returns (uint256) {
         require(IVerifierAbsorbSend(verifiersByIndex[4]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
 
@@ -1048,18 +1046,17 @@ contract Arkana is AccessControl, ReentrancyGuard {
         uint256 receiverPublicKeyX = publicSignals[3];
         uint256 receiverPublicKeyY = publicSignals[4];
         uint256 relayerFeeAmount = publicSignals[5];
-        uint256 sendRelayerFeeAmount = publicSignals[6];
-        uint256 newCommitmentLeaf = publicSignals[7];
-        uint256 newNonceCommitment = publicSignals[8];
-        uint256 encryptedAmount = publicSignals[9];
-        bytes32 encryptedBalance = bytes32(publicSignals[10]);
-        bytes32 encryptedNullifier = bytes32(publicSignals[11]);
-        uint256 senderPubKeyX = publicSignals[12];
-        uint256 senderPubKeyY = publicSignals[13];
-        uint256 nonceDiscoveryEntryX = publicSignals[14];
-        uint256 nonceDiscoveryEntryY = publicSignals[15];
-        uint256 note_p_commitment_x = publicSignals[16];
-        uint256 note_p_commitment_y = publicSignals[17];
+        uint256 newCommitmentLeaf = publicSignals[6];
+        uint256 newNonceCommitment = publicSignals[7];
+        uint256 encryptedAmount = publicSignals[8];
+        bytes32 encryptedBalance = bytes32(publicSignals[9]);
+        bytes32 encryptedNullifier = bytes32(publicSignals[10]);
+        uint256 senderPubKeyX = publicSignals[11];
+        uint256 senderPubKeyY = publicSignals[12];
+        uint256 nonceDiscoveryEntryX = publicSignals[13];
+        uint256 nonceDiscoveryEntryY = publicSignals[14];
+        uint256 note_p_commitment_x = publicSignals[15];
+        uint256 note_p_commitment_y = publicSignals[16];
 
         if (chainId != block.chainid) {
             revert InvalidChainId();
@@ -1150,9 +1147,9 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @notice Default initial nonce discovery point
     /// @dev This is the initial point used when a token has no nonce discovery entries yet
     uint256 private constant DEFAULT_NONCE_DISCOVERY_X =
-        0x098b60b4fb636ed774329d8bb20eb1f9bd2f1b53445e991de219b50739e95c16;
+        4392536750732362865918638758609041408585186611207775368361094155784201629032;
     uint256 private constant DEFAULT_NONCE_DISCOVERY_Y =
-        0x1b82bb29393d7897d102bc412ca1b3353e78ecc738baf483fed847ef9e212997;
+        21825405433778094041183639453576582602612179060985696850137150857802961151461;
     uint256 private constant DEFAULT_NONCE_DISCOVERY_M = 1;
     uint256 private constant DEFAULT_NONCE_DISCOVERY_R = 1;
 

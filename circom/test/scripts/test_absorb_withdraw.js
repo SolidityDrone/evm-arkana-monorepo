@@ -306,8 +306,7 @@ async function testAbsorbWithdrawFlow() {
     const nullifier_after_send = "1"; // Nullifier stays 0 (encoded as 1) after send
     
     const absorbWithdrawAmount = hexToDecimal("0x1e"); // 30
-    const absorbRelayerFee = hexToDecimal("0x05"); // 5
-    const withdrawRelayerFee = hexToDecimal("0x01"); // 1
+    const relayerFee = "1"; // Single fee for absorb+withdraw
     
     // For withdraw, we need previous_unlocks_at (must be unlocked, so use 1 which represents 0)
     // declared_time_reference must be >= unlocks_at
@@ -338,8 +337,7 @@ async function testAbsorbWithdrawFlow() {
         declared_time_reference: declaredTimeReference,
         arbitrary_calldata_hash: arbitraryCalldataHash,
         receiver_address: receiverAddress,
-        relayer_fee_amount: absorbRelayerFee,
-        withdraw_relayer_fee_amount: withdrawRelayerFee
+        relayer_fee_amount: relayerFee
     };
     
     console.log('Absorb-Withdraw inputs:');

@@ -34,16 +34,15 @@ template AbsorbSend() {
     signal input note_stack_merkle_proof[32];
     signal input note_stack_x;  // Private: x coordinate of note_stack commitment point (prover proves knowledge)
     signal input note_stack_y;  // Private: y coordinate of note_stack commitment point (prover proves knowledge)
-    
+
     // Public inputs (declared in main { public [ ... ] } for verifier)
     signal input token_address;
     signal input chain_id;
     signal input expected_root;
 
     signal input receiver_public_key[2];  // [x, y] on Baby Jubjub
-    signal input relayer_fee_amount;  // Fee for absorb operation
-    signal input send_relayer_fee_amount;  // Fee for send operation
-    
+    signal input relayer_fee_amount;  // Single fee for the whole absorb+send operation
+
     // Public outputs
     signal output new_commitment_leaf;  // Leaf hash (hashed in circuit)
     signal output new_nonce_commitment;
@@ -174,13 +173,11 @@ template AbsorbSend() {
     absorbed_amount <== note_stack_m;
     
     signal final_shares;
-    final_shares <== current_balance + absorbed_amount - relayer_fee_amount - amount - send_relayer_fee_amount;
+    final_shares <== current_balance + absorbed_amount - relayer_fee_amount - amount;
     
-    // OPTIMIZATION: Combined balance check (covers both absorb and send)
-    // We need: current_balance + absorbed_amount >= relayer_fee_amount + amount + send_relayer_fee_amount + 1
-    // This ensures: (1) absorb fee is covered, (2) send amount + fee is covered
+    // Combined balance check: current_balance + absorbed_amount >= relayer_fee_amount + amount + 1
     signal total_required;
-    total_required <== relayer_fee_amount + amount + send_relayer_fee_amount + 1;
+    total_required <== relayer_fee_amount + amount + 1;
     signal total_available;
     total_available <== current_balance + absorbed_amount;
     component combined_balance_check = GreaterThanOrEqualField();
@@ -289,5 +286,5 @@ template AbsorbSend() {
     nonce_discovery_entry[1] <== nonce_discovery.commitment[1];
 }
 
-component main { public [ token_address, chain_id, expected_root, receiver_public_key, relayer_fee_amount, send_relayer_fee_amount ] } = AbsorbSend();
+component main { public [ token_address, chain_id, expected_root, receiver_public_key, relayer_fee_amount ] } = AbsorbSend();
 

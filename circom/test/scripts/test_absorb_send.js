@@ -346,8 +346,7 @@ async function testAbsorbSendFlow() {
     const previous_nonce_commitment_1 = await poseidon2Hash3(spending_key, "1", tokenAddress);
     
     const absorbSendAmount = hexToDecimal("0x1e"); // 30
-    const absorbRelayerFee = hexToDecimal("0x05"); // 5
-    const sendRelayerFee = hexToDecimal("0x01"); // 1
+    const relayerFee = "1"; // Single fee for absorb+send
     
     // Calculate your public key at nonce 3 for the absorb-send
     // The circuit will compute nonce = previous_nonce + 1 = 2 + 1 = 3
@@ -376,8 +375,7 @@ async function testAbsorbSendFlow() {
         note_stack_x: note_stack_x,
         note_stack_y: note_stack_y,
         receiver_public_key: myPublicKey3, // Send to yourself again
-        relayer_fee_amount: absorbRelayerFee,
-        send_relayer_fee_amount: sendRelayerFee
+        relayer_fee_amount: relayerFee
     };
     
     console.log('Absorb-Send inputs:');

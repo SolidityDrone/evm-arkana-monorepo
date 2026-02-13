@@ -33,7 +33,7 @@ template AbsorbWithdraw() {
     signal input note_stack_merkle_proof[32];
     signal input note_stack_x;  // Private: x coordinate of note_stack commitment point (prover proves knowledge)
     signal input note_stack_y;  // Private: y coordinate of note_stack commitment point (prover proves knowledge)
-    
+
     // Public inputs (declared in main { public [ ... ] } for verifier)
     signal input token_address;
     signal input amount;  // Amount to withdraw (in shares)
@@ -43,9 +43,8 @@ template AbsorbWithdraw() {
     signal input declared_time_reference;
     signal input arbitrary_calldata_hash;
     signal input receiver_address;
-    signal input relayer_fee_amount;  // Fee for absorb operation
-    signal input withdraw_relayer_fee_amount;  // Fee for withdraw operation
-    
+    signal input relayer_fee_amount;  // Single fee for the whole absorb+withdraw operation
+
     // Public outputs
     signal output commitment[2];  // [x, y] Pedersen commitment point
     signal output new_nonce_commitment;
@@ -168,19 +167,13 @@ template AbsorbWithdraw() {
     signal absorbed_amount;
     absorbed_amount <== note_stack_m;
     
-    // OPTIMIZATION: Compute final_shares directly instead of intermediate steps
-    // current_balance is encoded (shares format), so actual = current_balance - 1
-    // After absorb: new_balance = (current_balance - 1) + absorbed_amount - relayer_fee_amount
-    // After withdraw: final_shares = new_balance - amount - withdraw_relayer_fee_amount
-    // Combined: final_shares = current_balance + absorbed_amount - relayer_fee_amount - amount - withdraw_relayer_fee_amount
+    // Combined: final_shares = current_balance + absorbed_amount - relayer_fee_amount - amount (one fee)
     signal final_shares;
-    final_shares <== current_balance + absorbed_amount - relayer_fee_amount - amount - withdraw_relayer_fee_amount;
+    final_shares <== current_balance + absorbed_amount - relayer_fee_amount - amount;
     
-    // OPTIMIZATION: Combined balance check (covers both absorb and withdraw)
-    // We need: current_balance + absorbed_amount >= relayer_fee_amount + amount + withdraw_relayer_fee_amount + 1
-    // This ensures: (1) absorb fee is covered, (2) withdraw amount + fee is covered
+    // Combined balance check: current_balance + absorbed_amount >= relayer_fee_amount + amount + 1
     signal total_required;
-    total_required <== relayer_fee_amount + amount + withdraw_relayer_fee_amount + 1;
+    total_required <== relayer_fee_amount + amount + 1;
     signal total_available;
     total_available <== current_balance + absorbed_amount;
     component combined_balance_check = GreaterThanOrEqualField();
@@ -262,5 +255,5 @@ template AbsorbWithdraw() {
     nonce_discovery_entry[1] <== nonce_discovery.commitment[1];
 }
 
-component main { public [ token_address, amount, chain_id, expected_root, declared_time_reference, arbitrary_calldata_hash, receiver_address, relayer_fee_amount, withdraw_relayer_fee_amount ] } = AbsorbWithdraw();
+component main { public [ token_address, amount, chain_id, expected_root, declared_time_reference, arbitrary_calldata_hash, receiver_address, relayer_fee_amount ] } = AbsorbWithdraw();
 
