@@ -295,9 +295,6 @@ if echo "$ARKANA_OUTPUT" | grep -q "Error\|error\|Failed\|failed"; then
     echo "Warning: Deployment may have failed. Check output above."
 fi
 
-# Extract TLswapRegister address
-TLSWAP_REGISTER_ADDRESS=$(echo "$ARKANA_OUTPUT" | grep -i "TLswapRegister deployed at:" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
-
 # Extract Arkana contract address
 # Try multiple patterns to match different console.log formats
 # Priority: specific console.log messages first, then broadcast output
@@ -336,9 +333,6 @@ echo "=========================================="
 echo "Deployment completed successfully!"
 echo "=========================================="
 echo "Huff Poseidon2: $POSEIDON2_HUFF_ADDRESS"
-if [ -n "$TLSWAP_REGISTER_ADDRESS" ]; then
-    echo "TLswapRegister: $TLSWAP_REGISTER_ADDRESS"
-fi
 if [ -n "$ARKANA_ADDRESS" ]; then
     # Validate that addresses are different
     if [ "$ARKANA_ADDRESS" = "$POSEIDON2_HUFF_ADDRESS" ]; then
@@ -363,14 +357,12 @@ echo ""
 
 # Export addresses for potential downstream scripts
 export ARKANA_ADDRESS
-export TLSWAP_REGISTER_ADDRESS
 
 # Optionally save to a file for later use
 if [ -n "$ARKANA_ADDRESS" ] && [ "$ARKANA_ADDRESS" != "$POSEIDON2_HUFF_ADDRESS" ]; then
     echo "Saving deployment addresses to deployed_addresses.txt..."
     cat > deployed_addresses.txt << EOF
 POSEIDON2_HUFF_ADDRESS=$POSEIDON2_HUFF_ADDRESS
-TLSWAP_REGISTER_ADDRESS=${TLSWAP_REGISTER_ADDRESS:-}
 ARKANA_ADDRESS=$ARKANA_ADDRESS
 EOF
     echo "Addresses saved to deployed_addresses.txt"
@@ -386,20 +378,6 @@ if [ "$IS_SEPOLIA" = "true" ] && [ -n "$ETHERSCAN_API_KEY" ]; then
     # Wait a bit for contracts to be indexed
     echo "Waiting 10 seconds for contracts to be indexed..."
     sleep 10
-    
-    # Verify TLswapRegister contract
-    if [ -n "$TLSWAP_REGISTER_ADDRESS" ]; then
-        echo ""
-        echo "Verifying TLswapRegister contract at $TLSWAP_REGISTER_ADDRESS..."
-        forge verify-contract \
-            "$TLSWAP_REGISTER_ADDRESS" \
-            src/tl-limit/TLswapRegister.sol:TLswapRegister \
-            --chain-id 11155111 \
-            --etherscan-api-key "$ETHERSCAN_API_KEY" \
-            --compiler-version "$(forge --version | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')" \
-            --num-of-optimizations 200 \
-            --via-ir || echo "  ⚠️  TLswapRegister verification failed (may already be verified)"
-    fi
     
     # Verify Verifier contracts
     echo ""

@@ -10,22 +10,32 @@ import {AccessControl} from "@oz/contracts/access/AccessControl.sol";
 import {IPool, DataTypes} from "@aave/core-v3/interfaces/IPool.sol";
 import "./ArkanaVault.sol";
 import {Field} from "../lib/poseidon2-evm/src/Field.sol";
-import {Grumpkin} from "./crypto-utils/Grumpkin.sol";
+import {BJJ} from "./crypto-utils/BJJ.sol";
 import {Generators} from "./crypto-utils/Generators.sol";
 import {ReentrancyGuard} from "@oz/contracts/utils/ReentrancyGuard.sol";
 
-// Noir Verifier interface
-interface IVerifier {
-    function verify(bytes calldata _proof, bytes32[] calldata _publicInputs) external view returns (bool);
+// Circom Groth16 verifier interfaces (snarkjs-generated)
+interface IVerifierEntry {
+    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[7] calldata _pubSignals) external view returns (bool);
 }
+interface IVerifierDeposit {
+    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[11] calldata _pubSignals) external view returns (bool);
+}
+interface IVerifierWithdraw {
+    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[15] calldata _pubSignals) external view returns (bool);
+}
+interface IVerifierSend {
+    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[17] calldata _pubSignals) external view returns (bool);
+}
+
+
 
 contract Arkana is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     /// @notice Role for initializing vaults
     bytes32 public constant VAULT_INITIALIZER_ROLE = keccak256("ARKANA");
-    /// @notice Role for TLswapRegister
-    bytes32 public constant TLSWAP_REGISTER_ROLE = keccak256("TLSWAP_REGISTER");
+
     /// @notice Mapping from verifier index to verifier address
     /// @dev Index 0 = Entry, 1 = Deposit, 2 = Send, 3 = Withdraw, 4 = Absorb+Send, 5 = Asborb+Withdraw?
     mapping(uint256 => address) public verifiersByIndex;
@@ -67,12 +77,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @dev Ensures all proofs are at least 8 levels deep for consistent verification
     uint256 public constant MIN_TREE_DEPTH = 8;
 
-    /// @notice TLswapRegister contract address
-    address public tlswapRegisterAddress;
     /// @notice Multicall3 contract address
     address public multicall3Address;
-    /// @notice TLswapRegister contract address (for swap intent execution)
-    address public tlswapRegister;
     /// @notice Mapping from token address to its ERC4626 vault address
     /// @dev Each token can have one vault for standard ERC4626 interface
     /// @dev The vault tracks all shares and handles ERC4626 conversions
@@ -155,7 +161,6 @@ contract Arkana is AccessControl, ReentrancyGuard {
         bytes32 encryptedNullifier;
         uint256 nonceDiscoveryEntryX;
         uint256 nonceDiscoveryEntryY;
-        uint256 tlHashchain; // Hash chain for TL swap chunks (0 if is_tl_swap = false)
     }
 
     /// @notice Nonce discovery entry struct
@@ -207,8 +212,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         uint256 _protocolFee,
         uint256 _discountWindow,
         address _poseidon2Huff,
-        address _multicall3,
-        address _tlswapRegister
+        address _multicall3
     ) {
         // Initialize AccessControl - grant DEFAULT_ADMIN_ROLE to deployer
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -242,18 +246,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
         // Grant deployer the VAULT_INITIALIZER_ROLE as well
         _grantRole(VAULT_INITIALIZER_ROLE, msg.sender);
-        // Grant TLswapRegister the TLSWAP_REGISTER_ROLE
-        _grantRole(TLSWAP_REGISTER_ROLE, _tlswapRegister);
-        // Set tlswapRegister storage variable
-        tlswapRegister = _tlswapRegister;
     }
 
-    /// @notice Set the TLswapRegister address
-    /// @param _tlswapRegister Address of the TLswapRegister contract
-    /// @dev Only callable by accounts with DEFAULT_ADMIN_ROLE
-    function setTlswapRegister(address _tlswapRegister) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        tlswapRegister = _tlswapRegister;
-    }
 
     // ============================================
     // VAULT INITIALIZATION
@@ -472,28 +466,26 @@ contract Arkana is AccessControl, ReentrancyGuard {
     // ============================================
 
     /// @notice Initialize a new entry in the Arkana system
-    /// @param publicInputs The public inputs for verification (contains pub params + pub outputs)
-    /// @dev publicInputs structure: [token_address, amount, chain_id, balance_commitment_x, balance_commitment_y, new_nonce_commitment, nonce_discovery_entry_x, nonce_discovery_entry_y]
+    /// @param pA,pB,pC Groth16 proof points (Circom/snarkjs format)
+    /// @param publicSignals Public signals [token_address, chain_id, balance_commitment_x, balance_commitment_y, new_nonce_commitment, nonce_discovery_entry_x, nonce_discovery_entry_y]
     /// @return The new root after adding the commitment
-    function initialize(bytes calldata proof, bytes32[] calldata publicInputs, uint256 amountIn, uint256 lockDuration)
-        public
-        returns (uint256)
-    {
-        // Verify proof using Entry verifier (index 0)
-        //require(IVerifier(verifiersByIndex[0]).verify(proof, publicInputs), "Invalid proof");
+    function initialize(
+        uint256[2] calldata pA,
+        uint256[2][2] calldata pB,
+        uint256[2] calldata pC,
+        uint256[7] calldata publicSignals,
+        uint256 amountIn,
+        uint256 lockDuration
+    ) public returns (uint256) {
+        require(IVerifierEntry(verifiersByIndex[0]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
 
-        // Validate publicInputs array length (requires 7 elements)
-        if (publicInputs.length < 7) {
-            revert InvalidPublicInputs();
-        }
-
-        address tokenAddress = address(uint160(uint256(publicInputs[0])));
-        uint256 chainId = uint256(publicInputs[1]);
-        uint256 balanceCommitmentX = uint256(publicInputs[2]);
-        uint256 balanceCommitmentY = uint256(publicInputs[3]);
-        uint256 newNonceCommitment = uint256(publicInputs[4]);
-        uint256 nonceDiscoveryEntryX = uint256(publicInputs[5]);
-        uint256 nonceDiscoveryEntryY = uint256(publicInputs[6]);
+        address tokenAddress = address(uint160(publicSignals[0]));
+        uint256 chainId = publicSignals[1];
+        uint256 balanceCommitmentX = publicSignals[2];
+        uint256 balanceCommitmentY = publicSignals[3];
+        uint256 newNonceCommitment = publicSignals[4];
+        uint256 nonceDiscoveryEntryX = publicSignals[5];
+        uint256 nonceDiscoveryEntryY = publicSignals[6];
 
         if (chainId != block.chainid) {
             revert InvalidChainId();
@@ -554,19 +546,19 @@ contract Arkana is AccessControl, ReentrancyGuard {
         // Get generators G and K
         (uint256 gX, uint256 gY) = Generators.getG();
         (uint256 kX, uint256 kY) = Generators.getK();
-        Grumpkin.G1Point memory G = Grumpkin.G1Point(gX, gY);
-        Grumpkin.G1Point memory K = Grumpkin.G1Point(kX, kY);
+        BJJ.Point memory G = BJJ.Point(gX, gY);
+        BJJ.Point memory K = BJJ.Point(kX, kY);
 
         // Get balance commitment point from circuit
-        Grumpkin.G1Point memory balanceCommitment = Grumpkin.G1Point(balanceCommitmentX, balanceCommitmentY);
+        BJJ.Point memory balanceCommitment = BJJ.Point(balanceCommitmentX, balanceCommitmentY);
 
         // Add shares*G to balance commitment
-        Grumpkin.G1Point memory sharesCommitment = Grumpkin.getTerm(G, shares);
-        Grumpkin.G1Point memory commitmentWithShares = Grumpkin.add(balanceCommitment, sharesCommitment);
+        BJJ.Point memory sharesCommitment = BJJ.getTerm(G, shares);
+        BJJ.Point memory commitmentWithShares = BJJ.add(balanceCommitment, sharesCommitment);
 
         // Add unlocks_at*K to commitment
-        Grumpkin.G1Point memory unlocksAtCommitment = Grumpkin.getTerm(K, unlocks_at);
-        Grumpkin.G1Point memory finalCommitment = Grumpkin.add(commitmentWithShares, unlocksAtCommitment);
+        BJJ.Point memory unlocksAtCommitment = BJJ.getTerm(K, unlocks_at);
+        BJJ.Point memory finalCommitment = BJJ.add(commitmentWithShares, unlocksAtCommitment);
 
         // Hash the final Pedersen commitment point to create the leaf
         uint256 leaf =
@@ -592,35 +584,28 @@ contract Arkana is AccessControl, ReentrancyGuard {
     }
 
     /// @notice Deposit function - adds funds to existing balance
-    /// @param publicInputs The public inputs for verification (contains pub params + pub outputs)
-    /// @dev publicInputs structure:
-    ///      Public inputs (4): [token_address, amount, chain_id, expected_root]
-    ///      Public outputs (7): [pedersen_commitment[2], new_nonce_commitment, encrypted_state_details[2], nonce_discovery_entry[2]]
-    ///      Total: 11 elements
+    /// @param pA,pB,pC Groth16 proof points (Circom/snarkjs format)
+    /// @param publicSignals [token_address, amount, chain_id, expected_root, pedersen_commitment[2], encrypted_state[2], nonce_discovery_entry[2], new_nonce_commitment] (11 elements)
     /// @return The new root after adding the commitment
-    function deposit(bytes calldata proof, bytes32[] calldata publicInputs) public nonReentrant returns (uint256) {
-        // Verify proof using Deposit verifier (index 1)
-        //require(IVerifier(verifiersByIndex[1]).verify(proof, publicInputs), "Invalid proof");
+    function deposit(
+        uint256[2] calldata pA,
+        uint256[2][2] calldata pB,
+        uint256[2] calldata pC,
+        uint256[11] calldata publicSignals
+    ) public nonReentrant returns (uint256) {
+        require(IVerifierDeposit(verifiersByIndex[1]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
 
-        // Validate publicInputs array length (requires 11 elements: 4 public inputs + 7 public outputs)
-        if (publicInputs.length < 11) {
-            revert InvalidPublicInputs();
-        }
-
-        // Parse public inputs (first 4 elements)
-        address tokenAddress = address(uint160(uint256(publicInputs[0]))); // token_address
-        uint256 amountIn = uint256(publicInputs[1]); // amount (from circuit, for verification)
-        uint256 chainId = uint256(publicInputs[2]); // chain_id
-        uint256 expectedRoot = uint256(publicInputs[3]); // expected_root
-
-        // Parse public outputs (next 7 elements)
-        uint256 pedersenCommitmentX = uint256(publicInputs[4]); // commitment.x
-        uint256 pedersenCommitmentY = uint256(publicInputs[5]); // commitment.y
-        bytes32 encryptedBalance = bytes32(publicInputs[6]); // encrypted_state_details[0]
-        bytes32 encryptedNullifier = bytes32(publicInputs[7]); // encrypted_state_details[1]
-        uint256 nonceDiscoveryEntryX = uint256(publicInputs[8]); // nonce_discovery_entry.x
-        uint256 nonceDiscoveryEntryY = uint256(publicInputs[9]); // nonce_discovery_entry.y
-        uint256 newNonceCommitment = uint256(publicInputs[10]); // new_nonce_commitment
+        address tokenAddress = address(uint160(publicSignals[0]));
+        uint256 amountIn = publicSignals[1];
+        uint256 chainId = publicSignals[2];
+        uint256 expectedRoot = publicSignals[3];
+        uint256 pedersenCommitmentX = publicSignals[4];
+        uint256 pedersenCommitmentY = publicSignals[5];
+        bytes32 encryptedBalance = bytes32(publicSignals[6]);
+        bytes32 encryptedNullifier = bytes32(publicSignals[7]);
+        uint256 nonceDiscoveryEntryX = publicSignals[8];
+        uint256 nonceDiscoveryEntryY = publicSignals[9];
+        uint256 newNonceCommitment = publicSignals[10];
 
         if (chainId != block.chainid) {
             revert InvalidChainId();
@@ -644,7 +629,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
         // Get Pedersen commitment point from circuit
         // This includes: previous_shares*G + nullifier*H + spending_key*D + previous_unlocks_at*K + new_nonce_commitment*J
-        Grumpkin.G1Point memory circuitCommitment = Grumpkin.G1Point(pedersenCommitmentX, pedersenCommitmentY);
+        BJJ.Point memory circuitCommitment = BJJ.Point(pedersenCommitmentX, pedersenCommitmentY);
 
         // Calculate shares using the vault (ERC4626 standard)
         address vaultAddress = tokenVaults[tokenAddress];
@@ -662,11 +647,11 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
         // Get generator G
         (uint256 gX, uint256 gY) = Generators.getG();
-        Grumpkin.G1Point memory G = Grumpkin.G1Point(gX, gY);
+        BJJ.Point memory G = BJJ.Point(gX, gY);
 
         // Add shares*G to circuit commitment
-        Grumpkin.G1Point memory sharesCommitment = Grumpkin.getTerm(G, shares);
-        Grumpkin.G1Point memory finalCommitment = Grumpkin.add(circuitCommitment, sharesCommitment);
+        BJJ.Point memory sharesCommitment = BJJ.getTerm(G, shares);
+        BJJ.Point memory finalCommitment = BJJ.add(circuitCommitment, sharesCommitment);
 
         // Circuit keeps previous_unlocks_at unchanged (deposit doesn't change lock time)
         // No need to modify it - circuit commitment is complete
@@ -699,49 +684,39 @@ contract Arkana is AccessControl, ReentrancyGuard {
     }
 
     /// @notice Withdraw function - withdraws funds from balance
-    /// @param publicInputs The public inputs for verification (contains pub params + pub outputs)
-    /// @param call For normal withdrawals: Multicall3 calldata. For TL swaps: abi.encode(ciphertext, orderHashes)
+    /// @param pA,pB,pC Groth16 proof points (Circom/snarkjs format)
+    /// @param publicSignals [token_address, chain_id, declared_time_reference, expected_root, arbitrary_calldata_hash, receiver_address, relayer_fee_amount, pedersen_commitment[2], new_nonce_commitment, encrypted_state[2], nonce_discovery_entry[2], final_amount] (15 elements)
+    /// @param call For normal withdrawals: Multicall3 calldata.
     /// @return newRoot The new root after adding the commitment
-    /// @dev publicInputs structure: [token_address, chain_id, declared_time_reference, expected_root, arbitrary_calldata_hash, receiver_address, relayer_fee_amount, is_tl_swap, pedersen_commitment[2], new_nonce_commitment, encrypted_state_details[2], nonce_discovery_entry[2], tl_hashchain, final_amount]
-    function withdraw(bytes calldata proof, bytes32[] calldata publicInputs, bytes calldata call)
-        public
-        nonReentrant
-        returns (uint256 newRoot)
-    {
-        // Verify proof using Withdraw verifier (index 3)
-        //require(IVerifier(verifiersByIndex[3]).verify(proof, publicInputs), "Invalid proof")
+    function withdraw(
+        uint256[2] calldata pA,
+        uint256[2][2] calldata pB,
+        uint256[2] calldata pC,
+        uint256[15] calldata publicSignals,
+        bytes calldata call
+    ) public nonReentrant returns (uint256 newRoot) {
+        require(IVerifierWithdraw(verifiersByIndex[3]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
 
-        if (publicInputs.length < 17) {
-            revert InvalidPublicInputs();
-        }
+        address tokenAddress = address(uint160(publicSignals[0]));
+        uint256 declaredTimeReference = publicSignals[2];
+        uint256 expectedRoot = publicSignals[3];
+        bytes32 arbitraryCalldataHash = bytes32(publicSignals[4]);
+        address receiverAddress = address(uint160(publicSignals[5]));
+        uint256 relayerFeeShares = publicSignals[6];
 
-        address tokenAddress = address(uint160(uint256(publicInputs[0]))); // token_address
-        uint256 declaredTimeReference = uint256(publicInputs[2]); // declared_time_reference (index 2, chain_id is at 1)
-        uint256 expectedRoot = uint256(publicInputs[3]); // expected_root (index 3)
-        bytes32 arbitraryCalldataHash = publicInputs[4]; // arbitrary_calldata_hash (index 4)
-        address receiverAddress = address(uint160(uint256(publicInputs[5]))); // receiver_address (index 5)
-        uint256 relayerFeeShares = uint256(publicInputs[6]); // relayer_fee_amount (index 6)
-
-        // Parse is_tl_swap (bool encoded as Field: 0 = false, 1 = true)
-        bool isTlSwap = uint256(publicInputs[7]) != 0; // index 7
-
-        // Parse public outputs (grouped in struct to reduce stack depth)
         WithdrawOutputs memory outputs = WithdrawOutputs({
-            pedersenCommitmentX: uint256(publicInputs[8]), // index 8
-            pedersenCommitmentY: uint256(publicInputs[9]), // index 9
-            newNonceCommitment: uint256(publicInputs[10]), // index 10
-            encryptedBalance: bytes32(publicInputs[11]), // index 11
-            encryptedNullifier: bytes32(publicInputs[12]), // index 12
-            nonceDiscoveryEntryX: uint256(publicInputs[13]), // index 13
-            nonceDiscoveryEntryY: uint256(publicInputs[14]), // index 14
-            tlHashchain: uint256(publicInputs[15]) // index 15
+            pedersenCommitmentX: publicSignals[7],
+            pedersenCommitmentY: publicSignals[8],
+            newNonceCommitment: publicSignals[9],
+            encryptedBalance: bytes32(publicSignals[10]),
+            encryptedNullifier: bytes32(publicSignals[11]),
+            nonceDiscoveryEntryX: publicSignals[12],
+            nonceDiscoveryEntryY: publicSignals[13]
         });
 
-        // Parse final_amount (0 if TL swap, else actual withdrawal amount)
-        uint256 finalAmount = uint256(publicInputs[16]); // index 16
+        uint256 finalAmount = publicSignals[14];
 
-        // Parse chain_id (index 1, after token_address)
-        uint256 chainId = uint256(publicInputs[1]);
+        uint256 chainId = publicSignals[1];
         if (chainId != block.chainid) {
             revert InvalidChainId();
         }
@@ -761,8 +736,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
         // Circuit already calculates: new_shares_balance = previous_shares - (amount + relayer_fee_amount)
         // and creates commitment with new_shares_balance directly
         // So we use the commitment point as-is, no need to subtract shares
-        Grumpkin.G1Point memory finalCommitment =
-            Grumpkin.G1Point(outputs.pedersenCommitmentX, outputs.pedersenCommitmentY);
+        BJJ.Point memory finalCommitment =
+            BJJ.Point(outputs.pedersenCommitmentX, outputs.pedersenCommitmentY);
 
         // Mark the new nonce commitment as used (required for nonce discovery)
         if (usedCommitments[bytes32(outputs.newNonceCommitment)]) {
@@ -779,14 +754,9 @@ contract Arkana is AccessControl, ReentrancyGuard {
             tokenAddress, outputs.nonceDiscoveryEntryX, outputs.nonceDiscoveryEntryY, outputs.newNonceCommitment
         );
 
-        // Handle TL swap vs normal withdrawal
-        if (isTlSwap) {
-            _handleTlSwapWithdrawal(tokenAddress, relayerFeeShares, receiverAddress, call, outputs.newNonceCommitment);
-        } else {
-            _handleNormalWithdrawal(
+        _handleWithdrawal(
                 tokenAddress, finalAmount, relayerFeeShares, receiverAddress, call, arbitraryCalldataHash
-            );
-        }
+        );
 
         // Store operation info for nonceCommitment (withdraw burns shares, doesn't mint)
         operationInfo[bytes32(outputs.newNonceCommitment)] =
@@ -798,78 +768,9 @@ contract Arkana is AccessControl, ReentrancyGuard {
         );
     }
 
-    /// @notice Handle TL swap withdrawal (virtual withdrawal - no actual vault withdrawal)
-    /// @param tokenAddress The token address
-    /// @param relayerFeeShares Relayer fee in shares
-    /// @param receiverAddress Address to receive relayer fee
-    /// @param callData abi.encode(ciphertext, orderHashes) - contains encrypted order data and integrity hashes
-    /// @param newNonceCommitment The newNonceCommitment from withdraw circuit (used as orderId)
-    function _handleTlSwapWithdrawal(
-        address tokenAddress,
-        uint256 relayerFeeShares,
-        address receiverAddress,
-        bytes calldata callData,
-        uint256 newNonceCommitment
-    ) internal {
-        // TL Swap mode: Skip actual vault withdrawal (finalAmount is 0), but still pay relayer fee
-        // This is a virtual withdrawal - shares are allocated but not physically withdrawn
-        if (relayerFeeShares > 0) {
-            _processWithdrawVaultOperations(tokenAddress, 0, relayerFeeShares, receiverAddress);
-        }
 
-        // Register TL operation with TLswapRegister
-        // The call data contains abi.encode(ciphertext, orderHashes, operationType)
-        // orderId is the newNonceCommitment from the withdraw circuit
-        if (tlswapRegister != address(0)) {
-            // Decode ciphertext, orderHashes, and operationType from callData
-            (bytes memory ciphertext, bytes32[] memory orderHashes, uint8 operationType) =
-                abi.decode(callData, (bytes, bytes32[], uint8));
 
-            bytes32 orderId = bytes32(newNonceCommitment);
-            (bool success,) = tlswapRegister.call(
-                abi.encodeWithSignature(
-                    "registerEncryptedOrder(bytes32,bytes,bytes32[],address,uint8)",
-                    orderId,
-                    ciphertext,
-                    orderHashes,
-                    tokenAddress,
-                    operationType
-                )
-            );
-            require(success, "TL operation registration failed");
-        }
-    }
-
-    /// @notice Handle normal withdrawal (with actual vault withdrawal)
-    /// @param tokenAddress The token address
-    /// @param finalAmount Amount of shares to withdraw
-    /// @param relayerFeeShares Relayer fee in shares
-    /// @param receiverAddress Address to receive withdrawal assets
-    /// @param callData Multicall3 call data (if any)
-    /// @param arbitraryCalldataHash Hash of the call data for verification
-    function _handleNormalWithdrawal(
-        address tokenAddress,
-        uint256 finalAmount,
-        uint256 relayerFeeShares,
-        address receiverAddress,
-        bytes calldata callData,
-        bytes32 arbitraryCalldataHash
-    ) internal {
-        // Normal withdrawal: Process vault operations with actual withdrawal amount
-        _processWithdrawVaultOperations(tokenAddress, finalAmount, relayerFeeShares, receiverAddress);
-
-        // Execute Multicall3 call if calldata is provided
-        if (callData.length > 0) {
-            if (keccak256(callData) != arbitraryCalldataHash) {
-                revert InvalidCalldataHash();
-            }
-            // Execute the Multicall3 call
-            (bool success,) = multicall3Address.call(callData);
-            if (!success) {
-                revert Multicall3Failed();
-            }
-        }
-    }
+ 
 
     /// @notice Process vault operations for withdrawal (internal function to reduce stack depth)
     /// @param tokenAddress The token address
@@ -933,11 +834,11 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @param x The x coordinate of the nonce discovery entry point
     /// @param y The y coordinate of the nonce discovery entry point
     /// @param nonceCommitment The nonce commitment scalar (r value) for this entry
-    /// @dev This aggregates the nonce discovery entry into the token's nonceDiscoveryPoint using Grumpkin curve addition
+    /// @dev This aggregates the nonce discovery entry into the token's nonceDiscoveryPoint using BJJ curve addition
     /// @dev Also tracks aggregated scalars: m += 1, r += nonceCommitment
     function _addNonceDiscoveryEntry(address tokenAddress, uint256 x, uint256 y, uint256 nonceCommitment) internal {
         CurvePoint storage tokenPoint = tokenNonceDiscoveryPoint[tokenAddress];
-        Grumpkin.G1Point memory entry = Grumpkin.G1Point(x, y);
+        BJJ.Point memory entry = BJJ.Point(x, y);
 
         // Initialize if needed (first entry for this token)
         if (tokenNonceDiscoveryM[tokenAddress] == 0 && tokenPoint.x == 0 && tokenPoint.y == 0) {
@@ -948,7 +849,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
             tokenNonceDiscoveryR[tokenAddress] = nonceCommitment;
         } else {
             // Add the entry to the current nonce discovery point
-            Grumpkin.G1Point memory newPoint = Grumpkin.add(Grumpkin.G1Point(tokenPoint.x, tokenPoint.y), entry);
+            BJJ.Point memory newPoint = BJJ.add(BJJ.Point(tokenPoint.x, tokenPoint.y), entry);
             tokenPoint.x = newPoint.x;
             tokenPoint.y = newPoint.y;
 
@@ -960,54 +861,32 @@ contract Arkana is AccessControl, ReentrancyGuard {
         }
     }
 
-    /// @notice Calculate discounted protocol fee based on lock duration
-    /// @param lockDuration The lock duration in seconds
-    /// @return effective_fee_bps The effective fee in basis points
-    /// @dev If lockDuration = 0: full fee applies (protocol_fee)
-    /// @dev If lockDuration = discount_window: 0 fee (100% discount)
-    /// @dev Linear interpolation between these two points
-    function calculateDiscountedProtocolFee(uint256 lockDuration) public view returns (uint256 effective_fee_bps) {
-        if (lockDuration == 0) {
-            return protocol_fee; // Full fee
-        }
-        if (lockDuration >= discount_window) {
-            return 0; // 100% discount
-        }
-        // Linear interpolation: fee = protocol_fee * (1 - lockDuration / discount_window)
-        // effective_fee_bps = protocol_fee * (discount_window - lockDuration) / discount_window
-        effective_fee_bps = (protocol_fee * (discount_window - lockDuration)) / discount_window;
-    }
+  
+    function send(
+        uint256[2] calldata pA,
+        uint256[2][2] calldata pB,
+        uint256[2] calldata pC,
+        uint256[17] calldata publicSignals
+    ) public nonReentrant returns (uint256) {
+        require(IVerifierSend(verifiersByIndex[2]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
 
-    function send(bytes calldata proof, bytes32[] calldata publicInputs) public nonReentrant returns (uint256) {
-        // NOTE: once verifier are implementd we can uncomment this
-        //require(IVerifier(verifiersByIndex[2]).verify(proof, publicInputs), "Invalid proof");
-
-        // Validate publicInputs array length (requires exactly 17 elements: 6 public inputs + 11 public outputs)
-        uint256 publicInputsLength = publicInputs.length;
-        if (publicInputsLength < 17) {
-            revert InvalidPublicInputs();
-        }
-
-        // Parse public inputs (first 6 elements) - access indices 0-5
-        address tokenAddress = address(uint160(uint256(publicInputs[0]))); // token_address
-        uint256 chainId = uint256(publicInputs[1]); // chain_id
-        uint256 expectedRoot = uint256(publicInputs[2]); // expected_root
-        uint256 receiverPublicKeyX = uint256(publicInputs[3]); // receiver_public_key[0]
-        uint256 receiverPublicKeyY = uint256(publicInputs[4]); // receiver_public_key[1]
-        uint256 relayerFeeAmount = uint256(publicInputs[5]); // relayer_fee_amount
-
-        // Parse public outputs (next 11 elements) - access indices 6-16
-        uint256 newCommitmentLeaf = uint256(publicInputs[6]); // new_commitment_leaf
-        uint256 newNonceCommitment = uint256(publicInputs[7]); // new_nonce_commitment
-        uint256 encryptedAmount = uint256(publicInputs[8]); // encrypted_note[0] (amount for receiver)
-        bytes32 encryptedBalance = bytes32(publicInputs[9]); // encrypted_note[1] (balance for sender)
-        bytes32 encryptedNullifier = bytes32(publicInputs[10]); // encrypted_note[2] (nullifier for sender)
-        uint256 senderPubKeyX = uint256(publicInputs[11]); // sender_pub_key[0]
-        uint256 senderPubKeyY = uint256(publicInputs[12]); // sender_pub_key[1]
-        uint256 nonceDiscoveryEntryX = uint256(publicInputs[13]); // nonce_discovery_entry[0]
-        uint256 nonceDiscoveryEntryY = uint256(publicInputs[14]); // nonce_discovery_entry[1]
-        uint256 note_p_commitment_x = uint256(publicInputs[15]); // note_commitment[0]
-        uint256 note_p_commitment_y = uint256(publicInputs[16]); // note_commitment[1]
+        address tokenAddress = address(uint160(publicSignals[0]));
+        uint256 chainId = publicSignals[1];
+        uint256 expectedRoot = publicSignals[2];
+        uint256 receiverPublicKeyX = publicSignals[3];
+        uint256 receiverPublicKeyY = publicSignals[4];
+        uint256 relayerFeeAmount = publicSignals[5];
+        uint256 newCommitmentLeaf = publicSignals[6];
+        uint256 newNonceCommitment = publicSignals[7];
+        uint256 encryptedAmount = publicSignals[8];
+        bytes32 encryptedBalance = bytes32(publicSignals[9]);
+        bytes32 encryptedNullifier = bytes32(publicSignals[10]);
+        uint256 senderPubKeyX = publicSignals[11];
+        uint256 senderPubKeyY = publicSignals[12];
+        uint256 nonceDiscoveryEntryX = publicSignals[13];
+        uint256 nonceDiscoveryEntryY = publicSignals[14];
+        uint256 note_p_commitment_x = publicSignals[15];
+        uint256 note_p_commitment_y = publicSignals[16];
 
         if (chainId != block.chainid) {
             revert InvalidChainId();
@@ -1050,15 +929,15 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
         // Get or initialize the cumulative note_stack point for this user
         CurvePoint storage currentNoteStack = tokenUserNoteStack[tokenAddress][pubkey_reference_hash];
-        Grumpkin.G1Point memory newNoteCommitment = Grumpkin.G1Point(note_p_commitment_x, note_p_commitment_y);
+        BJJ.Point memory newNoteCommitment = BJJ.Point(note_p_commitment_x, note_p_commitment_y);
 
-        Grumpkin.G1Point memory updatedNoteStack;
+        BJJ.Point memory updatedNoteStack;
         if (currentNoteStack.x == 0 && currentNoteStack.y == 0) {
             // First note for this user: use the note commitment as the starting point, cause 0,0 is an invalid point on curve
             updatedNoteStack = newNoteCommitment;
         } else {
             // Add the new note commitment to the existing cumulative note_stack
-            updatedNoteStack = Grumpkin.add(Grumpkin.G1Point(currentNoteStack.x, currentNoteStack.y), newNoteCommitment);
+            updatedNoteStack = BJJ.add(BJJ.Point(currentNoteStack.x, currentNoteStack.y), newNoteCommitment);
         }
 
         // Update the stored cumulative note_stack point for next send
@@ -1073,47 +952,35 @@ contract Arkana is AccessControl, ReentrancyGuard {
         return rootAfterNoteLeaf;
     }
 
-    //TODO: contract size is too vig, should rework the contract structure, but i have no time atm. Ideally absorb alone is useless would be better to combo with Withdraw / Send
-    //function absorb(bytes calldata proof, bytes32[] calldata publicInputs) public {}
-    //TODO::to implement later while prioritizing more important stuff
+    /// @notice Handle normal withdrawal (with actual vault withdrawal)
+    /// @param tokenAddress The token address
+    /// @param finalAmount Amount of shares to withdraw
+    /// @param relayerFeeShares Relayer fee in shares
+    /// @param receiverAddress Address to receive withdrawal assets
+    /// @param callData Multicall3 call data (if any)
+    /// @param arbitraryCalldataHash Hash of the call data for verification
+    function _handleWithdrawal(
+        address tokenAddress,
+        uint256 finalAmount,
+        uint256 relayerFeeShares,
+        address receiverAddress,
+        bytes calldata callData,
+        bytes32 arbitraryCalldataHash
+    ) internal {
+        // Normal withdrawal: Process vault operations with actual withdrawal amount
+        _processWithdrawVaultOperations(tokenAddress, finalAmount, relayerFeeShares, receiverAddress);
 
-    // ============================================
-    // TLswapRegister INTEGRATION
-    // ============================================
-
-    /**
-     * @notice Withdraw tokens from Aave vault for swap execution
-     * @dev Called only by TLswapRegister to withdraw tokens for swap intents
-     * @param tokenAddress Token address (for vault operations)
-     * @param sharesAmount Amount of shares to withdraw
-     * @param recipient Address to receive the withdrawn tokens (TLswapRegister contract)
-     */
-    function withdrawForSwap(address tokenAddress, uint256 sharesAmount, address recipient)
-        external
-        onlyRole(TLSWAP_REGISTER_ROLE)
-    {
-        // Get vault address
-        address vaultAddress = tokenVaults[tokenAddress];
-        if (vaultAddress == address(0)) {
-            revert VaultNotInitialized(tokenAddress);
+        // Execute Multicall3 call if calldata is provided
+        if (callData.length > 0) {
+            if (keccak256(callData) != arbitraryCalldataHash) {
+                revert InvalidCalldataHash();
+            }
+            // Execute the Multicall3 call
+            (bool success,) = multicall3Address.call(callData);
+            if (!success) {
+                revert Multicall3Failed();
+            }
         }
-
-        ArkanaVault vault = ArkanaVault(vaultAddress);
-
-        // Convert shares to underlying assets
-        uint256 withdrawalAssets = vault.convertToAssets(sharesAmount);
-
-        // Check if Arkana has enough shares before burning
-        uint256 arkanaShares = vault.balanceOf(address(this));
-        if (arkanaShares < sharesAmount) {
-            revert InsufficientShares(arkanaShares, sharesAmount);
-        }
-
-        // Burn shares from Arkana
-        vault.burnShares(address(this), sharesAmount);
-
-        // Vault withdraws from Aave and sends underlying tokens to recipient (TLswapRegister)
-        vault.withdrawFromAave(withdrawalAssets, recipient);
     }
 
     /// @notice Default initial nonce discovery point
@@ -1187,4 +1054,23 @@ contract Arkana is AccessControl, ReentrancyGuard {
         Field.Type leafField = poseidon2Hasher.hash_2(xField, yField);
         return Field.toUint256(leafField);
     }
+
+    /// @notice Calculate discounted protocol fee based on lock duration
+    /// @param lockDuration The lock duration in seconds
+    /// @return effective_fee_bps The effective fee in basis points
+    /// @dev If lockDuration = 0: full fee applies (protocol_fee)
+    /// @dev If lockDuration = discount_window: 0 fee (100% discount)
+    /// @dev Linear interpolation between these two points
+    function calculateDiscountedProtocolFee(uint256 lockDuration) public view returns (uint256 effective_fee_bps) {
+        if (lockDuration == 0) {
+            return protocol_fee; // Full fee
+        }
+        if (lockDuration >= discount_window) {
+            return 0; // 100% discount
+        }
+        // Linear interpolation: fee = protocol_fee * (1 - lockDuration / discount_window)
+        // effective_fee_bps = protocol_fee * (discount_window - lockDuration) / discount_window
+        effective_fee_bps = (protocol_fee * (discount_window - lockDuration)) / discount_window;
+    }
+
 }
