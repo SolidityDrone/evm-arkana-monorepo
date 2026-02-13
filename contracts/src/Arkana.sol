@@ -27,8 +27,12 @@ interface IVerifierWithdraw {
 interface IVerifierSend {
     function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[17] calldata _pubSignals) external view returns (bool);
 }
-
-
+interface IVerifierAbsorbSend {
+    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[20] calldata _pubSignals) external view returns (bool);
+}
+interface IVerifierAbsorbWithdraw {
+    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[18] calldata _pubSignals) external view returns (bool);
+}
 
 contract Arkana is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -137,7 +141,9 @@ contract Arkana is AccessControl, ReentrancyGuard {
         Initialize,
         Deposit,
         Send,
-        Withdraw
+        Withdraw,
+        AbsorbSend,
+        AbsorbWithdraw
     }
 
     /// @notice Operation metadata stored for each nonceCommitment
@@ -768,9 +774,82 @@ contract Arkana is AccessControl, ReentrancyGuard {
         );
     }
 
+    /// @notice Absorb+Withdraw: absorb notes then withdraw to receiver (same as withdraw with two relayer fees)
+    /// @param pA,pB,pC Groth16 proof points (Circom/snarkjs format)
+    /// @param publicSignals [token_address, amount, chain_id, expected_root, declared_time_reference, arbitrary_calldata_hash, receiver_address, relayer_fee_amount, withdraw_relayer_fee_amount, commitment[2], new_nonce_commitment, encrypted_state[2], nonce_discovery_entry[2]] (18 elements, last 2 may be padding)
+    /// @param call Multicall3 calldata (if any)
+    function absorbWithdraw(
+        uint256[2] calldata pA,
+        uint256[2][2] calldata pB,
+        uint256[2] calldata pC,
+        uint256[18] calldata publicSignals,
+        bytes calldata call
+    ) public nonReentrant returns (uint256 newRoot) {
+        require(IVerifierAbsorbWithdraw(verifiersByIndex[5]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
 
+        address tokenAddress = address(uint160(publicSignals[0]));
+        uint256 amount = publicSignals[1];
+        uint256 chainId = publicSignals[2];
+        uint256 expectedRoot = publicSignals[3];
+        uint256 declaredTimeReference = publicSignals[4];
+        bytes32 arbitraryCalldataHash = bytes32(publicSignals[5]);
+        address receiverAddress = address(uint160(publicSignals[6]));
+        uint256 relayerFeeAmount = publicSignals[7];
+        uint256 withdrawRelayerFeeAmount = publicSignals[8];
 
- 
+        WithdrawOutputs memory outputs = WithdrawOutputs({
+            pedersenCommitmentX: publicSignals[9],
+            pedersenCommitmentY: publicSignals[10],
+            newNonceCommitment: publicSignals[11],
+            encryptedBalance: bytes32(publicSignals[12]),
+            encryptedNullifier: bytes32(publicSignals[13]),
+            nonceDiscoveryEntryX: publicSignals[14],
+            nonceDiscoveryEntryY: publicSignals[15]
+        });
+
+        if (chainId != block.chainid) {
+            revert InvalidChainId();
+        }
+
+        if (!isHistoricalRoot(tokenAddress, expectedRoot)) {
+            revert InvalidRoot();
+        }
+
+        uint256 timeDifference = declaredTimeReference > block.timestamp
+            ? declaredTimeReference - block.timestamp
+            : block.timestamp - declaredTimeReference;
+        if (timeDifference > TIME_TOLERANCE) {
+            revert InvalidTimeReference();
+        }
+
+        BJJ.Point memory finalCommitment =
+            BJJ.Point(outputs.pedersenCommitmentX, outputs.pedersenCommitmentY);
+
+        if (usedCommitments[bytes32(outputs.newNonceCommitment)]) {
+            revert CommitmentAlreadyUsed();
+        }
+        usedCommitments[bytes32(outputs.newNonceCommitment)] = true;
+
+        encryptedStateDetails[bytes32(outputs.newNonceCommitment)] =
+            EncryptedStateDetails(outputs.encryptedBalance, outputs.encryptedNullifier);
+
+        _addNonceDiscoveryEntry(
+            tokenAddress, outputs.nonceDiscoveryEntryX, outputs.nonceDiscoveryEntryY, outputs.newNonceCommitment
+        );
+
+        uint256 totalRelayerFeeShares = relayerFeeAmount + withdrawRelayerFeeAmount;
+        _handleWithdrawal(
+            tokenAddress, amount, totalRelayerFeeShares, receiverAddress, call, arbitraryCalldataHash
+        );
+
+        operationInfo[bytes32(outputs.newNonceCommitment)] =
+            OperationInfo({operationType: OperationType.AbsorbWithdraw, sharesMinted: 0, tokenAddress: tokenAddress});
+
+        return _addLeaf(
+            tokenAddress,
+            Field.toUint256(poseidon2Hasher.hash_2(Field.toField(finalCommitment.x), Field.toField(finalCommitment.y)))
+        );
+    }
 
     /// @notice Process vault operations for withdrawal (internal function to reduce stack depth)
     /// @param tokenAddress The token address
@@ -945,6 +1024,91 @@ contract Arkana is AccessControl, ReentrancyGuard {
         currentNoteStack.y = updatedNoteStack.y;
 
         // Hash the updated cumulative note_stack point to get the leaf
+        Field.Type noteStackLeaf =
+            poseidon2Hasher.hash_2(Field.toField(updatedNoteStack.x), Field.toField(updatedNoteStack.y));
+        uint256 rootAfterNoteLeaf = _addLeaf(tokenAddress, Field.toUint256(noteStackLeaf));
+
+        return rootAfterNoteLeaf;
+    }
+
+    /// @notice Absorb+Send: absorb notes into balance then send to receiver (same state updates as send; circuit proves absorb + send)
+    /// @param pA,pB,pC Groth16 proof points (Circom/snarkjs format)
+    /// @param publicSignals [token_address, chain_id, expected_root, receiver_public_key[2], relayer_fee_amount, send_relayer_fee_amount, new_commitment_leaf, new_nonce_commitment, encrypted_note[3], sender_pub_key[2], nonce_discovery_entry[2], note_commitment[2]] (20 elements, last 2 may be padding)
+    function absorbSend(
+        uint256[2] calldata pA,
+        uint256[2][2] calldata pB,
+        uint256[2] calldata pC,
+        uint256[20] calldata publicSignals
+    ) public nonReentrant returns (uint256) {
+        require(IVerifierAbsorbSend(verifiersByIndex[4]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
+
+        address tokenAddress = address(uint160(publicSignals[0]));
+        uint256 chainId = publicSignals[1];
+        uint256 expectedRoot = publicSignals[2];
+        uint256 receiverPublicKeyX = publicSignals[3];
+        uint256 receiverPublicKeyY = publicSignals[4];
+        uint256 relayerFeeAmount = publicSignals[5];
+        uint256 sendRelayerFeeAmount = publicSignals[6];
+        uint256 newCommitmentLeaf = publicSignals[7];
+        uint256 newNonceCommitment = publicSignals[8];
+        uint256 encryptedAmount = publicSignals[9];
+        bytes32 encryptedBalance = bytes32(publicSignals[10]);
+        bytes32 encryptedNullifier = bytes32(publicSignals[11]);
+        uint256 senderPubKeyX = publicSignals[12];
+        uint256 senderPubKeyY = publicSignals[13];
+        uint256 nonceDiscoveryEntryX = publicSignals[14];
+        uint256 nonceDiscoveryEntryY = publicSignals[15];
+        uint256 note_p_commitment_x = publicSignals[16];
+        uint256 note_p_commitment_y = publicSignals[17];
+
+        if (chainId != block.chainid) {
+            revert InvalidChainId();
+        }
+
+        if (!isHistoricalRoot(tokenAddress, expectedRoot)) {
+            revert InvalidRoot();
+        }
+
+        if (usedCommitments[bytes32(newNonceCommitment)]) {
+            revert CommitmentAlreadyUsed();
+        }
+        usedCommitments[bytes32(newNonceCommitment)] = true;
+        usedCommitments[bytes32(newCommitmentLeaf)] = true;
+        encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(encryptedBalance, encryptedNullifier);
+
+        _addLeaf(tokenAddress, newCommitmentLeaf);
+        _addNonceDiscoveryEntry(tokenAddress, nonceDiscoveryEntryX, nonceDiscoveryEntryY, newNonceCommitment);
+
+        bytes32 pubkey_reference_hash = keccak256(abi.encodePacked(receiverPublicKeyX, receiverPublicKeyY));
+        bytes32 note_digest = keccak256(abi.encodePacked(note_p_commitment_x, note_p_commitment_y));
+        if (tokenHistoricalNoteCommitments[tokenAddress][note_digest]) {
+            revert NoteAlreadyUsed();
+        }
+
+        operationInfo[bytes32(newNonceCommitment)] =
+            OperationInfo({operationType: OperationType.AbsorbSend, sharesMinted: 0, tokenAddress: tokenAddress});
+
+        nonceCommitmentToReceiver[bytes32(newNonceCommitment)] = CurvePoint(receiverPublicKeyX, receiverPublicKeyY);
+
+        tokenHistoricalNoteCommitments[tokenAddress][note_digest] = true;
+
+        tokenUserEncryptedNotes[tokenAddress][pubkey_reference_hash].push(
+            EncryptedNote(encryptedAmount, CurvePoint(senderPubKeyX, senderPubKeyY))
+        );
+
+        CurvePoint storage currentNoteStack = tokenUserNoteStack[tokenAddress][pubkey_reference_hash];
+        BJJ.Point memory newNoteCommitment = BJJ.Point(note_p_commitment_x, note_p_commitment_y);
+
+        BJJ.Point memory updatedNoteStack;
+        if (currentNoteStack.x == 0 && currentNoteStack.y == 0) {
+            updatedNoteStack = newNoteCommitment;
+        } else {
+            updatedNoteStack = BJJ.add(BJJ.Point(currentNoteStack.x, currentNoteStack.y), newNoteCommitment);
+        }
+
+        currentNoteStack.x = updatedNoteStack.x;
+        currentNoteStack.y = updatedNoteStack.y;
+
         Field.Type noteStackLeaf =
             poseidon2Hasher.hash_2(Field.toField(updatedNoteStack.x), Field.toField(updatedNoteStack.y));
         uint256 rootAfterNoteLeaf = _addLeaf(tokenAddress, Field.toUint256(noteStackLeaf));

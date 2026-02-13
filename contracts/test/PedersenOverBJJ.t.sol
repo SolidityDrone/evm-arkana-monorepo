@@ -41,6 +41,27 @@ contract PedersenOverBJJTest is Test {
     }
 
     /**
+     * @dev Compute and log the default nonce discovery point (G + H on BJJ).
+     * Used for Arkana DEFAULT_NONCE_DISCOVERY_X/Y: PedersenCommitment2FixedM1 with r=1 gives 1*G + 1*H = G + H.
+     * Run: forge test --match-test test_DefaultNonceDiscoveryPoint_BJJ -vvv
+     */
+    function test_DefaultNonceDiscoveryPoint_BJJ() public view {
+        (uint256 gX, uint256 gY) = Generators.getG();
+        (uint256 hX, uint256 hY) = Generators.getH();
+        BJJ.Point memory G = BJJ.Point(gX, gY);
+        BJJ.Point memory H = BJJ.Point(hX, hY);
+        BJJ.Point memory defaultPoint = BJJ.add(G, H);
+
+        console.log("Default nonce discovery point (BJJ): G + H = PedersenCommitment2FixedM1(r=1)");
+        console.log("DEFAULT_NONCE_DISCOVERY_X =");
+        console.log(defaultPoint.x);
+        console.log("DEFAULT_NONCE_DISCOVERY_Y =");
+        console.log(defaultPoint.y);
+
+        assertFalse(BJJ.isZero(defaultPoint), "default point must not be identity");
+    }
+
+    /**
      * @dev Test adding a point to itself (point doubling)
      */
     function test_AddPointToItself() public view {
