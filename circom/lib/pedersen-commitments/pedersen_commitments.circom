@@ -9,17 +9,17 @@ include "../../node_modules/circomlib/circuits/bitify.circom";
 
 /**
  * PedersenCommitment2: m*G + r*H
- * Used for 2-generator commitments (e.g., nonce discovery)
+ * Used for 2-generator commitments (e.g., nonce discovery, note commitments)
  */
 template PedersenCommitment2() {
-    signal input m;  // Message
-    signal input r;  // Randomness (nonce_commitment)
+    signal input m;  // Message (amount)
+    signal input r;  // Randomness (nonce_commitment or hash)
     signal output commitment[2];  // [x, y] point on Baby Jubjub
     
     // Convert m and r to bits for EscalarMulAny
-    // m: typically small (e.g., 1 for nonce discovery), use 64 bits
-    // r: nonce_commitment (hash output), use 254 bits to be safe
-    component m_bits = Num2Bits(64);
+    // m: amounts, use 128 bits (consistent with other Pedersen commitments)
+    // r: hash output, use 254 bits to be safe
+    component m_bits = Num2Bits(128);
     m_bits.in <== m;
     
     component r_bits = Num2Bits(254);
@@ -32,9 +32,9 @@ template PedersenCommitment2() {
     var GENERATOR_H_2_X = 2671756056509184035029146175565761955751135805354291559563293617232983272177;
     var GENERATOR_H_2_Y = 2663205510731142763556352975002641716101654201788071096152948830924149045094;
     
-    // Compute m*G (using 64 bits)
-    component mG = EscalarMulAny(64);
-    for (var i = 0; i < 64; i++) {
+    // Compute m*G (using 128 bits)
+    component mG = EscalarMulAny(128);
+    for (var i = 0; i < 128; i++) {
         mG.e[i] <== m_bits.out[i];
     }
     mG.p[0] <== GENERATOR_G_2_X;

@@ -258,9 +258,71 @@ async function testEntryDepositFlow() {
     }
 }
 
-// Run the test
-testEntryDepositFlow().catch(err => {
-    console.error('❌ Test failed:', err.message);
-    process.exit(1);
-});
+// Export function and inputs for use by other scripts
+if (require.main === module) {
+    // Run the test if called directly
+    testEntryDepositFlow().catch(err => {
+        console.error('❌ Test failed:', err.message);
+        process.exit(1);
+    });
+} else {
+    // Export for use by other scripts
+    module.exports = { testEntryDepositFlow };
+}
+
+// Export a function to get deposit inputs
+async function getDepositInputs() {
+    const result = await testEntryDepositFlow();
+    // We need to reconstruct the deposit input from the test
+    // Let's modify the function to return inputs as well
+    return null; // Will be implemented below
+}
+
+// Actually, let's modify testEntryDepositFlow to return inputs
+async function getDepositInputsFromFlow() {
+    const entryInput = {
+        user_key: hexToDecimal("0x19e573f3801c7b2e4619998342e8e305e1692184cbacd220c04198a04c36b7d2"),
+        token_address: hexToDecimal("0x7775e4b6f4d40be537b55b6c47e09ada0157bd"),
+        chain_id: hexToDecimal("0x01")
+    };
+    
+    const entryWitness = await runCircuit('entry', entryInput);
+    const balance_commitment_x = entryWitness[1].toString();
+    const balance_commitment_y = entryWitness[2].toString();
+    const entryLeaf = await poseidon2Hash2(balance_commitment_x, balance_commitment_y);
+    
+    let treeSize = 0;
+    let treeDepth = 1;
+    let sideNodes = new Array(32).fill('0');
+    const allLeaves = [entryLeaf];
+    
+    const treeResult = await simulateLeanIMTInsert(entryLeaf, treeSize, treeDepth, sideNodes, hashWrapper);
+    const rootAfterEntry = treeResult.root;
+    treeDepth = treeResult.depth;
+    sideNodes = treeResult.sideNodes;
+    treeSize = 1;
+    
+    const commitmentIndex = 0;
+    const merkleProof = await generateMerkleProof(entryLeaf, commitmentIndex, treeDepth, allLeaves, treeSize, hashWrapper);
+    
+    const depositInput = {
+        user_key: entryInput.user_key,
+        token_address: entryInput.token_address,
+        amount: hexToDecimal("0x32"),
+        chain_id: entryInput.chain_id,
+        previous_nonce: "0",
+        previous_shares: "1",
+        nullifier: "1",
+        previous_unlocks_at: "1",
+        previous_commitment_leaf: entryLeaf,
+        commitment_index: commitmentIndex.toString(),
+        tree_depth: treeDepth.toString(),
+        expected_root: rootAfterEntry,
+        merkle_proof: merkleProof
+    };
+    
+    return depositInput;
+}
+
+module.exports.getDepositInputs = getDepositInputsFromFlow;
 

@@ -169,5 +169,5 @@ template Deposit() {
     nonce_discovery_entry[1] <== nonce_discovery.commitment[1];
 }
 
-component main = Deposit();
+component main { public [ token_address, amount, chain_id, expected_root ] } = Deposit();
 

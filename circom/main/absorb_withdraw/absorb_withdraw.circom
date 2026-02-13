@@ -1,7 +1,8 @@
 pragma circom 2.0.0;
 
-// ARKANA-WITHDRAW CIRCUIT
-// Matches circuits/main/withdraw/src/main.nr
+// ARKANA-ABSORB-WITHDRAW CIRCUIT
+// Combines absorb and withdraw operations: absorbs notes then withdraws to address
+// Matches circuits/main/absorb/src/main.nr + circuits/main/withdraw/src/main.nr
 
 include "../../lib/poseidon/poseidon2.circom";
 include "../../lib/poseidon-ctr-encryption/poseidon_ctr_encryption.circom";
@@ -13,11 +14,11 @@ include "../../node_modules/circomlib/circuits/comparators.circom";
 
 // VIEW_STRING = 0x76696577696e675f6b6579 = 143150966920908953357084025
 
-template Withdraw() {
+template AbsorbWithdraw() {
     // Private inputs
     signal input user_key;
     signal input previous_nonce;
-    signal input previous_shares;
+    signal input current_balance;  // Raw balance (not encoded)
     signal input nullifier;
     signal input previous_unlocks_at;  // Packed: lock_timer << 24 | unlocks_at
     signal input previous_commitment_leaf;
@@ -25,15 +26,25 @@ template Withdraw() {
     signal input tree_depth;
     signal input merkle_proof[32];  // Fixed size array (Circom requirement), but only proof[0..tree_depth-1] are used
     
-    // Public inputs
+    // Note stack Pedersen commitment and openings
+    signal input note_stack_m;      // Private: opening value m (aggregated amount)
+    signal input note_stack_r;      // Private: opening value r (sum of all shared keys)
+    signal input note_stack_commitment_index;
+    signal input note_stack_merkle_proof[32];
+    signal input note_stack_x;  // Private: x coordinate of note_stack commitment point (prover proves knowledge)
+    signal input note_stack_y;  // Private: y coordinate of note_stack commitment point (prover proves knowledge)
+    
+    // Public inputs (declared in main { public [ ... ] } for verifier)
     signal input token_address;
-    signal input amount;
+    signal input amount;  // Amount to withdraw (in shares)
     signal input chain_id;
     signal input expected_root;
+   
     signal input declared_time_reference;
     signal input arbitrary_calldata_hash;
     signal input receiver_address;
-    signal input relayer_fee_amount;
+    signal input relayer_fee_amount;  // Fee for absorb operation
+    signal input withdraw_relayer_fee_amount;  // Fee for withdraw operation
     
     // Public outputs
     signal output commitment[2];  // [x, y] Pedersen commitment point
@@ -65,30 +76,22 @@ template Withdraw() {
     previous_nonce_commitment <== previous_nonce_commitment_hash.out;
     
     // === VERIFY PREVIOUS COMMITMENT OPENING ===
-    // OPTIMIZATION EXPLANATION:
-    // We need to compute TWO PedersenCommitment5:
-    //   1. previous_commit = m1*G + m2*H + m3*D + m4*K + previous_r*J
-    //   2. new_commit = new_m1*G + m2*H + m3*D + m4*K + new_r*J
-    // 
-    // Both share m2, m3, m4, so we compute base3_commit = m2*H + m3*D + m4*K ONCE (3 scalar multiplications),
-    // then add m1*G and r*J separately for each commitment.
-    // This saves 3 scalar multiplications and 2 point additions!
-    
-    // Compute base3_commit = m2*H + m3*D + m4*K (common part)
+    // Reconstruct previous Pedersen commitment: m1*G + m2*H + m3*D + m4*K + r*J
+    // where m1=current_balance, m2=nullifier, m3=spending_key, m4=previous_unlocks_at, r=previous_nonce_commitment
     component base3_commit = PedersenCommitmentBase3();
     base3_commit.m2 <== nullifier;
     base3_commit.m3 <== spending_key;
     base3_commit.m4 <== previous_unlocks_at;
     
-    // Compute previous_m1*G
+    // Compute current_balance*G
     component previous_m1G = PedersenCommitmentM1();
-    previous_m1G.m1 <== previous_shares;
+    previous_m1G.m1 <== current_balance;
     
     // Compute previous_r*J
     component previous_rJ = PedersenCommitmentR();
     previous_rJ.r <== previous_nonce_commitment;
     
-    // previous_commit = base3_commit + previous_m1*G + previous_r*J
+    // previous_commit = base3_commit + current_balance*G + previous_r*J
     component previous_add1 = BabyAdd();
     previous_add1.x1 <== base3_commit.commitment[0];
     previous_add1.y1 <== base3_commit.commitment[1];
@@ -112,17 +115,82 @@ template Withdraw() {
     leaf_eq.in[1] <== previous_commitment_leaf;
     leaf_eq.out === 1;
     
-    // === MERKLE PROOF VERIFICATION ===
+    // === MERKLE PROOF VERIFICATION FOR PREVIOUS COMMITMENT ===
     component merkle_verify = LeanIMTVerify();
     merkle_verify.leaf <== previous_commitment_leaf;
     merkle_verify.index <== commitment_index;
     merkle_verify.tree_depth <== tree_depth;
     merkle_verify.expected_root <== expected_root;
-    // Pass all proof elements (array is fixed size 32, but LeanIMTVerify only processes levels < tree_depth)
-    // Unused levels (>= tree_depth) have dummy values (0) and are skipped by should_process_i logic
     for (var i = 0; i < 32; i++) {
         merkle_verify.proof[i] <== merkle_proof[i];
     }
+    
+    // === VERIFY NOTE_STACK PEDERSEN COMMITMENT AND MERKLE PROOF (OPTIMIZED) ===
+    // Reconstruct the Pedersen commitment from openings (2 factors: m and r)
+    component note_stack_commit = PedersenCommitment2();
+    note_stack_commit.m <== note_stack_m;
+    note_stack_commit.r <== note_stack_r;
+    
+    // OPTIMIZATION: Use reconstructed commitment point directly for Merkle leaf hash
+    // This eliminates the need for separate x/y equality checks and a separate hash
+    // Hash the reconstructed commitment point to get a leaf value for the Merkle tree
+    component note_stack_leaf_hash = Poseidon2Hash2();
+    note_stack_leaf_hash.in[0] <== note_stack_commit.commitment[0];
+    note_stack_leaf_hash.in[1] <== note_stack_commit.commitment[1];
+    signal note_stack_leaf;
+    note_stack_leaf <== note_stack_leaf_hash.out;
+    
+    // Verify the reconstructed commitment's leaf matches the provided note_stack leaf
+    // This ensures the provided (x, y) matches the reconstructed commitment
+    component note_stack_leaf_hash_provided = Poseidon2Hash2();
+    note_stack_leaf_hash_provided.in[0] <== note_stack_x;
+    note_stack_leaf_hash_provided.in[1] <== note_stack_y;
+    signal note_stack_leaf_provided;
+    note_stack_leaf_provided <== note_stack_leaf_hash_provided.out;
+    
+    component note_stack_leaf_eq = IsEqual();
+    note_stack_leaf_eq.in[0] <== note_stack_leaf;
+    note_stack_leaf_eq.in[1] <== note_stack_leaf_provided;
+    note_stack_leaf_eq.out === 1;
+    
+    // Verify note_stack is in the same tree (same depth and root)
+    component note_stack_merkle_verify = LeanIMTVerify();
+    note_stack_merkle_verify.leaf <== note_stack_leaf;
+    note_stack_merkle_verify.index <== note_stack_commitment_index;
+    note_stack_merkle_verify.tree_depth <== tree_depth;
+    note_stack_merkle_verify.expected_root <== expected_root;
+    for (var i = 0; i < 32; i++) {
+        note_stack_merkle_verify.proof[i] <== note_stack_merkle_proof[i];
+    }
+    
+    // === ABSORB + WITHDRAW STEP: Optimized combined balance calculations ===
+    // Use note_stack_m as the absorbed amount (verified via Pedersen commitment)
+    signal absorbed_amount;
+    absorbed_amount <== note_stack_m;
+    
+    // OPTIMIZATION: Compute final_shares directly instead of intermediate steps
+    // current_balance is encoded (shares format), so actual = current_balance - 1
+    // After absorb: new_balance = (current_balance - 1) + absorbed_amount - relayer_fee_amount
+    // After withdraw: final_shares = new_balance - amount - withdraw_relayer_fee_amount
+    // Combined: final_shares = current_balance + absorbed_amount - relayer_fee_amount - amount - withdraw_relayer_fee_amount
+    signal final_shares;
+    final_shares <== current_balance + absorbed_amount - relayer_fee_amount - amount - withdraw_relayer_fee_amount;
+    
+    // OPTIMIZATION: Combined balance check (covers both absorb and withdraw)
+    // We need: current_balance + absorbed_amount >= relayer_fee_amount + amount + withdraw_relayer_fee_amount + 1
+    // This ensures: (1) absorb fee is covered, (2) withdraw amount + fee is covered
+    signal total_required;
+    total_required <== relayer_fee_amount + amount + withdraw_relayer_fee_amount + 1;
+    signal total_available;
+    total_available <== current_balance + absorbed_amount;
+    component combined_balance_check = GreaterThanOrEqualField();
+    combined_balance_check.a <== total_available;
+    combined_balance_check.b <== total_required;
+    combined_balance_check.out === 1;
+    
+    // Update nullifier: increase by absorbed amount
+    signal new_nullifier_after_absorb;
+    new_nullifier_after_absorb <== nullifier + absorbed_amount;
     
     // === VERIFY WITHDRAWAL TIME CONSTRAINT ===
     // Extract unlocks_at from previous_unlocks_at
@@ -148,38 +216,16 @@ template Withdraw() {
     new_nonce_commitment <== new_nonce_commitment_hash.out;
     
     // === CREATE NEW PEDERSEN COMMITMENT ===
-    // Ensure we have enough shares to withdraw
-    // previous_shares is encoded: actual_shares = previous_shares - 1
-    // So if previous_shares = 51, actual_shares = 50
-    signal total_to_withdraw;
-    total_to_withdraw <== amount + relayer_fee_amount;
-    
-    // Check: (previous_shares - 1) >= total_to_withdraw
-    // This is: previous_shares >= total_to_withdraw + 1
-    signal total_plus_one;
-    total_plus_one <== total_to_withdraw + 1;
-    component shares_check = GreaterThanOrEqualField();
-    shares_check.a <== previous_shares;
-    shares_check.b <== total_plus_one;
-    shares_check.out === 1;
-    
-    // new_shares_balance (encoded) = (actual_new_shares) + 1
-    // actual_new_shares = (previous_shares - 1) - total_to_withdraw
-    // So: new_shares_balance = previous_shares - total_to_withdraw
-    signal new_shares_balance;
-    new_shares_balance <== previous_shares - total_to_withdraw;
-    
-    // === CREATE NEW PEDERSEN COMMITMENT ===
-    // OPTIMIZATION: Reuse base3_commit computed above, only add new_m1*G and new_r*J
-    // Compute new_m1*G
+    // OPTIMIZATION: Reuse base3_commit computed above, only add final_shares*G and new_r*J
+    // Compute final_shares*G
     component new_m1G = PedersenCommitmentM1();
-    new_m1G.m1 <== new_shares_balance;
+    new_m1G.m1 <== final_shares;
     
     // Compute new_r*J
     component new_rJ = PedersenCommitmentR();
     new_rJ.r <== new_nonce_commitment;
     
-    // new_commit = base3_commit + new_m1*G + new_r*J
+    // new_commit = base3_commit + final_shares*G + new_r*J
     component new_add1 = BabyAdd();
     new_add1.x1 <== base3_commit.commitment[0];
     new_add1.y1 <== base3_commit.commitment[1];
@@ -197,13 +243,13 @@ template Withdraw() {
     
     // Encrypt state details
     component encrypt_balance = PoseidonCTREncrypt();
-    encrypt_balance.plaintext <== new_shares_balance;
+    encrypt_balance.plaintext <== final_shares;
     encrypt_balance.key <== view_key;
     encrypt_balance.counter <== 0;
     encrypted_state_details[0] <== encrypt_balance.ciphertext;
     
     component encrypt_nullifier = PoseidonCTREncrypt();
-    encrypt_nullifier.plaintext <== nullifier;
+    encrypt_nullifier.plaintext <== new_nullifier_after_absorb;
     encrypt_nullifier.key <== view_key;
     encrypt_nullifier.counter <== 1;
     encrypted_state_details[1] <== encrypt_nullifier.ciphertext;
@@ -216,5 +262,5 @@ template Withdraw() {
     nonce_discovery_entry[1] <== nonce_discovery.commitment[1];
 }
 
-component main { public [ token_address, amount, chain_id, expected_root, declared_time_reference, arbitrary_calldata_hash, receiver_address, relayer_fee_amount ] } = Withdraw();
+component main { public [ token_address, amount, chain_id, expected_root, declared_time_reference, arbitrary_calldata_hash, receiver_address, relayer_fee_amount, withdraw_relayer_fee_amount ] } = AbsorbWithdraw();
 

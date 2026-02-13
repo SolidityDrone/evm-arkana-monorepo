@@ -18,7 +18,7 @@ async function runHash1(input) {
     const witnessCalcPath = path.join(jsDir, 'witness_calculator.js');
     
     if (!fs.existsSync(wasmPath)) {
-        throw new Error(`WASM file not found: ${wasmPath}. Please compile first with: circom test/circuits/poseidon2_test1.circom --r1cs --wasm --sym --c -o test/`);
+        throw new Error(`WASM file not found: ${wasmPath}. Please compile first with: circom test/circuits/poseidon2_test1.circom --r1cs --wasm --sym --c --O2 -o test/`);
     }
     
     if (!fs.existsSync(witnessCalcPath)) {

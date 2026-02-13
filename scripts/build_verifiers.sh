@@ -18,7 +18,7 @@ CONTRACTS_DIR="$PROJECT_ROOT/contracts"
 cd "$CIRCOM_DIR"
 
 # Array of circuit names
-all_circuits=("entry" "deposit" "withdraw" "send")
+all_circuits=("entry" "deposit" "withdraw" "send" "absorb_send" "absorb_withdraw")
 
 # Parse command line argument or prompt user for circuit selection
 if [ $# -gt 0 ]; then
@@ -38,9 +38,11 @@ else
     echo "  2) deposit"
     echo "  3) withdraw"
     echo "  4) send"
-    echo "  5) all"
+    echo "  5) absorb_send"
+    echo "  6) absorb_withdraw"
+    echo "  7) all"
     echo ""
-    read -p "Enter your choice (1-5): " choice
+    read -p "Enter your choice (1-7): " choice
     
     case $choice in
         1)
@@ -60,6 +62,14 @@ else
             echo "Building verifier for circuit: send"
             ;;
         5)
+            circuits=("absorb_send")
+            echo "Building verifier for circuit: absorb_send"
+            ;;
+        6)
+            circuits=("absorb_withdraw")
+            echo "Building verifier for circuit: absorb_withdraw"
+            ;;
+        7)
             circuits=("${all_circuits[@]}")
             echo "Building verifiers for all circuits: ${circuits[*]}"
             ;;
@@ -74,16 +84,14 @@ fi
 # Option 1: Use a public trusted setup (recommended for production)
 # Option 2: Generate a new one (for testing)
 POTAU_FILE="$CIRCOM_DIR/powers_of_tau.ptau"
-# Default power (will be adjusted based on circuit size)
-# Start with a reasonable default, will be auto-adjusted per circuit
-# Power 17 (131K) is sufficient for all our circuits (send is largest at 43K constraints)
-POTAU_POWER=17  # Will be auto-adjusted if needed
+# Default power (will be set per circuit)
+# Power 17 (131K) for most circuits, Power 18 (262K) for absorb_send
+POTAU_POWER=17  # Will be set per circuit
 # Public trusted setup URLs (different powers available)
 # Priority: Google Cloud Storage (zkevm) - most reliable source
-# Order by power (smaller first for faster download when sufficient)
-POTAU_URLS=(
-    "https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_17.ptau"  # Power 17 (131K) - sufficient for all our circuits
-)
+declare -A POTAU_URLS
+POTAU_URLS[17]="https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_17.ptau"  # Power 17 (131K) - for most circuits
+POTAU_URLS[18]="https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_18.ptau"  # Power 18 (262K) - for absorb_send
 
 # Function to check if a command exists
 command_exists() {
@@ -163,7 +171,7 @@ setup_powers_of_tau() {
     if [ -f "$POTAU_FILE" ]; then
         local file_size=$(stat -f%z "$POTAU_FILE" 2>/dev/null || stat -c%s "$POTAU_FILE" 2>/dev/null || echo 0)
         
-        # For power 18, file should be at least ~50MB, for power 28 it should be ~500MB+
+        # For power 17, file should be at least ~144MB
         # Use a conservative check: if file is > 10MB, assume it's valid
         if [ "$file_size" -gt 10485760 ]; then
             echo "✓ Using existing powers of tau file: $POTAU_FILE (size: $(($file_size / 1048576))MB)"
@@ -176,37 +184,38 @@ setup_powers_of_tau() {
     fi
     
     # Try to download public trusted setup first (faster and more secure)
-    # Try URLs in order, prioritizing ones that match or exceed required power
+    # Use the URL for the specific power needed
     echo "Attempting to download powers of tau (need power $POTAU_POWER)..."
     
+    local url="${POTAU_URLS[$POTAU_POWER]}"
+    if [ -z "$url" ]; then
+        echo "Error: No URL configured for power $POTAU_POWER"
+        return 1
+    fi
+    
+    echo "  Downloading: $url"
     if command_exists wget; then
-        for url in "${POTAU_URLS[@]}"; do
-            echo "  Trying: $url"
             if wget --quiet --show-progress -O "$POTAU_FILE" "$url" 2>&1; then
                 # Check if file was downloaded and has reasonable size (> 1MB)
                 if [ -f "$POTAU_FILE" ] && [ $(stat -f%z "$POTAU_FILE" 2>/dev/null || stat -c%s "$POTAU_FILE" 2>/dev/null || echo 0) -gt 1048576 ]; then
                     echo "✓ Powers of tau downloaded: $POTAU_FILE"
                     return 0
                 else
-                    echo "  Download failed or file too small, trying next..."
+                echo "  Download failed or file too small"
                     rm -f "$POTAU_FILE"
                 fi
             fi
-        done
     elif command_exists curl; then
-        for url in "${POTAU_URLS[@]}"; do
-            echo "  Trying: $url"
             if curl -L --progress-bar -f -o "$POTAU_FILE" "$url" 2>&1; then
                 # Check if file was downloaded and has reasonable size (> 1MB)
                 if [ -f "$POTAU_FILE" ] && [ $(stat -f%z "$POTAU_FILE" 2>/dev/null || stat -c%s "$POTAU_FILE" 2>/dev/null || echo 0) -gt 1048576 ]; then
                     echo "✓ Powers of tau downloaded: $POTAU_FILE"
                     return 0
                 else
-                    echo "  Download failed or file too small, trying next..."
+                echo "  Download failed or file too small"
                     rm -f "$POTAU_FILE"
                 fi
             fi
-        done
     fi
     
     echo "Warning: Could not download public powers of tau from any source."
@@ -238,7 +247,7 @@ setup_powers_of_tau() {
         exit 1
     }
     
-    # Prepare phase 2 (this may take a while for power 28)
+    # Prepare phase 2 (this may take a while for power 17)
     echo "Preparing phase 2 (this may take a while for power $POTAU_POWER)..."
     echo "Preparing phase 2 (this may take a while for power $POTAU_POWER)..."
     snarkjs powersoftau prepare phase2 "pot_0001.ptau" "$POTAU_FILE" -v || {
@@ -263,8 +272,9 @@ process_circuit() {
     local zkey_file="$build_dir/${circuit_name}_0000.zkey"
     local final_zkey_file="$build_dir/${circuit_name}_final.zkey"
     local vkey_file="$build_dir/${circuit_name}_vkey.json"
-    # Capitalize first letter of circuit name
-    local capitalized_name="$(echo ${circuit_name:0:1} | tr '[:lower:]' '[:upper:]')${circuit_name:1}"
+    # Capitalize first letter of circuit name and each word after underscore
+    # e.g., "absorb_send" -> "AbsorbSend"
+    local capitalized_name=$(echo "$circuit_name" | sed 's/_\([a-z]\)/_\U\1/g' | sed 's/^\([a-z]\)/\U\1/' | sed 's/_//g')
     local verifier_file="$CONTRACTS_DIR/src/Verifiers/Verifier${capitalized_name}.sol"
     
     echo "=========================================="
@@ -302,27 +312,13 @@ process_circuit() {
     local circuit_size=$(get_circuit_size "$r1cs_file")
     echo "  Circuit size: $circuit_size constraints"
     
-    # Calculate minimum power needed for this circuit
-    # Groth16 needs 2*constraints, so we need power such that 2^power >= 2*circuit_size
-    local required_size=$((circuit_size * 2))
-    local min_power=15  # Start from 15 (2^15 = 32768)
-    
-    # Find the minimum power needed (add 1 for safety margin)
-    while [ $((2 ** min_power)) -lt "$required_size" ]; do
-        min_power=$((min_power + 1))
-    done
-    # Add 1 for safety margin
-    min_power=$((min_power + 1))
-    
-    # Use the calculated power if it's higher than default, but cap at 28 (max available)
-    if [ "$min_power" -gt "$POTAU_POWER" ] && [ "$min_power" -le 28 ]; then
-        echo "  Adjusting POTAU_POWER from $POTAU_POWER to $min_power (circuit needs $required_size, 2^$min_power = $((2 ** min_power)))"
-        POTAU_POWER=$min_power
-    elif [ "$min_power" -gt 28 ]; then
-        echo "  ⚠️  WARNING: Circuit needs power $min_power but max is 28. Using 28 (may fail if circuit is too large)"
-        POTAU_POWER=28
+    # Set power based on circuit: absorb_send uses power 18, all others use power 17
+    if [ "$circuit_name" = "absorb_send" ]; then
+        POTAU_POWER=18
+        echo "  Using POTAU_POWER=18 (2^18 = $((2 ** 18))) for absorb_send circuit"
     else
-        echo "  Using POTAU_POWER=$POTAU_POWER (2^$POTAU_POWER = $((2 ** POTAU_POWER)), sufficient for $required_size needed)"
+        POTAU_POWER=17
+        echo "  Using POTAU_POWER=17 (2^17 = $((2 ** 17))) for $circuit_name circuit"
     fi
     
     # If building a specific circuit, remove old zkey/vkey files to force rebuild
@@ -411,24 +407,24 @@ process_circuit() {
     
     # Step 5: Generate Solidity verifier (always regenerate)
     echo "Step 5: Generating Solidity verifier..."
-    mkdir -p "$CONTRACTS_DIR/src/Verifiers"
-    snarkjs zkey export solidityverifier "$final_zkey_file" "$verifier_file" || {
+    # Write to build dir first so we know snarkjs wrote the file (it may ignore full path on some systems)
+    local verifier_in_build="$build_dir/Verifier${capitalized_name}.sol"
+    snarkjs zkey export solidityverifier "$final_zkey_file" "$verifier_in_build" || {
         echo "Error: Failed to generate Solidity verifier"
         exit 1
     }
     
     # Update verifier contract name to match expected format
     # snarkjs generates "Verifier" but we want "Verifier{CircuitName}"
-    # capitalized_name is already set above
-    
-    # Use sed with different syntax for macOS vs Linux
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS
-        sed -i '' "s/contract Verifier/contract Verifier${capitalized_name}/g" "$verifier_file"
+        sed -i '' "s/contract Verifier/contract Verifier${capitalized_name}/g" "$verifier_in_build"
     else
-        # Linux
-        sed -i "s/contract Verifier/contract Verifier${capitalized_name}/g" "$verifier_file"
+        sed -i "s/contract Verifier/contract Verifier${capitalized_name}/g" "$verifier_in_build"
     fi
+    
+    # Copy to contracts so Solidity tests use the verifier from this build
+    mkdir -p "$CONTRACTS_DIR/src/Verifiers"
+    cp "$verifier_in_build" "$verifier_file"
     
     echo "✓ Solidity verifier generated: $verifier_file"
     echo "Successfully processed $circuit_name"

@@ -316,7 +316,7 @@ async function testEntryDepositWithdrawFlow() {
             if (!fs.existsSync(wasmPath)) {
                 // Compile it
                 const { execSync } = require('child_process');
-                execSync(`cd ${testDir} && circom pedersen_commitment5_test.circom --r1cs --wasm --sym --c -o . 2>&1`, {
+                execSync(`cd ${testDir} && circom pedersen_commitment5_test.circom --r1cs --wasm --sym --c --O2 -o . 2>&1`, {
                     stdio: 'inherit',
                     cwd: testDir
                 });

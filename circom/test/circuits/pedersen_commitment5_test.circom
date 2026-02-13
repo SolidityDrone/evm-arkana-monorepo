@@ -29,3 +29,6 @@ template PedersenCommitment5Test() {
 
 component main = PedersenCommitment5Test();
 
+
+
+

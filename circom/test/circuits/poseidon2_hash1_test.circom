@@ -1,8 +1,6 @@
 pragma circom 2.0.0;
+include "../../lib/poseidon/poseidon2.circom";
 
-include "../lib/poseidon/poseidon2.circom";
-
-// Test circuit for Poseidon2Hash1
 template Poseidon2Hash1Test() {
     signal input in;
     signal output out;
@@ -13,4 +11,3 @@ template Poseidon2Hash1Test() {
 }
 
 component main = Poseidon2Hash1Test();
-

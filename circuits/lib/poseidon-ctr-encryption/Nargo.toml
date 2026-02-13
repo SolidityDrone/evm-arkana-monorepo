@@ -1,8 +1,0 @@
-[package]
-name = "poseidon_ctr_encryption"
-type = "lib"
-authors = ["Drone"]
-compiler_version = ">=1.0.0"
-
-[dependencies]
-poseidon = { path = "../poseidon" }

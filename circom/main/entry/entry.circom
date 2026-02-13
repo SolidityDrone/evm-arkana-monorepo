@@ -9,7 +9,7 @@ template Entry() {
     // Private inputs
     signal input user_key;
     
-    // Public inputs
+    // Public inputs (declared public in main component below so they appear in verifier's public signals)
     signal input token_address;
     signal input chain_id;
     
@@ -58,5 +58,5 @@ template Entry() {
     nonce_discovery_entry[1] <== nonce_discovery.commitment[1];
 }
 
-component main = Entry();
+component main { public [ token_address, chain_id ] } = Entry();
 

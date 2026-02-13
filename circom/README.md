@@ -17,7 +17,9 @@ circom/
 │   ├── entry/             # Entry circuit (initialize note)
 │   ├── deposit/           # Deposit circuit
 │   ├── withdraw/          # Withdraw circuit
-│   └── send/              # Send circuit
+│   ├── send/              # Send circuit
+│   ├── absorb_send/       # Absorb-Send circuit (combines absorb and send)
+│   └── absorb_withdraw/   # Absorb-Withdraw circuit (combines absorb and withdraw)
 ├── test/                   # Tests
 │   ├── circuits/          # Test circuit files
 │   └── scripts/           # Test scripts
@@ -60,6 +62,8 @@ pnpm run compile:entry
 pnpm run compile:deposit
 pnpm run compile:withdraw
 pnpm run compile:send
+pnpm run compile:absorb_send
+pnpm run compile:absorb_withdraw
 
 # Compile all
 pnpm run compile:all
@@ -121,6 +125,18 @@ pnpm run test:all
 - Performs Diffie-Hellman key exchange
 - Encrypts operation details
 - Creates note commitment for receiver
+
+### Absorb-Send
+- Combines absorb and send operations
+- Absorbs notes from note_stack into balance
+- Then sends funds to another user
+- More efficient than separate absorb + send operations
+
+### Absorb-Withdraw
+- Combines absorb and withdraw operations
+- Absorbs notes from note_stack into balance
+- Then withdraws funds to an address
+- More efficient than separate absorb + withdraw operations
 
 ## Cleanup
 

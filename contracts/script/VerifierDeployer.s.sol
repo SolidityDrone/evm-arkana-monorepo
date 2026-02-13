@@ -3,11 +3,11 @@ pragma solidity ^0.8.13;
 
 import {Script, console} from "forge-std/Script.sol";
 
-import {HonkVerifier as EntryVerifier} from "../src/Verifiers/VerifierEntry.sol";
-import {HonkVerifier as SendVerifier} from "../src/Verifiers/VerifierSend.sol";
+import {Groth16Verifier as EntryVerifier} from "../src/Verifiers/VerifierEntry.sol";
+import {Groth16Verifier as SendVerifier} from "../src/Verifiers/VerifierSend.sol";
 import {HonkVerifier as AbsorbVerifier} from "../src/Verifiers/VerifierAbsorb.sol";
-import {HonkVerifier as DepositVerifier} from "../src/Verifiers/VerifierDeposit.sol";
-import {HonkVerifier as WithdrawVerifier} from "../src/Verifiers/VerifierWithdraw.sol";
+import {Groth16Verifier as DepositVerifier} from "../src/Verifiers/VerifierDeposit.sol";
+import {Groth16Verifier as WithdrawVerifier} from "../src/Verifiers/VerifierWithdraw.sol";
 
 /**
  * @title VerifierDeployer

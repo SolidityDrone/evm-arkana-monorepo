@@ -35,3 +35,6 @@ The circuit structure is correct but needs to be adapted to Circom's constraints
 4. Compare outputs with Noir implementation
 
 
+
+
+
