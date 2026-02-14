@@ -1,10 +1,11 @@
 'use client'
 
-import { wagmiAdapter, projectId, networks } from '@/config'
+import { wagmiAdapter, projectId, networks, defaultChain } from '@/config'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createAppKit } from '@reown/appkit/react'
 import React, { type ReactNode } from 'react'
 import { cookieToInitialState, WagmiProvider, type Config } from 'wagmi'
+import { ForceAnvilChain } from '@/components/ForceAnvilChain'
 
 // Set up queryClient
 const queryClient = new QueryClient()
@@ -21,12 +22,12 @@ const metadata = {
     icons: ['https://avatars.githubusercontent.com/u/179229932']
 }
 
-// Create the modal
+// Create the modal (defaultNetwork = Anvil unless NEXT_PUBLIC_IS_SEPOLIA=true)
 const modal = createAppKit({
     adapters: [wagmiAdapter],
     projectId,
     networks,
-    defaultNetwork: networks[0],
+    defaultNetwork: defaultChain,
     metadata: metadata,
     features: {
         analytics: true // Optional - defaults to your Cloud configuration
@@ -52,12 +53,23 @@ const modal = createAppKit({
 })
 
 function ContextProvider({ children, cookies }: { children: ReactNode; cookies: string | null }) {
-    const initialState = cookieToInitialState(wagmiAdapter.wagmiConfig as Config, cookies)
+    const config = wagmiAdapter.wagmiConfig as Config
+    let initialState = cookieToInitialState(config, cookies)
+    // When using Anvil (local dev), force initial chain to Anvil so connect flow doesn't stick to Sepolia
+    if (defaultChain.id === 31337 && initialState != null && typeof initialState === 'object') {
+        const prev = initialState as Record<string, unknown>
+        if (prev.state != null && typeof prev.state === 'object') {
+            initialState = { ...prev, state: { ...(prev.state as Record<string, unknown>), chainId: 31337 } } as typeof initialState
+        }
+    }
 
     return (
-        <WagmiProvider config={wagmiAdapter.wagmiConfig as Config} initialState={initialState}>
-            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-        </WagmiProvider>
+        <QueryClientProvider client={queryClient}>
+            <WagmiProvider config={config} initialState={initialState}>
+                <ForceAnvilChain />
+                {children}
+            </WagmiProvider>
+        </QueryClientProvider>
     )
 }
 

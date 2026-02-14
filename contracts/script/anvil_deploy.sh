@@ -36,8 +36,15 @@ else
     echo "  RPC URL: $RPC_URL"
 fi
 
-KEYSTORE="${KEYSTORE:-$HOME/.foundry/keystores/arkdep}"
-SENDER="${SENDER:-0xcd3336b37f43b1bE8cdf65711F9D4fbd4Fbf86a3}"
+KEYSTORE="${KEYSTORE:-$HOME/.foundry/keystores/default_foundry}"
+# On Anvil only the default first account is unlocked; use it so --broadcast works.
+# On Sepolia set SENDER to your funded deployer address (or use a keystore that holds it).
+if [ "$IS_SEPOLIA" = "true" ] || [ "$IS_SEPOLIA" = "1" ]; then
+    SENDER="${SENDER:-0xcd3336b37f43b1bE8cdf65711F9D4fbd4Fbf86a3}"
+else
+    # Anvil: always use default first account (40 hex chars, lowercase; avoid SENDER from .env with typos)
+    SENDER="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+fi
 
 # Check balance if deploying to Sepolia
 if [ "$IS_SEPOLIA" = "true" ]; then
@@ -178,10 +185,8 @@ fi
 echo ""
 echo "Step 2: Deploying Verifiers..."
 echo "----------------------------------------"
-# NOTE: Verifiers must NOT use --via-ir (stack depth issues with ZK verifier contracts)
-# LeanIMTPoseidon2.sol requires --via-ir but Verifiers cannot use it
-# Workaround: Temporarily rename merkle files that cause stack too deep to avoid compilation
-# This is necessary because --skip doesn't prevent Forge from compiling all project files
+# Verifiers need --via-ir to avoid "Stack too deep" in inline assembly.
+# Temporarily rename merkle files so they are not compiled with the verifier step.
 MERKLE_DIR="src/merkle"
 LEAN_IMT_POSEIDON2_FILE="$MERKLE_DIR/LeanIMTPoseidon2.sol"
 LEAN_IMT_POSEIDON2_BACKUP="$MERKLE_DIR/LeanIMTPoseidon2.sol.backup"
@@ -214,11 +219,12 @@ trap restore_merkle_files EXIT
 
 VERIFIER_OUTPUT=$(mktemp)
 forge script script/VerifierDeployer.s.sol \
-    --skip "test/**" "src/Arkana.sol" "src/ArkanaVault.sol"  "src/tl-limit/**" \
+    --skip "test/**" "src/Arkana.sol" "src/ArkanaVault.sol" "src/tl-limit/**" \
     --broadcast \
     --rpc-url "$RPC_URL" \
     --keystore "$KEYSTORE" \
-    --sender "$SENDER" 2>&1 | tee "$VERIFIER_OUTPUT"
+    --sender "$SENDER" \
+    --via-ir 2>&1 | tee "$VERIFIER_OUTPUT"
 
 # Extract verifier addresses if needed for verification
 VERIFIER_ADDRESSES=$(grep -oE '0x[a-fA-F0-9]{40}' "$VERIFIER_OUTPUT" | sort -u)

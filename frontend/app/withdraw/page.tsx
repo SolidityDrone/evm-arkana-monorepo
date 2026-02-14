@@ -15,18 +15,16 @@ import { useToast } from '@/components/Toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useAaveTokens } from '@/hooks/useAaveTokens';
 import { TokenIcon } from '@/lib/token-icons';
-import { Noir } from '@noir-lang/noir_js';
-import { CachedUltraHonkBackend } from '@/lib/cached-ultra-honk-backend';
-import withdrawCircuit from '@/lib/circuits/withdraw.json';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
+import { getChainId } from '@/config';
+import type { Groth16Args } from '@/lib/groth16';
+import { proveWithSnarkjs } from '@/lib/circuit-prove';
 import { ensureBufferPolyfill } from '@/lib/buffer-polyfill';
 import { useNonceDiscovery } from '@/hooks/useNonceDiscovery';
 import { loadAccountData, saveTokenAccountData, TokenAccountData } from '@/lib/indexeddb';
 import { loadAccountDataOnSign } from '@/lib/loadAccountDataOnSign';
 import { convertAssetsToShares, convertSharesToAssets } from '@/lib/shares-to-assets';
 import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
-import { getCurrentRound, getRoundTimestamp, createOrderChain, createLiquidityOrderChain, dateToRound, roundToDate, formatRoundTime, getMinimumRound, type Order, type LiquidityOrder, type PoolKey, OperationType } from '@/lib/timelock-order';
-import { uploadCiphertextToIPFS, getIPFSGatewayURL } from '@/lib/ipfs';
 import { Copy, ExternalLink } from 'lucide-react';
 import Image from 'next/image';
 
@@ -79,59 +77,6 @@ export default function WithdrawPage() {
     const [arbitraryCalldata, setArbitraryCalldata] = useState('');
     const [arbitraryCalldataHash, setArbitraryCalldataHash] = useState<string>('0x0');
     const [isCustomSpell, setIsCustomSpell] = useState(false);
-    const [isTlSwap, setIsTlSwap] = useState(false);
-    const [tlOperationType, setTlOperationType] = useState<'swap' | 'liquidity'>('swap'); // 0 = SWAP, 1 = LIQUIDITY
-    const [tlSwapSharesAmounts, setTlSwapSharesAmounts] = useState<string[]>(Array(10).fill('0'));
-    const [numOrders, setNumOrders] = useState<number>(1);
-    const [tlOrders, setTlOrders] = useState<Array<{
-        sharesAmount: string;
-        amountOutMin: string;
-        targetRound: string;
-        deadline: string;
-        recipient: string;
-        tokenOut: string;
-        slippageBps: string;
-        executionFeeBps: string;
-        // Liquidity-specific fields
-        currency0: string;
-        currency1: string;
-        poolFee: string;
-        tickSpacing: string;
-        hooks: string;
-        tickLower: string;
-        tickUpper: string;
-        amount1Max: string;  // Max amount of second token (USDC) for LP - should match swapAmountOut
-        // Swap directive for liquidity (to get second token) - EXACT_OUT swap
-        swapAmountOut: string;  // Exact amount of second token to receive
-        swapAmountInMax: string;  // Maximum amount of first token to spend
-        swapSlippageBps: string;
-        swapTokenOut: string;
-        swapPoolFee: string;
-    }>>([{
-        sharesAmount: '',
-        amountOutMin: '',
-        targetRound: '',
-        deadline: '',
-        recipient: address || '',
-        tokenOut: '',
-        slippageBps: '50',
-        executionFeeBps: '10',
-        // Liquidity defaults - working values from test
-        currency0: '',
-        currency1: '',
-        poolFee: '3000',
-        tickSpacing: '60',
-        hooks: '0x0000000000000000000000000000000000000000',
-        tickLower: '55560',  // Narrow range around current tick (56160 ± 600)
-        tickUpper: '56760',
-        amount1Max: '300000',  // Max USDC for LP (raw units, 6 decimals) - should match swapAmountOut
-        // Swap directive defaults - EXACT_OUT (specify output amount in human-readable format)
-        swapAmountOut: '0.3',      // 0.3 USDC (will be converted to raw units: 300000)
-        swapAmountInMax: '0.00015', // Max 0.00015 WBTC (will be converted to raw units: 15000)
-        swapSlippageBps: '500',   // 5% slippage
-        swapTokenOut: '',
-        swapPoolFee: '3000',
-    }]);
     const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
     const [tokenName, setTokenName] = useState<string>('');
     const [tokenSymbol, setTokenSymbol] = useState<string>('');
@@ -142,12 +87,10 @@ export default function WithdrawPage() {
     const [tokenOutValidationErrors, setTokenOutValidationErrors] = useState<Record<string, string>>({});
     const [isValidatingTokenOut, setIsValidatingTokenOut] = useState<Record<string, boolean>>({});
 
-    // Backend state
-    const withdrawBackendRef = useRef<CachedUltraHonkBackend | null>(null);
-    const withdrawNoirRef = useRef<Noir | null>(null);
     const [isInitializing, setIsInitializing] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
     const [isCalculatingInputs, setIsCalculatingInputs] = useState(false);
+    const [groth16Args, setGroth16Args] = useState<Groth16Args | null>(null);
 
     // Transaction state
     const [isProving, setIsProving] = useState(false);
@@ -160,14 +103,6 @@ export default function WithdrawPage() {
     const [txHash, setTxHash] = useState<string | null>(null);
     const [txError, setTxError] = useState<string | null>(null);
     const [proofError, setProofError] = useState<string | null>(null);
-    const [ipfsCid, setIpfsCid] = useState<string | null>(null);
-    const [isUploadingToIPFS, setIsUploadingToIPFS] = useState(false);
-    const [ipfsError, setIpfsError] = useState<string | null>(null);
-    const [tlSwapCiphertext, setTlSwapCiphertext] = useState<string | null>(null);
-    const [tlOrderHashes, setTlOrderHashes] = useState<`0x${string}`[] | null>(null);
-    const [testIpfsCid, setTestIpfsCid] = useState<string | null>(null);
-    const [isTestingIPFS, setIsTestingIPFS] = useState(false);
-    const [testIpfsError, setTestIpfsError] = useState<string | null>(null);
     const [availableBalance, setAvailableBalance] = useState<bigint | null>(null);
     const [isLoadingBalance, setIsLoadingBalance] = useState(false);
 
@@ -524,146 +459,6 @@ export default function WithdrawPage() {
         }
     }, [tokenAddress, publicClient, aaveTokens]);
 
-    // Load tokenOut info when tokenOut addresses change in TL orders (for swap and liquidity operations)
-    useEffect(() => {
-        const loadTokenOutInfo = async () => {
-            if (!publicClient || tlOrders.length === 0) return;
-
-            // Collect all token addresses that need decimals loaded
-            // For swap mode: order.tokenOut
-            // For liquidity mode: order.swapTokenOut (the second token in swap directive)
-            const tokenOutAddresses = new Set<string>();
-
-            tlOrders.forEach(order => {
-                if (tlOperationType === 'swap' && order.tokenOut?.trim()) {
-                    const addr = order.tokenOut.trim();
-                    if (addr.length === 42 && addr.startsWith('0x')) {
-                        tokenOutAddresses.add(addr);
-                    }
-                }
-                if (tlOperationType === 'liquidity' && order.swapTokenOut?.trim()) {
-                    const addr = order.swapTokenOut.trim();
-                    if (addr.length === 42 && addr.startsWith('0x')) {
-                        tokenOutAddresses.add(addr);
-                    }
-                }
-            });
-
-            for (const tokenOutAddr of tokenOutAddresses) {
-                const tokenOutAddrLower = tokenOutAddr.toLowerCase();
-
-                // Skip if we already have info for this token
-                if (tokenOutInfo[tokenOutAddrLower]) continue;
-
-                // Set validating state
-                setIsValidatingTokenOut(prev => ({
-                    ...prev,
-                    [tokenOutAddrLower]: true,
-                }));
-
-                // Clear any previous errors
-                setTokenOutValidationErrors(prev => {
-                    const newObj = { ...prev };
-                    delete newObj[tokenOutAddrLower];
-                    return newObj;
-                });
-
-                try {
-                    const tokenAddr = tokenOutAddr.startsWith('0x') ? tokenOutAddr as Address : `0x${tokenOutAddr}` as Address;
-
-                    // Check Aave tokens first
-                    const aaveToken = aaveTokens.find((t: { address: string }) =>
-                        t.address.toLowerCase() === tokenOutAddrLower
-                    );
-
-                    if (aaveToken) {
-                        setTokenOutInfo(prev => ({
-                            ...prev,
-                            [tokenOutAddrLower]: {
-                                name: aaveToken.name,
-                                symbol: aaveToken.symbol,
-                                decimals: aaveToken.decimals,
-                            },
-                        }));
-
-                        setTokenOutDecimals(prev => ({
-                            ...prev,
-                            [tokenOutAddrLower]: aaveToken.decimals,
-                        }));
-
-                        setIsValidatingTokenOut(prev => {
-                            const newObj = { ...prev };
-                            delete newObj[tokenOutAddrLower];
-                            return newObj;
-                        });
-                        continue;
-                    }
-
-                    // Validate ERC20 and fetch on-chain
-                    const [decimals, name, symbol] = await Promise.all([
-                        publicClient.readContract({
-                            address: tokenAddr,
-                            abi: ERC20_ABI,
-                            functionName: 'decimals',
-                        }),
-                        publicClient.readContract({
-                            address: tokenAddr,
-                            abi: ERC20_ABI,
-                            functionName: 'name',
-                        }),
-                        publicClient.readContract({
-                            address: tokenAddr,
-                            abi: ERC20_ABI,
-                            functionName: 'symbol',
-                        }),
-                    ]);
-
-                    // If all three calls succeeded, it's a valid ERC20
-                    if (decimals !== null && decimals !== undefined &&
-                        name !== null && name !== undefined &&
-                        symbol !== null && symbol !== undefined) {
-                        setTokenOutInfo(prev => ({
-                            ...prev,
-                            [tokenOutAddrLower]: {
-                                name: name as string,
-                                symbol: symbol as string,
-                                decimals: decimals as number,
-                            },
-                        }));
-
-                        setTokenOutDecimals(prev => ({
-                            ...prev,
-                            [tokenOutAddrLower]: decimals as number,
-                        }));
-
-                        setIsValidatingTokenOut(prev => {
-                            const newObj = { ...prev };
-                            delete newObj[tokenOutAddrLower];
-                            return newObj;
-                        });
-                    } else {
-                        throw new Error('Token does not implement required ERC20 functions');
-                    }
-                } catch (error) {
-                    console.error(`Error validating tokenOut ${tokenOutAddr}:`, error);
-                    const errorMessage = error instanceof Error ? error.message : 'Failed to validate token as ERC20';
-                    setTokenOutValidationErrors(prev => ({
-                        ...prev,
-                        [tokenOutAddrLower]: errorMessage,
-                    }));
-
-                    setIsValidatingTokenOut(prev => {
-                        const newObj = { ...prev };
-                        delete newObj[tokenOutAddrLower];
-                        return newObj;
-                    });
-                }
-            }
-        };
-
-        loadTokenOutInfo();
-    }, [tlOrders, publicClient, aaveTokens, tokenOutInfo, tokenOutDecimals, tlOperationType]);
-
     // Update txHash when hash changes
     React.useEffect(() => {
         if (hash) {
@@ -685,39 +480,6 @@ export default function WithdrawPage() {
             setIsSubmitting(false);
         }
     }, [isConfirmed]);
-
-    // Initialize withdraw backend
-    const initializeBackend = useCallback(async () => {
-        if (withdrawBackendRef.current && withdrawNoirRef.current) {
-            return;
-        }
-
-        const startTime = performance.now();
-        setIsInitializing(true);
-
-        try {
-            await ensureBufferPolyfill();
-
-            const backendOptions = {
-                threads: 1,
-            };
-
-            const backend = new CachedUltraHonkBackend(withdrawCircuit.bytecode, backendOptions);
-            const noir = new Noir(withdrawCircuit);
-            withdrawBackendRef.current = backend;
-            withdrawNoirRef.current = noir;
-
-            const endTime = performance.now();
-            const initTime = Math.round(endTime - startTime);
-            setIsInitialized(true);
-
-        } catch (error) {
-            console.error('Failed to initialize backend:', error);
-            throw error;
-        } finally {
-            setIsInitializing(false);
-        }
-    }, [isInitialized]);
 
     // Calculate arbitrary calldata hash when calldata changes
     useEffect(() => {
@@ -1160,63 +922,11 @@ export default function WithdrawPage() {
 
             const userKeyForCircuit = '0x' + userKeyToUse.toString(16);
 
-            // Format tl_swap_shares_amounts array from tlOrders
-            // IMPORTANT: We distribute shares proportionally from the total (amountBigInt) to avoid rounding errors
-            // The sum of chunks must EXACTLY equal the total shares
-            const ordersToUse = isTlSwap && tlOrders.length > 0 && tlOrders[0].sharesAmount
-                ? tlOrders.slice(0, numOrders).map(o => o.sharesAmount)
-                : tlSwapSharesAmounts;
-
-            // Calculate proportions from the user's input amounts
-            const parseAmount = (str: string): number => {
-                if (!str || str === '0' || str === '') return 0;
-                const sanitized = str.trim().replace(',', '.');
-                return parseFloat(sanitized) || 0;
-            };
-
-            const inputAmounts = ordersToUse.map(parseAmount);
-            const inputTotal = inputAmounts.reduce((sum, a) => sum + a, 0);
-
-            // Distribute shares proportionally from the total shares (amountBigInt)
-            // This ensures the sum of chunks EXACTLY equals amountBigInt
-            const formattedTlSwapSharesAmounts: string[] = [];
-            let remainingShares = amountBigInt;
-
-            for (let i = 0; i < ordersToUse.length; i++) {
-                if (inputTotal === 0 || inputAmounts[i] === 0) {
-                    formattedTlSwapSharesAmounts.push('0');
-                } else if (i === ordersToUse.length - 1) {
-                    // Last chunk gets ALL remaining shares to ensure exact sum
-                    formattedTlSwapSharesAmounts.push(remainingShares.toString());
-                    remainingShares = BigInt(0);
-                } else {
-                    // Calculate this chunk's share proportionally
-                    const proportion = inputAmounts[i] / inputTotal;
-                    const chunkShares = BigInt(Math.floor(Number(amountBigInt) * proportion));
-                    formattedTlSwapSharesAmounts.push(chunkShares.toString());
-                    remainingShares -= chunkShares;
-                }
-            }
-
-            console.log('🔄 TL Swap shares distribution:', {
-                totalShares: amountBigInt.toString(),
-                inputAmounts,
-                inputTotal,
-                distributedShares: formattedTlSwapSharesAmounts.filter(s => s !== '0'),
-                sum: formattedTlSwapSharesAmounts.reduce((sum, s) => sum + BigInt(s), BigInt(0)).toString(),
-            });
-
-            // Pad to 10 elements for circuit
-            while (formattedTlSwapSharesAmounts.length < 10) {
-                formattedTlSwapSharesAmounts.push('0');
-            }
-
-            // Calculate circuit inputs
             const inputs = {
                 user_key: formatForNoir(userKeyForCircuit),
                 token_address: formatForNoir(tokenAddressBigInt),
                 amount: formatForNoir(amountBigInt),
-                chain_id: (await publicClient?.getChainId())?.toString() || '11155111',
+                chain_id: (await publicClient?.getChainId())?.toString() || getChainId().toString(),
                 previous_nonce: tokenPreviousNonce.toString(),
                 previous_shares: previousSharesForReconstruction.toString(),
                 nullifier: nullifierForReconstruction.toString(),
@@ -1230,8 +940,6 @@ export default function WithdrawPage() {
                 receiver_address: formatForNoir(receiverAddressBigInt),
                 relayer_fee_amount: formatForNoir(receiverFeeAmountBigInt),
                 arbitrary_calldata_hash: formatForNoir(BigInt(arbitraryCalldataHash)),
-                is_tl_swap: isTlSwap,
-                tl_swap_shares_amounts: formattedTlSwapSharesAmounts,
             };
 
             return inputs;
@@ -1263,88 +971,6 @@ export default function WithdrawPage() {
             return;
         }
 
-        // Validate TL Swap: sum of order shares must equal withdrawal amount
-        if (isTlSwap) {
-            const totalShares = tlOrders.slice(0, numOrders).reduce((sum, order) => {
-                const shares = parseFloat(order.sharesAmount || '0');
-                return sum + (isNaN(shares) ? 0 : shares);
-            }, 0);
-            const withdrawalAmount = parseFloat(amount || '0');
-            const difference = Math.abs(totalShares - withdrawalAmount);
-
-            if (difference >= 0.0001) {
-                setProofError(`TL Swap validation failed: Sum of order shares (${totalShares.toFixed(6)}) does not equal withdrawal amount (${withdrawalAmount.toFixed(6)}). Difference: ${difference.toFixed(6)}`);
-                return;
-            }
-
-            // Validate that all orders have required fields based on operation type
-            for (let i = 0; i < numOrders; i++) {
-                const order = tlOrders[i];
-
-                // Common fields for both swap and liquidity
-                if (!order.sharesAmount || parseFloat(order.sharesAmount) <= 0) {
-                    setProofError(`Order ${i + 1}: Shares amount is required and must be greater than 0`);
-                    return;
-                }
-                if (!order.targetRound || parseInt(order.targetRound) <= 0) {
-                    setProofError(`Order ${i + 1}: Target Round is required and must be greater than 0`);
-                    return;
-                }
-                if (!order.deadline || parseInt(order.deadline) <= 0) {
-                    setProofError(`Order ${i + 1}: Deadline is required and must be greater than 0`);
-                    return;
-                }
-                if (!order.recipient || !order.recipient.startsWith('0x')) {
-                    setProofError(`Order ${i + 1}: Valid recipient address is required`);
-                    return;
-                }
-
-                // Swap-specific validation
-                if (tlOperationType === 'swap') {
-                    if (!order.amountOutMin || parseFloat(order.amountOutMin) <= 0) {
-                        setProofError(`Order ${i + 1}: Amount Out Min is required and must be greater than 0`);
-                        return;
-                    }
-                    if (!order.tokenOut || !order.tokenOut.startsWith('0x')) {
-                        setProofError(`Order ${i + 1}: Valid token out address is required`);
-                        return;
-                    }
-                }
-
-                // Liquidity-specific validation
-                if (tlOperationType === 'liquidity') {
-                    if (!order.currency0 || !order.currency0.startsWith('0x')) {
-                        setProofError(`Order ${i + 1}: Valid currency0 address is required`);
-                        return;
-                    }
-                    if (!order.currency1 || !order.currency1.startsWith('0x')) {
-                        setProofError(`Order ${i + 1}: Valid currency1 address is required`);
-                        return;
-                    }
-                    if (!order.poolFee || parseInt(order.poolFee) <= 0) {
-                        setProofError(`Order ${i + 1}: Pool fee is required and must be greater than 0`);
-                        return;
-                    }
-                    if (!order.tickSpacing || parseInt(order.tickSpacing) <= 0) {
-                        setProofError(`Order ${i + 1}: Tick spacing is required and must be greater than 0`);
-                        return;
-                    }
-                    if (!order.tickLower || parseInt(order.tickLower) === undefined) {
-                        setProofError(`Order ${i + 1}: Tick lower is required`);
-                        return;
-                    }
-                    if (!order.tickUpper || parseInt(order.tickUpper) === undefined) {
-                        setProofError(`Order ${i + 1}: Tick upper is required`);
-                        return;
-                    }
-                    if (parseInt(order.tickLower) >= parseInt(order.tickUpper)) {
-                        setProofError(`Order ${i + 1}: Tick lower must be less than tick upper`);
-                        return;
-                    }
-                }
-            }
-        }
-
         if (isDiscoveringToken) {
             setProofError('Token discovery in progress. Please wait...');
             return;
@@ -1365,110 +991,23 @@ export default function WithdrawPage() {
             setProofError(null);
             setTxError(null); // Clear any stale transaction errors
             setProvingTime(null);
-            // Reset IPFS and ciphertext state for new proof
-            setIpfsCid(null);
-            setIpfsError(null);
-            setTlSwapCiphertext(null);
-            setTlOrderHashes(null);
 
             const startTime = performance.now();
-            await initializeBackend();
+            setGroth16Args(null);
 
-            if (!withdrawBackendRef.current || !withdrawNoirRef.current) {
-                throw new Error('Failed to initialize backend');
-            }
-
-            // Calculate circuit inputs dynamically
+            await ensureBufferPolyfill();
             const inputs = await calculateCircuitInputsWithdraw();
-
-            //@ts-ignore
-            const { witness } = await withdrawNoirRef.current!.execute(inputs, { keccak: true });
-
-            //@ts-ignore
-            const proofResult = await withdrawBackendRef.current!.generateProof(witness, { keccak: true });
-            const proofHex = Buffer.from(proofResult.proof).toString('hex');
-
-            const publicInputsArray = (proofResult.publicInputs || []);
-
-            // Log raw public inputs from circuit to understand the actual order
-            console.log('🔍 Raw public inputs from circuit (before reordering):');
-            console.log(`  Length: ${publicInputsArray.length}`);
-            publicInputsArray.forEach((input: any, index: number) => {
-                const hex = typeof input === 'bigint' ? `0x${input.toString(16).padStart(64, '0')}` : (input.startsWith('0x') ? input : `0x${BigInt(input).toString(16).padStart(64, '0')}`);
-                console.log(`  [${index}]: ${hex}`);
-            });
-
-            // Reorder public inputs to match contract expectations (17 elements: 8 inputs + 9 outputs)
-            // Contract expects: [0] token_address, [1] chain_id, [2] declared_time_reference, [3] expected_root,
-            //                  [4] arbitrary_calldata_hash, [5] receiver_address, [6] relayer_fee_amount, [7] is_tl_swap,
-            //                  [8] new_commitment.x, [9] new_commitment.y, [10] new_nonce_commitment,
-            //                  [11] encryptedBalance, [12] encryptedNullifier, [13] nonce_discovery_entry.x, [14] nonce_discovery_entry.y,
-            //                  [15] tl_hashchain, [16] final_amount
-            let reorderedInputs: any[];
-
-            if (publicInputsArray.length === 11) {
-                // Circuit returned 11 elements (4 inputs + 7 outputs). Reconstruct full 18-element array.
-                // Note: tl_hashchain and final_amount are not in the 11-element output, so we'll use placeholders
-                reorderedInputs = [
-                    publicInputsArray[0],              // [0] token_address
-                    publicInputsArray[1],              // [1] amount
-                    publicInputsArray[2],              // [2] chain_id
-                    publicInputsArray[3],              // [3] declared_time_reference
-                    inputs.expected_root,              // [4] expected_root
-                    inputs.arbitrary_calldata_hash,    // [5] arbitrary_calldata_hash
-                    inputs.receiver_address,           // [6] receiver_address
-                    inputs.relayer_fee_amount,         // [7] relayer_fee_amount
-                    inputs.is_tl_swap ? '1' : '0',    // [8] is_tl_swap (bool as 0/1)
-                    publicInputsArray[4],              // [9] new_commitment.x
-                    publicInputsArray[5],              // [10] new_commitment.y
-                    publicInputsArray[6],              // [11] new_nonce_commitment
-                    publicInputsArray[7],              // [12] encryptedBalance
-                    publicInputsArray[8],              // [13] encryptedNullifier
-                    publicInputsArray[9],              // [14] nonce_discovery_entry.x
-                    publicInputsArray[10],             // [15] nonce_discovery_entry.y
-                    '0',                               // [16] tl_hashchain (placeholder - will be computed by circuit)
-                    inputs.is_tl_swap ? '0' : inputs.amount, // [17] final_amount (0 if tl_swap, else amount)
-                ];
-            } else if (publicInputsArray.length === 15) {
-                // Check if order is correct
-                const valueAt4 = publicInputsArray[4];
-                const expectedRootBigInt = BigInt(inputs.expected_root);
-                const valueAt4BigInt = typeof valueAt4 === 'bigint' ? valueAt4 : BigInt(valueAt4);
-                const isExpectedRootAt4 = valueAt4BigInt === expectedRootBigInt;
-
-                if (isExpectedRootAt4) {
-                    // Insert is_tl_swap, tl_hashchain, and final_amount
-                    reorderedInputs = [
-                        ...publicInputsArray.slice(0, 8),  // [0-7] public inputs
-                        inputs.is_tl_swap ? '1' : '0',    // [8] is_tl_swap
-                        ...publicInputsArray.slice(8),     // [9-14] outputs
-                        '0',                               // [15] tl_hashchain (placeholder - will be computed by circuit)
-                        inputs.is_tl_swap ? '0' : inputs.amount, // [16] final_amount (0 if tl_swap, else amount)
-                    ];
-                } else {
-                    // Reorder and insert is_tl_swap, tl_hashchain, and final_amount
-                    reorderedInputs = [
-                        publicInputsArray[0],              // [0] token_address
-                        publicInputsArray[1],              // [1] amount
-                        publicInputsArray[2],              // [2] chain_id
-                        publicInputsArray[3],              // [3] declared_time_reference
-                        publicInputsArray[11],             // [4] expected_root
-                        publicInputsArray[12],             // [5] arbitrary_calldata_hash
-                        publicInputsArray[13],             // [6] receiver_address
-                        publicInputsArray[14],             // [7] relayer_fee_amount
-                        inputs.is_tl_swap ? '1' : '0',    // [8] is_tl_swap
-                        publicInputsArray[4],              // [9] new_commitment.x
-                        publicInputsArray[5],              // [10] new_commitment.y
-                        publicInputsArray[6],              // [11] new_nonce_commitment
-                        publicInputsArray[7],              // [12] encryptedBalance
-                        publicInputsArray[8],              // [13] encryptedNullifier
-                        publicInputsArray[9],              // [14] nonce_discovery_entry.x
-                        publicInputsArray[10],            // [15] nonce_discovery_entry.y
-                        '0',                               // [16] tl_hashchain (placeholder - will be computed by circuit)
-                        inputs.is_tl_swap ? '0' : inputs.amount, // [17] final_amount (0 if tl_swap, else amount)
-                    ];
-                }
-            } else if (publicInputsArray.length === 17 || publicInputsArray.length === 18) {
+            const groth16 = await proveWithSnarkjs(inputs as Record<string, string | string[]>, 'withdraw');
+            setGroth16Args(groth16);
+            setProof(JSON.stringify({ proof: 'ok' }));
+            setPublicInputs(groth16.publicSignals);
+            setProvingTime(Math.round(performance.now() - startTime));
+            setIsProving(false);
+            /* TL Swap block removed - using circom only */
+            if (false) {
+            const publicInputsArray: any[] = [];
+            let reorderedInputs: any[] = [];
+            if (publicInputsArray.length === 17 || publicInputsArray.length === 18) {
                 // Circuit returned 17 elements - check the actual order
                 // According to the circuit test, the order should be:
                 // [0] token_address, [1] chain_id, [2] declared_time_reference, [3] expected_root,
@@ -1926,28 +1465,13 @@ export default function WithdrawPage() {
 
     // Handle withdraw transaction
     const handleWithdraw = async () => {
-        if (!proof || !publicInputs || publicInputs.length === 0) {
-            setTxError('Proof and public inputs are required');
+        if (!groth16Args || groth16Args.publicSignals.length < 15) {
+            setTxError('Proof and public inputs are required. Generate a Circom proof first.');
             return;
         }
         if (!address) {
             setTxError('Please connect your wallet first');
             return;
-        }
-        // For TL-Swap, ensure IPFS upload completed and ciphertext is available
-        if (isTlSwap) {
-            if (isUploadingToIPFS) {
-                setTxError('IPFS upload in progress. Please wait...');
-                return;
-            }
-            if (ipfsError) {
-                setTxError(`IPFS upload failed: ${ipfsError}. Cannot proceed with transaction.`);
-                return;
-            }
-            if (!ipfsCid || !tlSwapCiphertext) {
-                setTxError('IPFS upload required for TL-Swap. Please generate proof first.');
-                return;
-            }
         }
 
         try {
@@ -1955,63 +1479,13 @@ export default function WithdrawPage() {
             setTxError(null);
             setTxHash(null);
 
-            const proofBytes = `0x${proof}`;
-            const slicedInputs = publicInputs.slice(0, 17); // Contract expects exactly 17 public inputs (8 inputs + 9 outputs including is_tl_swap, tl_hashchain, and final_amount)
+            const publicSignals = groth16Args.publicSignals.slice(0, 15).map((h) => (h.startsWith('0x') ? h : `0x${h}`) as `0x${string}`);
+            const callDataBytes: `0x${string}` = arbitraryCalldata && arbitraryCalldata.trim() !== ''
+                ? (arbitraryCalldata.startsWith('0x') ? arbitraryCalldata : `0x${arbitraryCalldata}`) as `0x${string}`
+                : '0x';
 
-            // Prepare calldata for contract call
-            // For TL operations, use the ciphertext; otherwise use arbitraryCalldata if provided
-            let callDataBytes: `0x${string}`;
-            if (isTlSwap && tlSwapCiphertext) {
-                // For TL operations, encode ciphertext, orderHashes, and operationType together
-                // The contract expects abi.encode(ciphertext, orderHashes, operationType)
-                const ciphertextBytes = Buffer.from(tlSwapCiphertext, 'utf-8');
-                const orderHashesArray = tlOrderHashes || [];
-                const operationType = tlOperationType === 'swap' ? 0 : 1; // 0 = SWAP, 1 = LIQUIDITY
-
-                // Use viem's encodeAbiParameters to create the encoded calldata
-                const { encodeAbiParameters, parseAbiParameters } = await import('viem');
-                callDataBytes = encodeAbiParameters(
-                    parseAbiParameters('bytes, bytes32[], uint8'),
-                    [`0x${ciphertextBytes.toString('hex')}`, orderHashesArray, operationType]
-                );
-
-                console.log('📦 Using TL operation encoded callData:', {
-                    ciphertextLength: ciphertextBytes.length,
-                    orderHashesCount: orderHashesArray.length,
-                    orderHashes: orderHashesArray,
-                    operationType: tlOperationType,
-                    totalLength: callDataBytes.length / 2 - 1
-                });
-            } else if (arbitraryCalldata && arbitraryCalldata.trim() !== '') {
-                callDataBytes = (arbitraryCalldata.startsWith('0x') ? arbitraryCalldata : `0x${arbitraryCalldata}`) as `0x${string}`;
-            } else {
-                callDataBytes = '0x' as `0x${string}`;
-            }
-
-            const publicInputsBytes32 = slicedInputs.map((input: string) => {
-                const hex = input.startsWith('0x') ? input.slice(2) : input;
-                return `0x${hex.padStart(64, '0')}` as `0x${string}`;
-            });
-
-            // Log all parameters in order with names for debugging
-            console.log('📋 Withdraw transaction parameters (in order, as sent to contract):');
-            console.log(`[0] token_address: ${publicInputsBytes32[0]}`);
-            console.log(`[1] chain_id: ${publicInputsBytes32[1]}`);
-            console.log(`[2] declared_time_reference: ${publicInputsBytes32[2]}`);
-            console.log(`[3] expected_root: ${publicInputsBytes32[3]}`);
-            console.log(`[4] arbitrary_calldata_hash: ${publicInputsBytes32[4]}`);
-            console.log(`[5] receiver_address: ${publicInputsBytes32[5]}`);
-            console.log(`[6] relayer_fee_amount: ${publicInputsBytes32[6]}`);
-            console.log(`[7] is_tl_swap: ${publicInputsBytes32[7]}`);
-            console.log(`[8] pedersenCommitmentX: ${publicInputsBytes32[8]}`);
-            console.log(`[9] pedersenCommitmentY: ${publicInputsBytes32[9]}`);
-            console.log(`[10] newNonceCommitment: ${publicInputsBytes32[10]}`);
-            console.log(`[11] encryptedBalance: ${publicInputsBytes32[11]}`);
-            console.log(`[12] encryptedNullifier: ${publicInputsBytes32[12]}`);
-            console.log(`[13] nonceDiscoveryEntryX: ${publicInputsBytes32[13]}`);
-            console.log(`[14] nonceDiscoveryEntryY: ${publicInputsBytes32[14]}`);
-            console.log(`[15] tlHashchain: ${publicInputsBytes32[15]}`);
-            console.log(`[16] finalAmount: ${publicInputsBytes32[16]}`);
+            console.log('📋 Withdraw transaction parameters (Groth16):');
+            console.log('  publicSignals count:', publicSignals.length);
             console.log('');
             console.log('📊 Raw publicInputs array (before processing):');
             console.log(`  Length: ${publicInputs.length}`);
@@ -2024,7 +1498,6 @@ export default function WithdrawPage() {
                 return;
             }
 
-            // Simulate transaction first to catch errors
             setIsSimulating(true);
             try {
                 const simResult = await publicClient.simulateContract({
@@ -2032,7 +1505,7 @@ export default function WithdrawPage() {
                     address: ArkanaAddress as `0x${string}`,
                     abi: ArkanaAbi,
                     functionName: 'withdraw',
-                    args: [proofBytes as `0x${string}`, publicInputsBytes32 as readonly `0x${string}`[], callDataBytes],
+                    args: [groth16Args.pA, groth16Args.pB, groth16Args.pC, publicSignals, callDataBytes],
                 });
 
                 console.log('✅ Simulation successful!');
@@ -2067,13 +1540,12 @@ export default function WithdrawPage() {
                 setIsSimulating(false);
             }
 
-            // Send transaction with increased gas limit (3M for complex withdraw operations)
             writeContract({
                 address: ArkanaAddress as `0x${string}`,
                 abi: ArkanaAbi,
                 functionName: 'withdraw',
-                args: [proofBytes as `0x${string}`, publicInputsBytes32 as readonly `0x${string}`[], callDataBytes],
-                gas: BigInt(3_000_000), // 3M gas limit
+                args: [groth16Args.pA, groth16Args.pB, groth16Args.pC, publicSignals, callDataBytes],
+                gas: BigInt(3_000_000),
             });
 
         } catch (error) {
@@ -2083,23 +1555,10 @@ export default function WithdrawPage() {
         }
     };
 
-    // Handle withdraw via relayer
     const handleWithdrawViaRelayer = async () => {
-        if (!proof || !publicInputs || publicInputs.length === 0) {
-            setRelayerError('Proof and public inputs are required');
+        if (!groth16Args || groth16Args.publicSignals.length < 15) {
+            setRelayerError('Proof and public inputs are required. Generate a Circom proof first.');
             return;
-        }
-
-        // For TL-Swap, ensure IPFS upload completed
-        if (isTlSwap) {
-            if (isUploadingToIPFS) {
-                setRelayerError('IPFS upload in progress. Please wait...');
-                return;
-            }
-            if (!ipfsCid || !tlSwapCiphertext) {
-                setRelayerError('IPFS upload required for TL-Swap. Please generate proof first.');
-                return;
-            }
         }
 
         try {
@@ -2108,36 +1567,15 @@ export default function WithdrawPage() {
             setRelayerTxHash(null);
             setShowTransactionModal(true);
 
-            const proofBytes = `0x${proof}`;
-            const slicedInputs = publicInputs.slice(0, 17);
-            const publicInputsBytes32 = slicedInputs.map((input: string) => {
-                const hex = input.startsWith('0x') ? input.slice(2) : input;
-                return `0x${hex.padStart(64, '0')}` as `0x${string}`;
-            });
+            const publicSignals = groth16Args.publicSignals.slice(0, 15).map((h) => (h.startsWith('0x') ? h : `0x${h}`) as `0x${string}`);
+            const callDataBytes: `0x${string}` = arbitraryCalldata && arbitraryCalldata.trim() !== ''
+                ? (arbitraryCalldata.startsWith('0x') ? arbitraryCalldata : `0x${arbitraryCalldata}`) as `0x${string}`
+                : '0x';
 
-            // Prepare calldata
-            let callDataBytes: `0x${string}`;
-            if (isTlSwap && tlSwapCiphertext) {
-                const ciphertextBytes = Buffer.from(tlSwapCiphertext, 'utf-8');
-                const orderHashesArray = tlOrderHashes || [];
-                const operationType = tlOperationType === 'swap' ? 0 : 1;
-
-                const { encodeAbiParameters, parseAbiParameters } = await import('viem');
-                callDataBytes = encodeAbiParameters(
-                    parseAbiParameters('bytes, bytes32[], uint8'),
-                    [`0x${ciphertextBytes.toString('hex')}`, orderHashesArray, operationType]
-                );
-            } else if (arbitraryCalldata && arbitraryCalldata.trim() !== '') {
-                callDataBytes = (arbitraryCalldata.startsWith('0x') ? arbitraryCalldata : `0x${arbitraryCalldata}`) as `0x${string}`;
-            } else {
-                callDataBytes = '0x' as `0x${string}`;
-            }
-
-            // Encode the function call
             const calldata = encodeFunctionData({
                 abi: ArkanaAbi,
                 functionName: 'withdraw',
-                args: [proofBytes as `0x${string}`, publicInputsBytes32 as readonly `0x${string}`[], callDataBytes],
+                args: [groth16Args.pA, groth16Args.pB, groth16Args.pC, publicSignals, callDataBytes],
             });
 
             console.log('📤 Sending withdraw via relayer...');
@@ -2475,10 +1913,6 @@ export default function WithdrawPage() {
                                                                 onChange={(e) => {
                                                                     const checked = e.target.checked;
                                                                     setIsCustomSpell(checked);
-                                                                    // Clear timelock operation when Custom Spell is enabled
-                                                                    if (checked) {
-                                                                        setIsTlSwap(false);
-                                                                    }
                                                                     // Clear arbitrary calldata when unchecked
                                                                     if (!checked) {
                                                                         setArbitraryCalldata('');
@@ -2513,73 +1947,9 @@ export default function WithdrawPage() {
                                                         )}
                                                     </div>
 
-                                                    {/* Timelock Operation Checkbox */}
-                                                    <div className="space-y-2">
-                                                        <div className="flex items-center gap-2">
-                                                            <Image
-                                                                src="/Uniswap_icon_pink.png"
-                                                                alt="Uniswap"
-                                                                width={24}
-                                                                height={24}
-                                                                className="flex-shrink-0"
-                                                            />
-                                                            <input
-                                                                type="checkbox"
-                                                                id="isTlSwap"
-                                                                checked={isTlSwap}
-                                                                onChange={(e) => {
-                                                                    const checked = e.target.checked;
-                                                                    setIsTlSwap(checked);
-                                                                    // Clear Custom Spell when Timelock Operation is enabled
-                                                                    if (checked) {
-                                                                        setIsCustomSpell(false);
-                                                                        setArbitraryCalldata('');
-                                                                        setArbitraryCalldataHash('0x0');
-                                                                    }
-                                                                }}
-                                                                className="w-4 h-4 rounded border-primary/50 bg-card/40 text-primary focus:ring-primary/50 flex-shrink-0"
-                                                            />
-                                                            <label htmlFor="isTlSwap" className="text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider cursor-pointer">
-                                                                Timelock Operation
-                                                            </label>
-                                                        </div>
-                                                        {isTlSwap && (
-                                                            <div className="ml-6 border-l-2 border-primary/30 pl-3 py-2 space-y-3">
-                                                                <p className="text-sm font-mono text-foreground leading-relaxed">
-                                                                    <span className="font-bold text-primary">Note:</span> Orders will be encrypted in a nested chain. The first order contains all subsequent orders. Sum of shares amounts must equal your total withdraw amount exactly.
-                                                                </p>
-                                                                {/* Operation Type Selector */}
-                                                                <div className="flex items-center gap-4">
-                                                                    <span className="text-xs font-mono text-muted-foreground">Operation Type:</span>
-                                                                    <div className="flex gap-2">
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() => setTlOperationType('swap')}
-                                                                            className={`px-3 py-1 text-xs font-bold rounded transition-colors ${tlOperationType === 'swap'
-                                                                                ? 'bg-primary text-primary-foreground'
-                                                                                : 'bg-card/60 text-muted-foreground border border-primary/30 hover:bg-primary/20'
-                                                                                }`}
-                                                                        >
-                                                                            SWAP
-                                                                        </button>
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() => setTlOperationType('liquidity')}
-                                                                            className={`px-3 py-1 text-xs font-bold rounded transition-colors ${tlOperationType === 'liquidity'
-                                                                                ? 'bg-accent text-accent-foreground'
-                                                                                : 'bg-card/60 text-muted-foreground border border-accent/30 hover:bg-accent/20'
-                                                                                }`}
-                                                                        >
-                                                                            ADD LIQUIDITY (V4)
-                                                                        </button>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        )}
-                                                    </div>
+                                                    {/* TL Swap removed - deprecated */}
 
-                                                    {/* TL Operation Order Composition (only show if isTlSwap is true) */}
-                                                    {isTlSwap && (
+                                                    {false && (
                                                         <div className="space-y-4 border border-primary/20 bg-card/20 backdrop-blur-sm p-4 rounded-sm">
                                                             <div className="flex items-center justify-between mb-3">
                                                                 <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider">
@@ -3159,45 +2529,6 @@ export default function WithdrawPage() {
                                                                 ))}
                                                             </div>
 
-                                                            {/* Validation: Sum of shares amounts must equal withdrawal amount */}
-                                                            {isTlSwap && amount && (
-                                                                <div className="mt-3 p-2 rounded border border-primary/20 bg-card/40">
-                                                                    {(() => {
-                                                                        const totalShares = tlOrders.slice(0, numOrders).reduce((sum, order) => {
-                                                                            const shares = parseFloat(order.sharesAmount || '0');
-                                                                            return sum + (isNaN(shares) ? 0 : shares);
-                                                                        }, 0);
-                                                                        const withdrawalAmount = parseFloat(amount || '0');
-                                                                        const difference = Math.abs(totalShares - withdrawalAmount);
-                                                                        const isValid = difference < 0.0001; // Allow small floating point differences
-
-                                                                        return (
-                                                                            <div className="space-y-1">
-                                                                                <div className="flex items-center justify-between text-[10px] font-mono">
-                                                                                    <span className="text-muted-foreground">Total Shares (Orders):</span>
-                                                                                    <span className={isValid ? "text-green-400" : "text-destructive"}>{totalShares.toFixed(6)}</span>
-                                                                                </div>
-                                                                                <div className="flex items-center justify-between text-[10px] font-mono">
-                                                                                    <span className="text-muted-foreground">Withdrawal Amount:</span>
-                                                                                    <span>{withdrawalAmount.toFixed(6)}</span>
-                                                                                </div>
-                                                                                <div className="flex items-center justify-between text-[10px] font-mono">
-                                                                                    <span className="text-muted-foreground">Difference:</span>
-                                                                                    <span className={isValid ? "text-green-400" : "text-destructive"}>
-                                                                                        {difference < 0.0001 ? "✓ Match" : `${difference.toFixed(6)}`}
-                                                                                    </span>
-                                                                                </div>
-                                                                                {!isValid && (
-                                                                                    <p className="text-[9px] font-mono text-destructive mt-1">
-                                                                                        ⚠ Sum of order shares must equal withdrawal amount!
-                                                                                    </p>
-                                                                                )}
-                                                                            </div>
-                                                                        );
-                                                                    })()}
-                                                                </div>
-                                                            )}
-
                                                         </div>
                                                     )}
 
@@ -3209,69 +2540,6 @@ export default function WithdrawPage() {
                                                                 <p className="text-sm font-mono text-destructive uppercase tracking-wider">{proofError}</p>
                                                             </div>
                                                         </div>
-                                                    )}
-
-                                                    {/* IPFS Upload Status */}
-                                                    {isTlSwap && (
-                                                        <>
-                                                            {isUploadingToIPFS && (
-                                                                <div className="relative border border-primary/30 bg-card/40 backdrop-blur-sm p-3 sm:p-4 rounded-sm">
-                                                                    <div className="flex items-center gap-3">
-                                                                        <div className="animate-spin rounded-full h-4 w-4 border-2 border-primary border-t-transparent"></div>
-                                                                        <p className="text-xs sm:text-sm font-mono text-primary uppercase tracking-wider">
-                                                                            UPLOADING CIPHERTEXT TO IPFS...
-                                                                        </p>
-                                                                    </div>
-                                                                </div>
-                                                            )}
-
-                                                            {ipfsCid && (
-                                                                <div className="relative border border-primary/20 bg-card/40 backdrop-blur-sm p-3 sm:p-4 rounded-sm">
-                                                                    <div className="space-y-2">
-                                                                        <div className="flex items-center gap-2">
-                                                                            <span className="text-green-400 text-sm">✓</span>
-                                                                            <p className="text-xs sm:text-sm font-mono text-green-400 uppercase tracking-wider">
-                                                                                CIPHERTEXT UPLOADED TO IPFS
-                                                                            </p>
-                                                                        </div>
-                                                                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1 sm:gap-0">
-                                                                            <span className="text-[10px] sm:text-xs font-mono text-muted-foreground uppercase tracking-wider">IPFS CID:</span>
-                                                                            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 sm:gap-2">
-                                                                                <a
-                                                                                    href={getIPFSGatewayURL(ipfsCid)}
-                                                                                    target="_blank"
-                                                                                    rel="noopener noreferrer"
-                                                                                    className="text-[10px] sm:text-xs font-mono text-primary hover:text-primary/70 underline break-all transition-colors"
-                                                                                    style={{ textShadow: "0 0 5px rgba(139, 92, 246, 0.3)" }}
-                                                                                >
-                                                                                    {ipfsCid}
-                                                                                </a>
-                                                                                <button
-                                                                                    onClick={() => {
-                                                                                        navigator.clipboard.writeText(ipfsCid);
-                                                                                        toast('IPFS CID copied to clipboard', 'success');
-                                                                                    }}
-                                                                                    className="text-[10px] sm:text-xs font-mono text-muted-foreground hover:text-primary transition-colors"
-                                                                                >
-                                                                                    [Copy]
-                                                                                </button>
-                                                                            </div>
-                                                                        </div>
-                                                                    </div>
-                                                                </div>
-                                                            )}
-
-                                                            {ipfsError && (
-                                                                <div className="relative border border-destructive/30 bg-card/40 backdrop-blur-sm p-3 sm:p-4 rounded-sm">
-                                                                    <div className="flex items-center gap-2">
-                                                                        <span className="text-destructive/60 text-sm">✗</span>
-                                                                        <p className="text-xs sm:text-sm font-mono text-destructive uppercase tracking-wider">
-                                                                            IPFS ERROR: {ipfsError}
-                                                                        </p>
-                                                                    </div>
-                                                                </div>
-                                                            )}
-                                                        </>
                                                     )}
 
                                                     {/* Discovery Status */}
@@ -3400,7 +2668,7 @@ export default function WithdrawPage() {
                                                             <SpellButton
                                                                 onClick={handleWithdrawViaRelayer}
                                                                 disabled={Boolean(
-                                                                    isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting || isUploadingToIPFS
+                                                                    isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting
                                                                 )}
                                                                 variant="primary"
                                                                 className="w-full text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
@@ -3416,7 +2684,7 @@ export default function WithdrawPage() {
                                                             <SpellButton
                                                                 onClick={handleWithdraw}
                                                                 disabled={Boolean(
-                                                                    isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting || isUploadingToIPFS
+                                                                    isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting
                                                                 )}
                                                                 variant="secondary"
                                                                 className="w-full text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"

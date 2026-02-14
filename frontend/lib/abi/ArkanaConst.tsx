@@ -1,4 +1,4 @@
-const ARKANA_ADDRESS = "0xdF176aeD11420feE6c58EA18A4C7394Ac34d2f11";
+const ARKANA_ADDRESS = "0xd91d0433c10291448a8DC00C3ba14Af8b94c7656";
 const ARKANA_ABI = [
     {
         "type": "constructor",
@@ -178,16 +178,10 @@ const ARKANA_ABI = [
         "type": "function",
         "name": "deposit",
         "inputs": [
-            {
-                "name": "proof",
-                "type": "bytes",
-                "internalType": "bytes"
-            },
-            {
-                "name": "publicInputs",
-                "type": "bytes32[]",
-                "internalType": "bytes32[]"
-            }
+            { "name": "pA", "type": "uint256[2]", "internalType": "uint256[2]" },
+            { "name": "pB", "type": "uint256[2][2]", "internalType": "uint256[2][2]" },
+            { "name": "pC", "type": "uint256[2]", "internalType": "uint256[2]" },
+            { "name": "publicSignals", "type": "uint256[11]", "internalType": "uint256[11]" }
         ],
         "outputs": [
             {
@@ -521,26 +515,12 @@ const ARKANA_ABI = [
         "type": "function",
         "name": "initialize",
         "inputs": [
-            {
-                "name": "proof",
-                "type": "bytes",
-                "internalType": "bytes"
-            },
-            {
-                "name": "publicInputs",
-                "type": "bytes32[]",
-                "internalType": "bytes32[]"
-            },
-            {
-                "name": "amountIn",
-                "type": "uint256",
-                "internalType": "uint256"
-            },
-            {
-                "name": "lockDuration",
-                "type": "uint256",
-                "internalType": "uint256"
-            }
+            { "name": "pA", "type": "uint256[2]", "internalType": "uint256[2]" },
+            { "name": "pB", "type": "uint256[2][2]", "internalType": "uint256[2][2]" },
+            { "name": "pC", "type": "uint256[2]", "internalType": "uint256[2]" },
+            { "name": "publicSignals", "type": "uint256[7]", "internalType": "uint256[7]" },
+            { "name": "amountIn", "type": "uint256", "internalType": "uint256" },
+            { "name": "lockDuration", "type": "uint256", "internalType": "uint256" }
         ],
         "outputs": [
             {
@@ -1100,21 +1080,11 @@ const ARKANA_ABI = [
         "type": "function",
         "name": "withdraw",
         "inputs": [
-            {
-                "name": "proof",
-                "type": "bytes",
-                "internalType": "bytes"
-            },
-            {
-                "name": "publicInputs",
-                "type": "bytes32[]",
-                "internalType": "bytes32[]"
-            },
-            {
-                "name": "call",
-                "type": "bytes",
-                "internalType": "bytes"
-            }
+            { "name": "pA", "type": "uint256[2]", "internalType": "uint256[2]" },
+            { "name": "pB", "type": "uint256[2][2]", "internalType": "uint256[2][2]" },
+            { "name": "pC", "type": "uint256[2]", "internalType": "uint256[2]" },
+            { "name": "publicSignals", "type": "uint256[15]", "internalType": "uint256[15]" },
+            { "name": "call", "type": "bytes", "internalType": "bytes" }
         ],
         "outputs": [
             {

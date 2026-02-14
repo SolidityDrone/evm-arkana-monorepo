@@ -9,8 +9,10 @@ if (!projectId) {
     throw new Error('Project ID is not defined')
 }
 
-// Support both Anvil and Sepolia networks (user can switch)
+// Anvil first so connect flow defaults to local dev; Sepolia for testnet
 export const networks = [anvil, sepolia]
+/** Default chain when connecting: Anvil for local dev (set NEXT_PUBLIC_IS_SEPOLIA=true for Sepolia) */
+export const defaultChain = IS_SEPOLIA ? sepolia : anvil
 
 // Get RPC URLs for each network
 const anvilRpcUrl = process.env.NEXT_PUBLIC_ANVIL_RPC_URL || 'http://127.0.0.1:8545'

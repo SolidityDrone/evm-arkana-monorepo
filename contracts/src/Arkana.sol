@@ -484,14 +484,15 @@ contract Arkana is AccessControl, ReentrancyGuard {
         uint256 lockDuration
     ) public returns (uint256) {
         require(IVerifierEntry(verifiersByIndex[0]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
-
-        address tokenAddress = address(uint160(publicSignals[0]));
-        uint256 chainId = publicSignals[1];
-        uint256 balanceCommitmentX = publicSignals[2];
-        uint256 balanceCommitmentY = publicSignals[3];
-        uint256 newNonceCommitment = publicSignals[4];
-        uint256 nonceDiscoveryEntryX = publicSignals[5];
-        uint256 nonceDiscoveryEntryY = publicSignals[6];
+        
+        uint256 balanceCommitmentX = publicSignals[0];
+        uint256 balanceCommitmentY = publicSignals[1];
+        uint256 newNonceCommitment = publicSignals[2];
+        uint256 nonceDiscoveryEntryX = publicSignals[3];
+        uint256 nonceDiscoveryEntryY = publicSignals[4];
+        address tokenAddress = address(uint160(publicSignals[5]));
+        uint256 chainId = publicSignals[6];
+   
 
         if (chainId != block.chainid) {
             revert InvalidChainId();
@@ -601,17 +602,20 @@ contract Arkana is AccessControl, ReentrancyGuard {
     ) public nonReentrant returns (uint256) {
         require(IVerifierDeposit(verifiersByIndex[1]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
 
-        address tokenAddress = address(uint160(publicSignals[0]));
-        uint256 amountIn = publicSignals[1];
-        uint256 chainId = publicSignals[2];
-        uint256 expectedRoot = publicSignals[3];
-        uint256 pedersenCommitmentX = publicSignals[4];
-        uint256 pedersenCommitmentY = publicSignals[5];
-        bytes32 encryptedBalance = bytes32(publicSignals[6]);
-        bytes32 encryptedNullifier = bytes32(publicSignals[7]);
-        uint256 nonceDiscoveryEntryX = publicSignals[8];
-        uint256 nonceDiscoveryEntryY = publicSignals[9];
-        uint256 newNonceCommitment = publicSignals[10];
+       
+        uint256 pedersenCommitmentX = publicSignals[0];
+        uint256 pedersenCommitmentY = publicSignals[1];
+        bytes32 encryptedBalance = bytes32(publicSignals[2]);
+        bytes32 encryptedNullifier = bytes32(publicSignals[3]);
+        uint256 nonceDiscoveryEntryX = publicSignals[4];
+        uint256 nonceDiscoveryEntryY = publicSignals[5];
+        uint256 newNonceCommitment = publicSignals[6];
+
+        address tokenAddress = address(uint160(publicSignals[7]));
+        uint256 amountIn = publicSignals[8];
+        uint256 chainId = publicSignals[9];
+        uint256 expectedRoot = publicSignals[10];
+
 
         if (chainId != block.chainid) {
             revert InvalidChainId();
@@ -703,26 +707,29 @@ contract Arkana is AccessControl, ReentrancyGuard {
     ) public nonReentrant returns (uint256 newRoot) {
         require(IVerifierWithdraw(verifiersByIndex[3]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
 
-        address tokenAddress = address(uint160(publicSignals[0]));
-        uint256 declaredTimeReference = publicSignals[2];
-        uint256 expectedRoot = publicSignals[3];
-        bytes32 arbitraryCalldataHash = bytes32(publicSignals[4]);
-        address receiverAddress = address(uint160(publicSignals[5]));
-        uint256 relayerFeeShares = publicSignals[6];
 
         WithdrawOutputs memory outputs = WithdrawOutputs({
-            pedersenCommitmentX: publicSignals[7],
-            pedersenCommitmentY: publicSignals[8],
-            newNonceCommitment: publicSignals[9],
-            encryptedBalance: bytes32(publicSignals[10]),
-            encryptedNullifier: bytes32(publicSignals[11]),
-            nonceDiscoveryEntryX: publicSignals[12],
-            nonceDiscoveryEntryY: publicSignals[13]
+            pedersenCommitmentX: publicSignals[0],
+            pedersenCommitmentY: publicSignals[1],
+            newNonceCommitment: publicSignals[2],
+            encryptedBalance: bytes32(publicSignals[3]),
+            encryptedNullifier: bytes32(publicSignals[4]),
+            nonceDiscoveryEntryX: publicSignals[5],
+            nonceDiscoveryEntryY: publicSignals[6]
         });
+        
+        address tokenAddress = address(uint160(publicSignals[7]));
+        uint256 amount = publicSignals[8];
+        uint256 chainId = publicSignals[9];
+    
+        uint256 expectedRoot = publicSignals[10];
+        uint256 declaredTimeReference = publicSignals[11];
+        bytes32 arbitraryCalldataHash = bytes32(publicSignals[12]);
+        address receiverAddress = address(uint160(publicSignals[13]));
+        uint256 relayerFeeShares = publicSignals[14];
+   
 
-        uint256 finalAmount = publicSignals[14];
-
-        uint256 chainId = publicSignals[1];
+       
         if (chainId != block.chainid) {
             revert InvalidChainId();
         }
@@ -761,7 +768,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         );
 
         _handleWithdrawal(
-                tokenAddress, finalAmount, relayerFeeShares, receiverAddress, call, arbitraryCalldataHash
+                tokenAddress, amount, relayerFeeShares, receiverAddress, call, arbitraryCalldataHash
         );
 
         // Store operation info for nonceCommitment (withdraw burns shares, doesn't mint)
@@ -787,24 +794,27 @@ contract Arkana is AccessControl, ReentrancyGuard {
     ) public nonReentrant returns (uint256 newRoot) {
         require(IVerifierAbsorbWithdraw(verifiersByIndex[5]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
 
-        address tokenAddress = address(uint160(publicSignals[0]));
-        uint256 amount = publicSignals[1];
-        uint256 chainId = publicSignals[2];
-        uint256 expectedRoot = publicSignals[3];
-        uint256 declaredTimeReference = publicSignals[4];
-        bytes32 arbitraryCalldataHash = bytes32(publicSignals[5]);
-        address receiverAddress = address(uint160(publicSignals[6]));
-        uint256 relayerFeeAmount = publicSignals[7];
+      
 
         WithdrawOutputs memory outputs = WithdrawOutputs({
-            pedersenCommitmentX: publicSignals[8],
-            pedersenCommitmentY: publicSignals[9],
-            newNonceCommitment: publicSignals[10],
-            encryptedBalance: bytes32(publicSignals[11]),
-            encryptedNullifier: bytes32(publicSignals[12]),
-            nonceDiscoveryEntryX: publicSignals[13],
-            nonceDiscoveryEntryY: publicSignals[14]
+            pedersenCommitmentX: publicSignals[0],
+            pedersenCommitmentY: publicSignals[1],
+            newNonceCommitment: publicSignals[2],
+            encryptedBalance: bytes32(publicSignals[3]),
+            encryptedNullifier: bytes32(publicSignals[4]),
+            nonceDiscoveryEntryX: publicSignals[5],
+            nonceDiscoveryEntryY: publicSignals[6]
         });
+
+        address tokenAddress = address(uint160(publicSignals[7]));
+        uint256 amount = publicSignals[8];
+        uint256 chainId = publicSignals[9];
+        uint256 expectedRoot = publicSignals[10];
+        uint256 declaredTimeReference = publicSignals[11];
+        bytes32 arbitraryCalldataHash = bytes32(publicSignals[12]);
+        address receiverAddress = address(uint160(publicSignals[13]));
+        uint256 relayerFeeAmount = publicSignals[14];
+
 
         if (chainId != block.chainid) {
             revert InvalidChainId();
@@ -947,23 +957,27 @@ contract Arkana is AccessControl, ReentrancyGuard {
     ) public nonReentrant returns (uint256) {
         require(IVerifierSend(verifiersByIndex[2]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
 
-        address tokenAddress = address(uint160(publicSignals[0]));
-        uint256 chainId = publicSignals[1];
-        uint256 expectedRoot = publicSignals[2];
-        uint256 receiverPublicKeyX = publicSignals[3];
-        uint256 receiverPublicKeyY = publicSignals[4];
-        uint256 relayerFeeAmount = publicSignals[5];
-        uint256 newCommitmentLeaf = publicSignals[6];
-        uint256 newNonceCommitment = publicSignals[7];
-        uint256 encryptedAmount = publicSignals[8];
-        bytes32 encryptedBalance = bytes32(publicSignals[9]);
-        bytes32 encryptedNullifier = bytes32(publicSignals[10]);
-        uint256 senderPubKeyX = publicSignals[11];
-        uint256 senderPubKeyY = publicSignals[12];
-        uint256 nonceDiscoveryEntryX = publicSignals[13];
-        uint256 nonceDiscoveryEntryY = publicSignals[14];
-        uint256 note_p_commitment_x = publicSignals[15];
-        uint256 note_p_commitment_y = publicSignals[16];
+
+        uint256 newCommitmentLeaf = publicSignals[0];
+        uint256 newNonceCommitment = publicSignals[1];
+        uint256 encryptedAmount = publicSignals[2];
+        bytes32 encryptedBalance = bytes32(publicSignals[3]);
+        bytes32 encryptedNullifier = bytes32(publicSignals[4]);
+        uint256 senderPubKeyX = publicSignals[5];
+        uint256 senderPubKeyY = publicSignals[6];
+        uint256 nonceDiscoveryEntryX = publicSignals[7];
+        uint256 nonceDiscoveryEntryY = publicSignals[8];
+        uint256 note_p_commitment_x = publicSignals[9];
+        uint256 note_p_commitment_y = publicSignals[10];
+
+
+        address tokenAddress = address(uint160(publicSignals[11]));
+        uint256 chainId = publicSignals[12];
+        uint256 expectedRoot = publicSignals[13];
+        uint256 receiverPublicKeyX = publicSignals[14];
+        uint256 receiverPublicKeyY = publicSignals[15];
+        uint256 relayerFeeAmount = publicSignals[16];
+
 
         if (chainId != block.chainid) {
             revert InvalidChainId();
@@ -1040,23 +1054,26 @@ contract Arkana is AccessControl, ReentrancyGuard {
     ) public nonReentrant returns (uint256) {
         require(IVerifierAbsorbSend(verifiersByIndex[4]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
 
-        address tokenAddress = address(uint160(publicSignals[0]));
-        uint256 chainId = publicSignals[1];
-        uint256 expectedRoot = publicSignals[2];
-        uint256 receiverPublicKeyX = publicSignals[3];
-        uint256 receiverPublicKeyY = publicSignals[4];
-        uint256 relayerFeeAmount = publicSignals[5];
-        uint256 newCommitmentLeaf = publicSignals[6];
-        uint256 newNonceCommitment = publicSignals[7];
-        uint256 encryptedAmount = publicSignals[8];
-        bytes32 encryptedBalance = bytes32(publicSignals[9]);
-        bytes32 encryptedNullifier = bytes32(publicSignals[10]);
-        uint256 senderPubKeyX = publicSignals[11];
-        uint256 senderPubKeyY = publicSignals[12];
-        uint256 nonceDiscoveryEntryX = publicSignals[13];
-        uint256 nonceDiscoveryEntryY = publicSignals[14];
-        uint256 note_p_commitment_x = publicSignals[15];
-        uint256 note_p_commitment_y = publicSignals[16];
+   
+        uint256 newCommitmentLeaf = publicSignals[0];
+        uint256 newNonceCommitment = publicSignals[1];
+        uint256 encryptedAmount = publicSignals[2];
+        bytes32 encryptedBalance = bytes32(publicSignals[3]);
+        bytes32 encryptedNullifier = bytes32(publicSignals[4]);
+        uint256 senderPubKeyX = publicSignals[5];
+        uint256 senderPubKeyY = publicSignals[6];
+        uint256 nonceDiscoveryEntryX = publicSignals[7];
+        uint256 nonceDiscoveryEntryY = publicSignals[8];
+        uint256 note_p_commitment_x = publicSignals[9];
+        uint256 note_p_commitment_y = publicSignals[10];
+
+
+        address tokenAddress = address(uint160(publicSignals[11]));
+        uint256 chainId = publicSignals[12];
+        uint256 expectedRoot = publicSignals[13];
+        uint256 receiverPublicKeyX = publicSignals[14];
+        uint256 receiverPublicKeyY = publicSignals[15];
+        uint256 relayerFeeAmount = publicSignals[16];
 
         if (chainId != block.chainid) {
             revert InvalidChainId();

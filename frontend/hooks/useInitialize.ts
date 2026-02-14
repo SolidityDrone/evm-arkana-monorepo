@@ -5,16 +5,14 @@ import { useAccount as useWagmiAccount, useWriteContract, useWaitForTransactionR
 import { useAccount as useAccountContext, useZkAddress } from '@/context/AccountProvider';
 import { useAccountState } from '@/context/AccountStateProvider';
 import { createPublicClient, http, parseAbi, Address } from 'viem';
-import { sepolia, getActiveChain, getChainById, getRpcUrlForChain } from '@/config';
-import { Noir } from '@noir-lang/noir_js';
-import { useBackendInitialization } from '@/hooks/useBackendInitialization';
-import entryCircuit from '@/lib/circuits/entry.json';
+import { sepolia, getActiveChain, getChainById, getRpcUrlForChain, getRpcUrl } from '@/config';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { computeZkAddress, ARKANA_MESSAGE } from '@/lib/zk-address';
 import { loadAccountDataOnSign } from '@/lib/loadAccountDataOnSign';
 import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
-import { CachedUltraHonkBackend } from '@/lib/cached-ultra-honk-backend';
 import { loadAccountData } from '@/lib/indexeddb';
+import type { Groth16Args } from '@/lib/groth16';
+import { proveWithSnarkjs } from '@/lib/circuit-prove';
 
 const ERC20_ABI = parseAbi([
     'function allowance(address owner, address spender) view returns (uint256)',
@@ -55,6 +53,7 @@ export function useInitialize() {
     const [isInitializing, setIsInitializing] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
     const [publicInputs, setPublicInputs] = useState<string[]>([]);
+    const [groth16Args, setGroth16Args] = useState<Groth16Args | null>(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isSimulating, setIsSimulating] = useState(false);
     const [txHash, setTxHash] = useState<string | null>(null);
@@ -64,10 +63,6 @@ export function useInitialize() {
     const [isApproving, setIsApproving] = useState(false);
     const [tokenBalance, setTokenBalance] = useState<bigint | null>(null);
     const [isLoadingBalance, setIsLoadingBalance] = useState(false);
-
-    // Backend and Noir references
-    const backendRef = useRef<CachedUltraHonkBackend | null>(null);
-    const noirRef = useRef<Noir | null>(null);
 
     // Real-time timer for proving
     useEffect(() => {
@@ -85,48 +80,6 @@ export function useInitialize() {
             if (interval) clearInterval(interval);
         };
     }, [isProving]);
-
-    // Initialize backend
-    const initializeBackend = useCallback(async () => {
-        if (isInitialized && backendRef.current && noirRef.current) {
-            return;
-        }
-
-        setIsInitializing(true);
-        try {
-            // Ensure Buffer polyfill is loaded BEFORE initializing backend
-            const { ensureBufferPolyfill } = await import('@/lib/buffer-polyfill');
-            await ensureBufferPolyfill();
-
-            const backendOptions = { threads: 1 };
-            
-            // Handle both string and Uint8Array bytecode
-            let bytecode: string | Uint8Array;
-            if (typeof entryCircuit.bytecode === 'string') {
-                // If it's a base64 string, use it directly
-                bytecode = entryCircuit.bytecode;
-            } else {
-                // If it's Uint8Array, convert to base64 string
-                if (!globalThis.Buffer) {
-                    const { Buffer } = await import('buffer');
-                    globalThis.Buffer = Buffer;
-                }
-                bytecode = globalThis.Buffer.from(entryCircuit.bytecode).toString('base64');
-            }
-
-            const backend = new CachedUltraHonkBackend(bytecode, backendOptions);
-            const noir = new Noir(entryCircuit);
-            backendRef.current = backend;
-            noirRef.current = noir;
-            setIsInitialized(true);
-        } catch (error) {
-            console.error('Failed to initialize backend:', error);
-            throw error;
-        } finally {
-            setIsInitializing(false);
-        }
-    }, [isInitialized]);
-
 
     // Handle sign
     const handleSign = async () => {
@@ -387,177 +340,33 @@ export function useInitialize() {
             setIsProving(true);
             setProofError(null);
             setProvingTime(null);
+            setGroth16Args(null);
+            setProof('');
+            setPublicInputs([]);
 
             const startTime = performance.now();
-            await initializeBackend();
 
-            if (!backendRef.current || !noirRef.current) {
-                throw new Error('Failed to initialize backend');
+            const chainId = (await publicClient?.getChainId()) ?? 31337;
+            const tokenAddressBigInt = BigInt(tokenAddress.startsWith('0x') ? tokenAddress : '0x' + tokenAddress);
+            const userKeyStr = userKey || (contextUserKey ? '0x' + contextUserKey.toString(16) : '');
+            if (!userKeyStr) {
+                setProofError('user_key is required. Sign the message first.');
+                setIsProving(false);
+                return;
             }
-
-            let chainIdForCircuit: number;
-            try {
-                // Use the connected chain if available, otherwise fall back to configured chain
-                const activeChainId = chainId || publicClient?.chain?.id || getActiveChain().id;
-                const activeChain = publicClient?.chain || getChainById(activeChainId);
-                const rpcUrl = getRpcUrlForChain(activeChainId);
-                
-                const client = publicClient || createPublicClient({
-                    chain: activeChain,
-                    transport: http(rpcUrl)
-                });
-                chainIdForCircuit = await client.getChainId();
-            } catch (error) {
-                chainIdForCircuit = chainId || publicClient?.chain?.id || sepolia.id;
-            }
-
-            // Determine user_key offset based on lockDuration
-            let userKeyOffset = BigInt(0);
-            const lockDurationNum = parseInt(lockDuration || '0') || 0;
-            
-            console.log('🔑 [INIT] ===== DEBUGGING USER KEY SELECTION =====');
-            console.log('🔑 [INIT] Base user_key:', userKey);
-            console.log('🔑 [INIT] Raw lockDuration state value:', lockDuration, typeof lockDuration);
-            console.log('🔑 [INIT] Parsed lockDurationNum:', lockDurationNum);
-            console.log('🔑 [INIT] Lock > 0?:', lockDurationNum > 0);
-            console.log('🔑 [INIT] publicClient available?:', !!publicClient);
-            
-            // If lockDuration > 0, we need to find the next available user_key offset
-            // For liquidity provision (lock > 0), ALWAYS start from user_key+1 (offset 1)
-            // This keeps user_key (offset 0) reserved for Mage mode (regular init with lock = 0)
-            if (lockDurationNum > 0 && publicClient) {
-                console.log('🔑 [INIT] Entering Archon mode (lock > 0) branch...');
-                const { poseidon2Hash } = await import('@aztec/foundation/crypto');
-                const { padHex } = await import('viem');
-                const chainIdBigInt = BigInt(chainIdForCircuit);
-                const tokenAddressBigInt = BigInt(tokenAddress);
-                const baseUserKey = BigInt(userKey.startsWith('0x') ? userKey : `0x${userKey}`);
-                
-                const startOffset = BigInt(1);
-                
-                // Find the next available user_key offset
-                const maxOffset = BigInt(100);
-                let foundOffset = false;
-                
-                for (let offset = startOffset; offset < maxOffset && !foundOffset; offset++) {
-                    const currentUserKey = baseUserKey + offset;
-                    const currentSpendingKey = await poseidon2Hash([currentUserKey, chainIdBigInt, tokenAddressBigInt]);
-                    let currentSpendingKeyBigInt: bigint;
-                    if (typeof currentSpendingKey === 'bigint') {
-                        currentSpendingKeyBigInt = currentSpendingKey;
-                    } else if ('toBigInt' in currentSpendingKey && typeof currentSpendingKey.toBigInt === 'function') {
-                        currentSpendingKeyBigInt = currentSpendingKey.toBigInt();
-                    } else if ('value' in currentSpendingKey) {
-                        currentSpendingKeyBigInt = BigInt(currentSpendingKey.value);
-                    } else {
-                        currentSpendingKeyBigInt = BigInt(currentSpendingKey.toString());
-                    }
-                    
-                    const currentNonceCommitment = await poseidon2Hash([currentSpendingKeyBigInt, BigInt(0), tokenAddressBigInt]);
-                    let currentNonceCommitmentBigInt: bigint;
-                    if (typeof currentNonceCommitment === 'bigint') {
-                        currentNonceCommitmentBigInt = currentNonceCommitment;
-                    } else if ('toBigInt' in currentNonceCommitment && typeof currentNonceCommitment.toBigInt === 'function') {
-                        currentNonceCommitmentBigInt = currentNonceCommitment.toBigInt();
-                    } else if ('value' in currentNonceCommitment) {
-                        currentNonceCommitmentBigInt = BigInt(currentNonceCommitment.value);
-                    } else {
-                        currentNonceCommitmentBigInt = BigInt(currentNonceCommitment.toString());
-                    }
-                    
-                    const currentNonceCommitmentBytes32 = padHex(`0x${currentNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
-                    
-                    const isUsed = await publicClient.readContract({
-                        address: ArkanaAddress,
-                        abi: ArkanaAbi,
-                        functionName: 'usedCommitments',
-                        args: [currentNonceCommitmentBytes32],
-                    }) as boolean;
-                    
-                    if (!isUsed) {
-                        userKeyOffset = offset;
-                        foundOffset = true;
-                        console.log('🔑 [INIT] Found available offset:', offset.toString());
-                    } else {
-                        console.log('🔑 [INIT] Offset', offset.toString(), 'is already used, checking next...');
-                    }
-                }
-                
-                if (!foundOffset) {
-                    setProofError('Could not find available user_key offset for liquidity provision');
-                    setIsProving(false);
-                    return;
-                }
-            } else {
-                console.log('🔑 [INIT] NOT in Archon mode branch - using offset 0 (Mage mode)');
-            }
-            
-            // Calculate the actual user_key to use (base + offset)
-            const baseUserKeyBigInt = BigInt(userKey.startsWith('0x') ? userKey : `0x${userKey}`);
-            const actualUserKey = baseUserKeyBigInt + userKeyOffset;
-            const userKeyHex = `0x${actualUserKey.toString(16).padStart(64, '0')}`;
-
-            console.log('🔑 [INIT] ===== FINAL USER KEY FOR CIRCUIT =====');
-            console.log('🔑 [INIT] Base user_key (bigint):', baseUserKeyBigInt.toString());
-            console.log('🔑 [INIT] Offset applied:', userKeyOffset.toString());
-            console.log('🔑 [INIT] Actual user_key (bigint):', actualUserKey.toString());
-            console.log('🔑 [INIT] User key hex for circuit:', userKeyHex);
-            console.log('🔑 [INIT] =========================================');
-
             const inputs = {
-                user_key: userKeyHex,
-                token_address: tokenAddress,
-                chain_id: chainIdForCircuit.toString()
+                user_key: BigInt(userKeyStr.startsWith('0x') ? userKeyStr : '0x' + userKeyStr).toString(),
+                token_address: tokenAddressBigInt.toString(),
+                chain_id: chainId.toString(),
             };
-            
-            console.log('🔑 [INIT] Circuit inputs:', inputs);
-
-            //@ts-ignore
-            const { witness } = await noirRef.current!.execute(inputs, { keccak: true });
-            //@ts-ignore
-            const proofResult = await backendRef.current!.generateProof(witness, { keccak: true });
-
-            const proofHex = Buffer.from(proofResult.proof).toString('hex');
-            const publicInputsArray = (proofResult.publicInputs || []).slice(0, 7);
-
-            let chainIdForProof: number;
-            try {
-                // Use the connected chain if available, otherwise fall back to configured chain
-                const activeChainId = chainId || publicClient?.chain?.id || getActiveChain().id;
-                const activeChain = publicClient?.chain || getChainById(activeChainId);
-                const rpcUrl = getRpcUrlForChain(activeChainId);
-                
-                const client = publicClient || createPublicClient({
-                    chain: activeChain,
-                    transport: http(rpcUrl)
-                });
-                chainIdForProof = await client.getChainId();
-            } catch (error) {
-                chainIdForProof = chainId || publicClient?.chain?.id || sepolia.id;
-            }
-            const chainIdBigInt = BigInt(chainIdForProof);
-
-            if (publicInputsArray.length > 1) {
-                publicInputsArray[1] = chainIdBigInt;
-            }
-
-            const publicInputsHex = publicInputsArray.map((input: any) => {
-                if (typeof input === 'string' && input.startsWith('0x')) {
-                    return input;
-                }
-                if (typeof input === 'bigint') {
-                    return `0x${input.toString(16).padStart(64, '0')}`;
-                }
-                const hex = BigInt(input).toString(16);
-                return `0x${hex.padStart(64, '0')}`;
-            });
-
-            const endTime = performance.now();
-            const provingTimeMs = Math.round(endTime - startTime);
-            setProvingTime(provingTimeMs);
-
-            setProof(proofHex);
-            setPublicInputs(publicInputsHex);
+            const groth16 = await proveWithSnarkjs(inputs, 'entry');
+            setGroth16Args(groth16);
+            setPublicInputs(groth16.publicSignals ?? []);
+            setProof(groth16.publicSignals?.length ? '1' : ''); // truthy so UI shows "Send transaction"
+            setProvingTime(Math.round(performance.now() - startTime));
+            setIsProving(false);
+            console.log('Entry proof generated:', groth16.publicSignals?.length, 'public signals');
+            return;
         } catch (error) {
             console.error('Error generating proof:', error);
             setProofError(error instanceof Error ? error.message : 'Failed to generate proof');
@@ -568,8 +377,8 @@ export function useInitialize() {
 
     // Handle initialize transaction
     const handleInitCommit = async () => {
-        if (!proof || !publicInputs || publicInputs.length === 0) {
-            setTxError('Proof and public inputs are required');
+        if (!groth16Args || groth16Args.publicSignals.length < 7) {
+            setTxError('Proof and public inputs are required. Generate a Circom proof first.');
             return;
         }
 
@@ -612,58 +421,16 @@ export function useInitialize() {
             setTxError(null);
             setTxHash(null);
 
-            const proofBytes = `0x${proof}`;
-            const slicedInputs = publicInputs.slice(0, 7);
-
-            let chainIdForTx: number;
-            try {
-                // Use the connected chain if available, otherwise fall back to configured chain
-                const activeChainId = chainId || publicClient?.chain?.id || getActiveChain().id;
-                const activeChain = publicClient?.chain || getChainById(activeChainId);
-                const rpcUrl = getRpcUrlForChain(activeChainId);
-                
-                const client = publicClient || createPublicClient({
-                    chain: activeChain,
-                    transport: http(rpcUrl)
-                });
-                chainIdForTx = await client.getChainId();
-            } catch (error) {
-                chainIdForTx = chainId || publicClient?.chain?.id || sepolia.id;
-            }
-
-            const chainIdHex = `0x${BigInt(chainIdForTx).toString(16).padStart(64, '0')}`;
-            slicedInputs[1] = chainIdHex;
-
-            const publicInputsBytes32 = slicedInputs.map((input: string) => {
-                const hex = input.startsWith('0x') ? input.slice(2) : input;
-                return `0x${hex.padStart(64, '0')}` as `0x${string}`;
-            });
-
             const lockDurationBigInt = lockDuration ? BigInt(lockDuration) : BigInt(0);
+            const publicSignals = groth16Args.publicSignals.slice(0, 7).map((h) => (h.startsWith('0x') ? h : `0x${h}`) as `0x${string}`);
 
             console.log('Calling writeContract with:', {
                 address: ArkanaAddress,
                 functionName: 'initialize',
-                proofLength: proofBytes.length,
-                publicInputsCount: publicInputsBytes32.length,
                 amountIn: amountIn.toString(),
                 lockDuration: lockDurationBigInt.toString(),
-                chainId: chainIdForTx,
                 userAddress: address,
             });
-
-            // Verify all required data is present
-            if (!proofBytes || proofBytes === '0x') {
-                setTxError('Invalid proof bytes');
-                setIsSubmitting(false);
-                return;
-            }
-
-            if (!publicInputsBytes32 || publicInputsBytes32.length === 0) {
-                setTxError('Invalid public inputs');
-                setIsSubmitting(false);
-                return;
-            }
 
             // Simulate transaction before sending
             const client = publicClient || createPublicClient({
@@ -674,26 +441,18 @@ export function useInitialize() {
             setIsSimulating(true);
             try {
                 console.log('🔄 Simulating initialize transaction...');
-                const simResult = await client.simulateContract({
+                await client.simulateContract({
                     account: address as `0x${string}`,
                     address: ArkanaAddress as `0x${string}`,
                     abi: ArkanaAbi,
                     functionName: 'initialize',
-                    args: [proofBytes as `0x${string}`, publicInputsBytes32, amountIn, lockDurationBigInt],
+                    args: [groth16Args.pA, groth16Args.pB, groth16Args.pC, publicSignals, amountIn, lockDurationBigInt],
                 });
-
                 console.log('✅ Simulation successful!');
-                console.log('📊 Simulation result:', simResult);
-            } catch (simulationError: any) {
-                let errorMessage = 'Transaction simulation failed';
-                if (simulationError?.shortMessage) {
-                    errorMessage = simulationError.shortMessage;
-                } else if (simulationError?.message) {
-                    errorMessage = simulationError.message;
-                }
-
+            } catch (simulationError: unknown) {
+                const err = simulationError as { shortMessage?: string; message?: string };
+                const errorMessage = err?.shortMessage || err?.message || 'Transaction simulation failed';
                 console.error('❌ Simulation failed:', simulationError);
-                console.error('Error message:', errorMessage);
                 setTxError(errorMessage);
                 setIsSubmitting(false);
                 setIsSimulating(false);
@@ -707,12 +466,12 @@ export function useInitialize() {
                     address: ArkanaAddress as `0x${string}`,
                     abi: ArkanaAbi,
                     functionName: 'initialize',
-                    args: [proofBytes as `0x${string}`, publicInputsBytes32, amountIn, lockDurationBigInt],
+                    args: [groth16Args.pA, groth16Args.pB, groth16Args.pC, publicSignals, amountIn, lockDurationBigInt],
                 });
                 console.log('writeContract called successfully, waiting for wallet confirmation...');
-            } catch (writeError) {
-                console.error('Error calling writeContract:', writeError);
-                setTxError(writeError instanceof Error ? writeError.message : 'Failed to send transaction');
+            } catch (writeErr) {
+                console.error('Error calling writeContract:', writeErr);
+                setTxError(writeErr instanceof Error ? writeErr.message : 'Failed to send transaction');
                 setIsSubmitting(false);
                 return;
             }

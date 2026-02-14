@@ -23,8 +23,7 @@ export function ArcaneHeader() {
     const navLinks = [
         { label: "Grimoire", href: "/aave-tokens" },
         { label: "Rituals", href: "/rituals" },
-        { label: "Spells", href: "/withdraw" },
-        { label: "Decrypt (demo)", href: "/decrypt" }
+        { label: "Spells", href: "/withdraw" }
     ]
 
     return (
