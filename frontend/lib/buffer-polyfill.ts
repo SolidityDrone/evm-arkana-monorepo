@@ -1,6 +1,6 @@
 /**
  * Buffer polyfill utilities for browser compatibility
- * Required for @aztec/bb.js and cryptographic operations
+ * Required for circomlibjs/snarkjs and other cryptographic operations
  */
 
 /**

@@ -1,9 +1,7 @@
 'use client';
 
 /**
- * Initialize Buffer polyfill synchronously before any @aztec packages load
- * This must run before any other client components that use @aztec
- * Uses require-like approach similar to dh-utils.ts but adapted for browser
+ * Initialize Buffer polyfill synchronously before circom/snarkjs and other crypto modules load.
  */
 export function BufferInit() {
     // Initialize Buffer immediately when component mounts
@@ -15,7 +13,7 @@ export function BufferInit() {
                 try {
                     const { Buffer } = await import('buffer');
                     
-                    // Set Buffer in all possible locations where @aztec/bb.js might look
+                    // Set Buffer in all possible locations for circom/snarkjs
                     globalThis.Buffer = Buffer;
                     // @ts-ignore
                     window.Buffer = Buffer;

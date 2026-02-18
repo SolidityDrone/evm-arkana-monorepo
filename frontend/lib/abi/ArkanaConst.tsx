@@ -1,4 +1,4 @@
-const ARKANA_ADDRESS = "0xd91d0433c10291448a8DC00C3ba14Af8b94c7656";
+const ARKANA_ADDRESS = "0x8CDBA30696859364c24Be3b942FE83c953c9Cd9f"
 const ARKANA_ABI = [
     {
         "type": "constructor",
@@ -29,7 +29,7 @@ const ARKANA_ABI = [
                 "internalType": "uint256"
             },
             {
-                "name": "_poseidon2Huff",
+                "name": "_poseidonHasher",
                 "type": "address",
                 "internalType": "address"
             },
@@ -636,13 +636,13 @@ const ARKANA_ABI = [
     },
     {
         "type": "function",
-        "name": "poseidon2Hasher",
+        "name": "poseidonHasher",
         "inputs": [],
         "outputs": [
             {
                 "name": "",
                 "type": "address",
-                "internalType": "contract Poseidon2HuffWrapper"
+                "internalType": "address"
             }
         ],
         "stateMutability": "view"
@@ -731,16 +731,10 @@ const ARKANA_ABI = [
         "type": "function",
         "name": "send",
         "inputs": [
-            {
-                "name": "proof",
-                "type": "bytes",
-                "internalType": "bytes"
-            },
-            {
-                "name": "publicInputs",
-                "type": "bytes32[]",
-                "internalType": "bytes32[]"
-            }
+            { "name": "pA", "type": "uint256[2]", "internalType": "uint256[2]" },
+            { "name": "pB", "type": "uint256[2][2]", "internalType": "uint256[2][2]" },
+            { "name": "pC", "type": "uint256[2]", "internalType": "uint256[2]" },
+            { "name": "publicSignals", "type": "uint256[17]", "internalType": "uint256[17]" }
         ],
         "outputs": [
             {

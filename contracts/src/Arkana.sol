@@ -1,37 +1,73 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.4;
 
-import {LeanIMTPoseidon2, LeanIMTData} from "./merkle/LeanIMTPoseidon2.sol";
-import "./merkle/Poseidon2HuffWrapper.sol";
+import {LeanIMTPoseidon, LeanIMTData} from "./merkle/LeanIMTPoseidon.sol";
+import "./merkle/IPoseidonHasher.sol";
 import {IERC20} from "@oz/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@oz/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@oz/contracts/token/ERC20/utils/SafeERC20.sol";
 import {AccessControl} from "@oz/contracts/access/AccessControl.sol";
 import {IPool, DataTypes} from "@aave/core-v3/interfaces/IPool.sol";
-import "./ArkanaVault.sol";
-import {Field} from "../lib/poseidon2-evm/src/Field.sol";
+import "./IArkanaVault.sol";
+import "./IArkanaVaultFactory.sol";
+import {Field} from "./crypto-utils/Field.sol";
 import {BJJ} from "./crypto-utils/BJJ.sol";
 import {Generators} from "./crypto-utils/Generators.sol";
 import {ReentrancyGuard} from "@oz/contracts/utils/ReentrancyGuard.sol";
 
 // Circom Groth16 verifier interfaces (snarkjs-generated)
 interface IVerifierEntry {
-    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[7] calldata _pubSignals) external view returns (bool);
+    function verifyProof(
+        uint256[2] calldata _pA,
+        uint256[2][2] calldata _pB,
+        uint256[2] calldata _pC,
+        uint256[7] calldata _pubSignals
+    ) external view returns (bool);
 }
+
 interface IVerifierDeposit {
-    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[11] calldata _pubSignals) external view returns (bool);
+    function verifyProof(
+        uint256[2] calldata _pA,
+        uint256[2][2] calldata _pB,
+        uint256[2] calldata _pC,
+        uint256[11] calldata _pubSignals
+    ) external view returns (bool);
 }
+
 interface IVerifierWithdraw {
-    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[15] calldata _pubSignals) external view returns (bool);
+    function verifyProof(
+        uint256[2] calldata _pA,
+        uint256[2][2] calldata _pB,
+        uint256[2] calldata _pC,
+        uint256[15] calldata _pubSignals
+    ) external view returns (bool);
 }
+
 interface IVerifierSend {
-    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[17] calldata _pubSignals) external view returns (bool);
+    function verifyProof(
+        uint256[2] calldata _pA,
+        uint256[2][2] calldata _pB,
+        uint256[2] calldata _pC,
+        uint256[17] calldata _pubSignals
+    ) external view returns (bool);
 }
+
 interface IVerifierAbsorbSend {
-    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[17] calldata _pubSignals) external view returns (bool);
+    function verifyProof(
+        uint256[2] calldata _pA,
+        uint256[2][2] calldata _pB,
+        uint256[2] calldata _pC,
+        uint256[17] calldata _pubSignals
+    ) external view returns (bool);
 }
+
 interface IVerifierAbsorbWithdraw {
-    function verifyProof(uint256[2] calldata _pA, uint256[2][2] calldata _pB, uint256[2] calldata _pC, uint256[15] calldata _pubSignals) external view returns (bool);
+    function verifyProof(
+        uint256[2] calldata _pA,
+        uint256[2][2] calldata _pB,
+        uint256[2] calldata _pC,
+        uint256[15] calldata _pubSignals
+    ) external view returns (bool);
 }
 
 contract Arkana is AccessControl, ReentrancyGuard {
@@ -41,7 +77,6 @@ contract Arkana is AccessControl, ReentrancyGuard {
     bytes32 public constant VAULT_INITIALIZER_ROLE = keccak256("ARKANA");
 
     /// @notice Mapping from verifier index to verifier address
-    /// @dev Index 0 = Entry, 1 = Deposit, 2 = Send, 3 = Withdraw, 4 = Absorb+Send, 5 = Asborb+Withdraw?
     mapping(uint256 => address) public verifiersByIndex;
 
     /// @notice Mapping from token address to its Merkle tree data
@@ -60,8 +95,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @dev TODO: this has to be moved into indexing (off-chain indexer should track LeafAdded events)
     mapping(address => uint256[]) public tokenLeaves;
 
-    /// @notice The Poseidon2 hasher instance (shared across all tokens)
-    Poseidon2HuffWrapper public immutable poseidon2Hasher;
+    /// @notice The Poseidon hasher instance for Merkle tree and leaf commitment (poseidon-solidity PoseidonT3)
+    IPoseidonHasher public immutable poseidonHasher;
 
     /// @notice Aave v3 Pool contract address
     IPool public immutable aavePool;
@@ -77,12 +112,15 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @notice Time tolerance for self reported timestamp, 30 min just naively for now
     uint256 public TIME_TOLERANCE = 30 minutes;
 
-    /// @notice Minimum tree depth constant (must match LeanIMTPoseidon2.sol)
+    /// @notice Minimum tree depth constant (must match LeanIMTPoseidon.sol)
     /// @dev Ensures all proofs are at least 8 levels deep for consistent verification
     uint256 public constant MIN_TREE_DEPTH = 8;
 
     /// @notice Multicall3 contract address
     address public multicall3Address;
+
+    /// @notice Factory that deploys vaults via CREATE2 (one per token). Set after deploy.
+    address public vaultFactory;
     /// @notice Mapping from token address to its ERC4626 vault address
     /// @dev Each token can have one vault for standard ERC4626 interface
     /// @dev The vault tracks all shares and handles ERC4626 conversions
@@ -191,6 +229,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @param size The number of leaves at this state
     /// @param index The index in the historical states array
     event RootSaved(address indexed token, uint256 indexed root, uint256 depth, uint256 size, uint256 index);
+    event VaultRegistered(address indexed token, address indexed vault);
 
     error InvalidChainId();
     error InvalidRoot();
@@ -198,11 +237,15 @@ contract Arkana is AccessControl, ReentrancyGuard {
     error InvalidPublicInputs();
     error InvalidTimeReference();
     error VaultNotInitialized(address token);
+    error VaultAlreadyRegistered(address token);
+    error InvalidVaultAddress();
+    error ArrayLengthMismatch();
     error InsufficientShares(uint256 available, uint256 required);
     error NoteAlreadyUsed();
     error InvalidCalldataHash();
     error Multicall3Failed();
     error InvalidAddress();
+    error InvalidProof();
 
     /// @notice Constructor initializes verifiers, protocol fee, and Aave Pool
     /// @param _verifiers Array of verifier addresses: [Entry, Deposit, Send, Withdraw, Absorb+Withdraw, Absorb+Send]
@@ -210,14 +253,14 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @param _aavePool Address of the Aave v3 Pool contract
     /// @param _protocolFee Protocol fee in basis points (10000 = 100%, 100 = 1%, 5 = 0.05%)
     /// @param _discountWindow Discount window in seconds (e.g., 2592000 = 30 days)
-    /// @param _poseidon2Huff Address of the deployed Huff Poseidon2 contract (deploy separately using HuffDeployer in tests/scripts)
+    /// @param _poseidonHasher Address of the deployed PoseidonHasher contract (poseidon-solidity)
     constructor(
         address[] memory _verifiers,
         uint256 _protocolFeeBps,
         address _aavePool,
         uint256 _protocolFee,
         uint256 _discountWindow,
-        address _poseidon2Huff,
+        address _poseidonHasher,
         address _multicall3
     ) {
         // Initialize AccessControl - grant DEFAULT_ADMIN_ROLE to deployer
@@ -241,96 +284,69 @@ contract Arkana is AccessControl, ReentrancyGuard {
         // Initialize Aave Pool
         aavePool = IPool(_aavePool);
 
-        // Initialize Poseidon2 hasher with Huff contract address
-        poseidon2Hasher = new Poseidon2HuffWrapper(_poseidon2Huff);
+        poseidonHasher = IPoseidonHasher(_poseidonHasher);
 
         // Initialize Multicall3 address
         multicall3Address = _multicall3;
-
-        // Grant deployer (msg.sender) the DEFAULT_ADMIN_ROLE
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-
-        // Grant deployer the VAULT_INITIALIZER_ROLE as well
-        _grantRole(VAULT_INITIALIZER_ROLE, msg.sender);
     }
 
-
-    // ============================================
-    // VAULT INITIALIZATION
-    // ============================================
-
-    /// @notice Initialize ERC4626 vaults for multiple tokens
-    /// @param tokenAddresses Array of ERC20 token addresses to create vaults for
-    /// @dev Creates an ArkanaVault for each token if one doesn't already exist
-    /// @dev Queries Aave to get the aToken address for each token
-    /// @dev Vault's asset is the aToken (not the underlying token), since deposits go to Aave
-    /// @dev Vault name and symbol are derived from the underlying token's metadata
-    /// @dev Only callable by accounts with VAULT_INITIALIZER_ROLE or DEFAULT_ADMIN_ROLE
-    function initializeVaults(address[] calldata tokenAddresses) external onlyRole(VAULT_INITIALIZER_ROLE) {
-        for (uint256 i = 0; i < tokenAddresses.length; i++) {
-            address tokenAddress = tokenAddresses[i];
-
-            // Skip if vault already exists
-            if (tokenVaults[tokenAddress] != address(0)) {
-                continue;
-            }
-
-            // Query Aave to get the aToken address for this token
-            address aTokenAddress;
-            try aavePool.getReserveData(tokenAddress) returns (DataTypes.ReserveData memory reserveData) {
-                aTokenAddress = reserveData.aTokenAddress;
-
-                // For mock pools: aTokenAddress might be the same as tokenAddress
-                // In that case, we still use it but note that it's a mock
-                if (aTokenAddress == address(0)) {
-                    // If Aave doesn't have this token, we can't create a vault
-                    // Skip this token and continue
-                    continue;
-                }
-            } catch {
-                // If getReserveData fails, we can't create a vault for this token
-                // Skip this token and continue
-                continue;
-            }
-
-            // Store the token -> aToken mapping
-            tokenToAToken[tokenAddress] = aTokenAddress;
-
-            // Get underlying token metadata for vault name and symbol
-            string memory tokenSymbol;
-            tokenSymbol = IERC20Metadata(tokenAddress).symbol();
-
-            // Create vault name and symbol (based on underlying token, not aToken)
-            string memory vaultName = string(abi.encodePacked("Arkana Vault ", tokenSymbol));
-            string memory vaultSymbol = "ARK";
-
-            // Deploy new vault with aToken as the asset (not the underlying token)
-            // The vault will track aToken balance, which includes yield from Aave
-            ArkanaVault vault =
-                new ArkanaVault(IERC20(aTokenAddress), this, tokenAddress, aavePool, vaultName, vaultSymbol);
-
-            // Store vault address
-            tokenVaults[tokenAddress] = address(vault);
-        }
+    /// @notice Set the vault factory (only admin). Required before calling createVault.
+    function setVaultFactory(address _vaultFactory) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        vaultFactory = _vaultFactory;
     }
 
-    /// @notice Register an external vault for a token (e.g., IndexDollarVault for iUSD)
-    /// @param tokenAddress The token address (e.g., iUSD token address)
-    /// @param vaultAddress The external vault address
-    /// @dev External vaults must implement the same interface as ArkanaVault:
-    ///      - convertToShares(uint256)
-    ///      - supplyToAave(uint256)
-    ///      - mintShares(address, uint256)
-    ///      - burnShares(address, uint256)
-    ///      - withdrawFromAave(uint256, address)
-    /// @dev Only callable by accounts with VAULT_INITIALIZER_ROLE
-    function registerExternalVault(address tokenAddress, address vaultAddress)
+    // ============================================
+    // VAULT REGISTRATION
+    // ============================================
+
+    /// @notice Register a vault for a token (vault must be deployed separately and point to this Arkana).
+    /// @param tokenAddress Underlying token address this vault is for
+    /// @param vaultAddress Address of the IArkanaVault-compatible vault
+    /// @dev Only callable by VAULT_INITIALIZER_ROLE. Vault initialization (deploy + config) happens outside Arkana.
+    function registerVault(address tokenAddress, address vaultAddress) external onlyRole(VAULT_INITIALIZER_ROLE) {
+        if (tokenVaults[tokenAddress] != address(0)) revert VaultAlreadyRegistered(tokenAddress);
+        if (vaultAddress == address(0)) revert InvalidVaultAddress();
+
+        tokenVaults[tokenAddress] = vaultAddress;
+        tokenToAToken[tokenAddress] = IArkanaVault(vaultAddress).asset();
+        emit VaultRegistered(tokenAddress, vaultAddress);
+    }
+
+    /// @notice Batch register vaults
+    function registerVaults(address[] calldata tokenAddresses, address[] calldata vaultAddresses)
         external
         onlyRole(VAULT_INITIALIZER_ROLE)
     {
-        require(tokenVaults[tokenAddress] == address(0), "Arkana: Vault already exists for this token");
-        require(vaultAddress != address(0), "Arkana: Invalid vault address");
+        if (tokenAddresses.length != vaultAddresses.length) revert ArrayLengthMismatch();
+        for (uint256 i = 0; i < tokenAddresses.length; i++) {
+            address tokenAddress = tokenAddresses[i];
+            address vaultAddress = vaultAddresses[i];
+            if (tokenVaults[tokenAddress] != address(0)) revert VaultAlreadyRegistered(tokenAddress);
+            if (vaultAddress == address(0)) revert InvalidVaultAddress();
+            tokenVaults[tokenAddress] = vaultAddress;
+            tokenToAToken[tokenAddress] = IArkanaVault(vaultAddress).asset();
+            emit VaultRegistered(tokenAddress, vaultAddress);
+        }
+    }
+
+    /// @notice Create and register a vault for a token via ArkanaVaultFactory (CREATE2, one per token).
+    /// @param tokenAddress Underlying token address
+    /// @param name_ Vault share token name
+    /// @param symbol_ Vault share token symbol
+    /// @dev Only callable by VAULT_INITIALIZER_ROLE. Factory detects Aave support and vault.initialize() sets aaveVault.
+    function createVault(address tokenAddress, string calldata name_, string calldata symbol_)
+        external
+        onlyRole(VAULT_INITIALIZER_ROLE)
+        returns (address vaultAddress)
+    {
+        if (tokenVaults[tokenAddress] != address(0)) revert VaultAlreadyRegistered(tokenAddress);
+        if (tokenAddress == address(0)) revert InvalidVaultAddress();
+        if (vaultFactory == address(0)) revert InvalidVaultAddress();
+
+        vaultAddress = IArkanaVaultFactory(vaultFactory).createVault(address(this), tokenAddress, name_, symbol_);
         tokenVaults[tokenAddress] = vaultAddress;
+        tokenToAToken[tokenAddress] = IArkanaVault(vaultAddress).asset();
+        emit VaultRegistered(tokenAddress, vaultAddress);
     }
 
     // ============================================
@@ -340,14 +356,14 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @notice Get the current root for a token's Merkle tree
     /// @param tokenAddress The token address
     /// @return The current root
-    function getRoot(address tokenAddress) public view returns (uint256) {
-        return LeanIMTPoseidon2.root(_tokenTrees[tokenAddress]);
+    function getRoot(address tokenAddress) external view returns (uint256) {
+        return LeanIMTPoseidon.root(_tokenTrees[tokenAddress]);
     }
 
     /// @notice Get the current depth for a token's Merkle tree
     /// @param tokenAddress The token address
     /// @return The current depth (minimum 8 if tree has leaves)
-    function getDepth(address tokenAddress) public view returns (uint256) {
+    function getDepth(address tokenAddress) external view returns (uint256) {
         uint256 size = _tokenTrees[tokenAddress].size;
         if (size == 0) return 0;
         uint256 depth = _tokenTrees[tokenAddress].depth;
@@ -357,7 +373,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @notice Get the current size for a token's Merkle tree
     /// @param tokenAddress The token address
     /// @return The current size
-    function getSize(address tokenAddress) public view returns (uint256) {
+    function getSize(address tokenAddress) external view returns (uint256) {
         return _tokenTrees[tokenAddress].size;
     }
 
@@ -365,23 +381,23 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @param tokenAddress The token address
     /// @param leaf The leaf value to check
     /// @return True if the leaf exists, false otherwise
-    function hasLeaf(address tokenAddress, uint256 leaf) public view returns (bool) {
-        return LeanIMTPoseidon2.has(_tokenTrees[tokenAddress], leaf);
+    function hasLeaf(address tokenAddress, uint256 leaf) external view returns (bool) {
+        return LeanIMTPoseidon.has(_tokenTrees[tokenAddress], leaf);
     }
 
     /// @notice Get the index of a leaf in a token's tree
     /// @param tokenAddress The token address
     /// @param leaf The leaf value
     /// @return The index of the leaf (reverts if leaf doesn't exist)
-    function getLeafIndex(address tokenAddress, uint256 leaf) public view returns (uint256) {
-        return LeanIMTPoseidon2.indexOf(_tokenTrees[tokenAddress], leaf);
+    function getLeafIndex(address tokenAddress, uint256 leaf) external view returns (uint256) {
+        return LeanIMTPoseidon.indexOf(_tokenTrees[tokenAddress], leaf);
     }
 
     /// @notice Get all leaves for a token
     /// @param tokenAddress The token address
     /// @return Array of all leaves
     /// @dev TODO: this has to be moved into indexing (off-chain indexer should track LeafAdded events)
-    function getLeaves(address tokenAddress) public view returns (uint256[] memory) {
+    function getLeaves(address tokenAddress) external view returns (uint256[] memory) {
         return tokenLeaves[tokenAddress];
     }
 
@@ -391,16 +407,16 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @return proof Array of sibling hashes for the proof (length = tree depth)
     /// @notice This function rebuilds the full tree level by level to generate accurate proofs
     ///         that match the Noir verification logic
-    function generateProof(address tokenAddress, uint256 leafIndex) public view returns (uint256[] memory proof) {
+    function generateProof(address tokenAddress, uint256 leafIndex) external view returns (uint256[] memory proof) {
         uint256[] memory leaves = tokenLeaves[tokenAddress];
-        return LeanIMTPoseidon2.generateProof(_tokenTrees[tokenAddress], poseidon2Hasher, leaves, leafIndex);
+        return LeanIMTPoseidon.generateProof(_tokenTrees[tokenAddress], poseidonHasher, leaves, leafIndex);
     }
 
     /// @notice Check if a root exists in a token's historical states
     /// @param tokenAddress The token address
     /// @param root The root to check
     /// @return True if the root exists in history, false otherwise
-    function isHistoricalRoot(address tokenAddress, uint256 root) public view returns (bool) {
+    function _isHistoricalRoot(address tokenAddress, uint256 root) internal view returns (bool) {
         HistoricalState[] storage states = _tokenHistoricalStates[tokenAddress];
         if (states.length == 0) {
             return root == 0; // Empty tree has root 0
@@ -412,13 +428,28 @@ contract Arkana is AccessControl, ReentrancyGuard {
         return false; // Should never reach here, but defensive
     }
 
+    function _validateChainId(uint256 chainId) internal view {
+        if (chainId != block.chainid) revert InvalidChainId();
+    }
+
+    function _requireCommitmentUnused(uint256 nonceCommitment) internal view {
+        if (usedCommitments[bytes32(nonceCommitment)]) revert CommitmentAlreadyUsed();
+    }
+
+    function _validateTimeReference(uint256 declaredTimeReference) internal view {
+        uint256 timeDifference = declaredTimeReference > block.timestamp
+            ? declaredTimeReference - block.timestamp
+            : block.timestamp - declaredTimeReference;
+        if (timeDifference > TIME_TOLERANCE) revert InvalidTimeReference();
+    }
+
     /// @notice Internal function to add a leaf to a token's tree
     /// @param tokenAddress The token address
     /// @param leaf The leaf value to add
     /// @return The new root after adding the leaf
     function _addLeaf(address tokenAddress, uint256 leaf) internal returns (uint256) {
         LeanIMTData storage tree = _tokenTrees[tokenAddress];
-        uint256 previousRoot = LeanIMTPoseidon2.root(tree);
+        uint256 previousRoot = LeanIMTPoseidon.root(tree);
 
         // Initialize tree if needed (first leaf for this token)
         if (tree.size == 0 && _tokenHistoricalStates[tokenAddress].length == 0) {
@@ -427,9 +458,9 @@ contract Arkana is AccessControl, ReentrancyGuard {
         }
 
         // Insert the leaf into the tree
-        LeanIMTPoseidon2.insert(tree, poseidon2Hasher, leaf);
+        LeanIMTPoseidon.insert(tree, poseidonHasher, leaf);
 
-        uint256 newRoot = LeanIMTPoseidon2.root(tree);
+        uint256 newRoot = LeanIMTPoseidon.root(tree);
         uint256 currentLeafCount = tokenLeafCount[tokenAddress];
 
         // Save historical state
@@ -437,7 +468,6 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
         tokenLeafCount[tokenAddress] = currentLeafCount + 1;
 
-        // TODO: this has to be moved into indexing (off-chain indexer should track LeafAdded events)
         tokenLeaves[tokenAddress].push(leaf);
 
         emit LeafAdded(tokenAddress, leaf, currentLeafCount, newRoot, previousRoot);
@@ -473,7 +503,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
     /// @notice Initialize a new entry in the Arkana system
     /// @param pA,pB,pC Groth16 proof points (Circom/snarkjs format)
-    /// @param publicSignals Public signals [token_address, chain_id, balance_commitment_x, balance_commitment_y, new_nonce_commitment, nonce_discovery_entry_x, nonce_discovery_entry_y]
+    /// @param publicSignals Public signals (snarkjs generateCall order): [balance_commitment_x, balance_commitment_y, new_nonce_commitment, nonce_discovery_entry_x, nonce_discovery_entry_y, token_address, chain_id]
     /// @return The new root after adding the commitment
     function initialize(
         uint256[2] calldata pA,
@@ -483,8 +513,10 @@ contract Arkana is AccessControl, ReentrancyGuard {
         uint256 amountIn,
         uint256 lockDuration
     ) public returns (uint256) {
-        require(IVerifierEntry(verifiersByIndex[0]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
-        
+        if (!IVerifierEntry(verifiersByIndex[0]).verifyProof(pA, pB, pC, publicSignals)) {
+            revert InvalidProof();
+        }
+
         uint256 balanceCommitmentX = publicSignals[0];
         uint256 balanceCommitmentY = publicSignals[1];
         uint256 newNonceCommitment = publicSignals[2];
@@ -492,15 +524,8 @@ contract Arkana is AccessControl, ReentrancyGuard {
         uint256 nonceDiscoveryEntryY = publicSignals[4];
         address tokenAddress = address(uint160(publicSignals[5]));
         uint256 chainId = publicSignals[6];
-   
-
-        if (chainId != block.chainid) {
-            revert InvalidChainId();
-        }
-
-        if (usedCommitments[bytes32(newNonceCommitment)]) {
-            revert CommitmentAlreadyUsed();
-        }
+        _validateChainId(chainId);
+        _requireCommitmentUnused(newNonceCommitment);
 
         usedCommitments[bytes32(newNonceCommitment)] = true;
 
@@ -521,7 +546,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
             revert VaultNotInitialized(tokenAddress);
         }
 
-        ArkanaVault vault = ArkanaVault(vaultAddress);
+        IArkanaVault vault = IArkanaVault(vaultAddress);
 
         // Calculate shares using the vault (ERC4626 standard)
         // IMPORTANT: Calculate shares BEFORE supplying to vault
@@ -568,8 +593,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         BJJ.Point memory finalCommitment = BJJ.add(commitmentWithShares, unlocksAtCommitment);
 
         // Hash the final Pedersen commitment point to create the leaf
-        uint256 leaf =
-            Field.toUint256(poseidon2Hasher.hash_2(Field.toField(finalCommitment.x), Field.toField(finalCommitment.y)));
+        uint256 leaf = poseidonHasher.hash_2(finalCommitment.x, finalCommitment.y);
 
         // Add the leaf to the token's merkle tree
         uint256 newRoot = _addLeaf(tokenAddress, leaf);
@@ -600,9 +624,10 @@ contract Arkana is AccessControl, ReentrancyGuard {
         uint256[2] calldata pC,
         uint256[11] calldata publicSignals
     ) public nonReentrant returns (uint256) {
-        require(IVerifierDeposit(verifiersByIndex[1]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
+        if (!IVerifierDeposit(verifiersByIndex[1]).verifyProof(pA, pB, pC, publicSignals)) {
+            revert InvalidProof();
+        }
 
-       
         uint256 pedersenCommitmentX = publicSignals[0];
         uint256 pedersenCommitmentY = publicSignals[1];
         bytes32 encryptedBalance = bytes32(publicSignals[2]);
@@ -615,19 +640,12 @@ contract Arkana is AccessControl, ReentrancyGuard {
         uint256 amountIn = publicSignals[8];
         uint256 chainId = publicSignals[9];
         uint256 expectedRoot = publicSignals[10];
+        _validateChainId(chainId);
 
-
-        if (chainId != block.chainid) {
-            revert InvalidChainId();
-        }
-
-        if (!isHistoricalRoot(tokenAddress, expectedRoot)) {
+        if (!_isHistoricalRoot(tokenAddress, expectedRoot)) {
             revert InvalidRoot();
         }
-
-        if (usedCommitments[bytes32(newNonceCommitment)]) {
-            revert CommitmentAlreadyUsed();
-        }
+        _requireCommitmentUnused(newNonceCommitment);
 
         usedCommitments[bytes32(newNonceCommitment)] = true;
 
@@ -647,7 +665,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
             revert VaultNotInitialized(tokenAddress);
         }
 
-        ArkanaVault vault = ArkanaVault(vaultAddress);
+        IArkanaVault vault = IArkanaVault(vaultAddress);
 
         uint256 shares = vault.convertToShares(amountAfterFee);
 
@@ -667,8 +685,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         // No need to modify it - circuit commitment is complete
 
         // Hash the final Pedersen commitment point to create the leaf
-        uint256 leaf =
-            Field.toUint256(poseidon2Hasher.hash_2(Field.toField(finalCommitment.x), Field.toField(finalCommitment.y)));
+        uint256 leaf = poseidonHasher.hash_2(finalCommitment.x, finalCommitment.y);
 
         // Add the leaf to the token's merkle tree
         uint256 newRoot = _addLeaf(tokenAddress, leaf);
@@ -705,97 +722,17 @@ contract Arkana is AccessControl, ReentrancyGuard {
         uint256[15] calldata publicSignals,
         bytes calldata call
     ) public nonReentrant returns (uint256 newRoot) {
-        require(IVerifierWithdraw(verifiersByIndex[3]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
-
-
-        WithdrawOutputs memory outputs = WithdrawOutputs({
-            pedersenCommitmentX: publicSignals[0],
-            pedersenCommitmentY: publicSignals[1],
-            newNonceCommitment: publicSignals[2],
-            encryptedBalance: bytes32(publicSignals[3]),
-            encryptedNullifier: bytes32(publicSignals[4]),
-            nonceDiscoveryEntryX: publicSignals[5],
-            nonceDiscoveryEntryY: publicSignals[6]
-        });
-        
-        address tokenAddress = address(uint160(publicSignals[7]));
-        uint256 amount = publicSignals[8];
-        uint256 chainId = publicSignals[9];
-    
-        uint256 expectedRoot = publicSignals[10];
-        uint256 declaredTimeReference = publicSignals[11];
-        bytes32 arbitraryCalldataHash = bytes32(publicSignals[12]);
-        address receiverAddress = address(uint160(publicSignals[13]));
-        uint256 relayerFeeShares = publicSignals[14];
-   
-
-       
-        if (chainId != block.chainid) {
-            revert InvalidChainId();
+        if (!IVerifierWithdraw(verifiersByIndex[3]).verifyProof(pA, pB, pC, publicSignals)) {
+            revert InvalidProof();
         }
-
-        if (!isHistoricalRoot(tokenAddress, expectedRoot)) {
-            revert InvalidRoot();
-        }
-
-        uint256 timeDifference = declaredTimeReference > block.timestamp
-            ? declaredTimeReference - block.timestamp
-            : block.timestamp - declaredTimeReference;
-        if (timeDifference > TIME_TOLERANCE) {
-            revert InvalidTimeReference();
-        }
-
-        // Get Pedersen commitment point from circuit
-        // Circuit already calculates: new_shares_balance = previous_shares - (amount + relayer_fee_amount)
-        // and creates commitment with new_shares_balance directly
-        // So we use the commitment point as-is, no need to subtract shares
-        BJJ.Point memory finalCommitment =
-            BJJ.Point(outputs.pedersenCommitmentX, outputs.pedersenCommitmentY);
-
-        // Mark the new nonce commitment as used (required for nonce discovery)
-        if (usedCommitments[bytes32(outputs.newNonceCommitment)]) {
-            revert CommitmentAlreadyUsed();
-        }
-
-        usedCommitments[bytes32(outputs.newNonceCommitment)] = true;
-
-        encryptedStateDetails[bytes32(outputs.newNonceCommitment)] =
-            EncryptedStateDetails(outputs.encryptedBalance, outputs.encryptedNullifier);
-
-        // Add the nonce discovery entry to the token's stack
-        _addNonceDiscoveryEntry(
-            tokenAddress, outputs.nonceDiscoveryEntryX, outputs.nonceDiscoveryEntryY, outputs.newNonceCommitment
-        );
-
-        _handleWithdrawal(
-                tokenAddress, amount, relayerFeeShares, receiverAddress, call, arbitraryCalldataHash
-        );
-
-        // Store operation info for nonceCommitment (withdraw burns shares, doesn't mint)
-        operationInfo[bytes32(outputs.newNonceCommitment)] =
-            OperationInfo({operationType: OperationType.Withdraw, sharesMinted: 0, tokenAddress: tokenAddress});
-
-        return _addLeaf(
-            tokenAddress,
-            Field.toUint256(poseidon2Hasher.hash_2(Field.toField(finalCommitment.x), Field.toField(finalCommitment.y)))
-        );
+        return _executeWithdraw(publicSignals, call, OperationType.Withdraw);
     }
 
-    /// @notice Absorb+Withdraw: absorb notes then withdraw to receiver (same as withdraw with single relayer fee)
-    /// @param pA,pB,pC Groth16 proof points (Circom/snarkjs format)
-    /// @param publicSignals [token_address, amount, chain_id, expected_root, declared_time_reference, arbitrary_calldata_hash, receiver_address, relayer_fee_amount, commitment[2], new_nonce_commitment, encrypted_state[2], nonce_discovery_entry[2]] (15 elements, same layout as withdraw)
-    /// @param call Multicall3 calldata (if any)
-    function absorbWithdraw(
-        uint256[2] calldata pA,
-        uint256[2][2] calldata pB,
-        uint256[2] calldata pC,
-        uint256[15] calldata publicSignals,
-        bytes calldata call
-    ) public nonReentrant returns (uint256 newRoot) {
-        require(IVerifierAbsorbWithdraw(verifiersByIndex[5]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
-
-      
-
+    /// @dev Shared execution for withdraw and absorbWithdraw (only verifier differs)
+    function _executeWithdraw(uint256[15] calldata publicSignals, bytes calldata call, OperationType opType)
+        internal
+        returns (uint256 newRoot)
+    {
         WithdrawOutputs memory outputs = WithdrawOutputs({
             pedersenCommitmentX: publicSignals[0],
             pedersenCommitmentY: publicSignals[1],
@@ -815,63 +752,57 @@ contract Arkana is AccessControl, ReentrancyGuard {
         address receiverAddress = address(uint160(publicSignals[13]));
         uint256 relayerFeeAmount = publicSignals[14];
 
+        _validateChainId(chainId);
+        if (!_isHistoricalRoot(tokenAddress, expectedRoot)) revert InvalidRoot();
+        _validateTimeReference(declaredTimeReference);
 
-        if (chainId != block.chainid) {
-            revert InvalidChainId();
-        }
-
-        if (!isHistoricalRoot(tokenAddress, expectedRoot)) {
-            revert InvalidRoot();
-        }
-
-        uint256 timeDifference = declaredTimeReference > block.timestamp
-            ? declaredTimeReference - block.timestamp
-            : block.timestamp - declaredTimeReference;
-        if (timeDifference > TIME_TOLERANCE) {
-            revert InvalidTimeReference();
-        }
-
-        BJJ.Point memory finalCommitment =
-            BJJ.Point(outputs.pedersenCommitmentX, outputs.pedersenCommitmentY);
-
-        if (usedCommitments[bytes32(outputs.newNonceCommitment)]) {
-            revert CommitmentAlreadyUsed();
-        }
+        BJJ.Point memory finalCommitment = BJJ.Point(outputs.pedersenCommitmentX, outputs.pedersenCommitmentY);
+        _requireCommitmentUnused(outputs.newNonceCommitment);
         usedCommitments[bytes32(outputs.newNonceCommitment)] = true;
-
         encryptedStateDetails[bytes32(outputs.newNonceCommitment)] =
             EncryptedStateDetails(outputs.encryptedBalance, outputs.encryptedNullifier);
 
         _addNonceDiscoveryEntry(
             tokenAddress, outputs.nonceDiscoveryEntryX, outputs.nonceDiscoveryEntryY, outputs.newNonceCommitment
         );
-
-        _handleWithdrawal(
-            tokenAddress, amount, relayerFeeAmount, receiverAddress, call, arbitraryCalldataHash
-        );
+        _handleWithdrawal(tokenAddress, amount, relayerFeeAmount, receiverAddress, call, arbitraryCalldataHash);
 
         operationInfo[bytes32(outputs.newNonceCommitment)] =
-            OperationInfo({operationType: OperationType.AbsorbWithdraw, sharesMinted: 0, tokenAddress: tokenAddress});
+            OperationInfo({operationType: opType, sharesMinted: 0, tokenAddress: tokenAddress});
 
         return _addLeaf(
             tokenAddress,
-            Field.toUint256(poseidon2Hasher.hash_2(Field.toField(finalCommitment.x), Field.toField(finalCommitment.y)))
+            poseidonHasher.hash_2(finalCommitment.x, finalCommitment.y)
         );
+    }
+
+    /// @notice Absorb+Withdraw: absorb notes then withdraw to receiver (same as withdraw with single relayer fee)
+    function absorbWithdraw(
+        uint256[2] calldata pA,
+        uint256[2][2] calldata pB,
+        uint256[2] calldata pC,
+        uint256[15] calldata publicSignals,
+        bytes calldata call
+    ) public nonReentrant returns (uint256 newRoot) {
+        if (!IVerifierAbsorbWithdraw(verifiersByIndex[5]).verifyProof(pA, pB, pC, publicSignals)) {
+            revert InvalidProof();
+        }
+        return _executeWithdraw(publicSignals, call, OperationType.AbsorbWithdraw);
     }
 
     /// @notice Process vault operations for withdrawal (internal function to reduce stack depth)
     /// @param tokenAddress The token address
     /// @param sharesAmount Amount of shares to withdraw
-    /// @param relayerFeeShares Relayer fee in shares
+    /// @param relayerFeeAmount Relayer fee in shares
     /// @param receiverAddress Address to receive withdrawal assets
     function _processWithdrawVaultOperations(
         address tokenAddress,
         uint256 sharesAmount,
-        uint256 relayerFeeShares,
+        uint256 relayerFeeAmount,
         address receiverAddress
     ) internal {
         // Total shares to burn = withdrawal shares + relayer fee shares (for accounting purposes)
-        uint256 totalSharesToBurn = sharesAmount + relayerFeeShares;
+        uint256 totalSharesToBurn = sharesAmount + relayerFeeAmount;
 
         // Convert shares to underlying assets using the vault (ERC4626 standard)
         // Vault uses ERC4626's convertToAssets which uses totalSupply() and totalAssets()
@@ -881,11 +812,11 @@ contract Arkana is AccessControl, ReentrancyGuard {
             revert VaultNotInitialized(tokenAddress);
         }
 
-        ArkanaVault vault = ArkanaVault(vaultAddress);
+        IArkanaVault vault = IArkanaVault(vaultAddress);
 
         // Calculate assets BEFORE redeeming (redeeming changes vault state)
         uint256 withdrawalAssets = vault.convertToAssets(sharesAmount);
-        uint256 relayerFeeAssets = vault.convertToAssets(relayerFeeShares);
+        uint256 relayerFeeAssets = vault.convertToAssets(relayerFeeAmount);
 
         // Calculate protocol fee on withdrawal assets (before relayer fee)
         uint256 protocolFee = (withdrawalAssets * protocolFeeBps) / 10000;
@@ -948,205 +879,107 @@ contract Arkana is AccessControl, ReentrancyGuard {
         }
     }
 
-  
+    /// @dev Shared execution for send and absorbSend (only verifier differs)
+    function _executeSend(uint256[17] calldata publicSignals, OperationType opType) internal returns (uint256) {
+        uint256 newCommitmentLeaf = publicSignals[0];
+        uint256 newNonceCommitment = publicSignals[1];
+        uint256 encryptedAmount = publicSignals[2];
+        bytes32 encryptedBalance = bytes32(publicSignals[3]);
+        bytes32 encryptedNullifier = bytes32(publicSignals[4]);
+        uint256 senderPubKeyX = publicSignals[5];
+        uint256 senderPubKeyY = publicSignals[6];
+        uint256 nonceDiscoveryEntryX = publicSignals[7];
+        uint256 nonceDiscoveryEntryY = publicSignals[8];
+        uint256 note_p_commitment_x = publicSignals[9];
+        uint256 note_p_commitment_y = publicSignals[10];
+
+        address tokenAddress = address(uint160(publicSignals[11]));
+        uint256 chainId = publicSignals[12];
+        uint256 expectedRoot = publicSignals[13];
+        uint256 receiverPublicKeyX = publicSignals[14];
+        uint256 receiverPublicKeyY = publicSignals[15];
+
+        _validateChainId(chainId);
+        if (!_isHistoricalRoot(tokenAddress, expectedRoot)) revert InvalidRoot();
+        _requireCommitmentUnused(newNonceCommitment);
+        usedCommitments[bytes32(newNonceCommitment)] = true;
+        usedCommitments[bytes32(newCommitmentLeaf)] = true;
+        encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(encryptedBalance, encryptedNullifier);
+
+        _addLeaf(tokenAddress, newCommitmentLeaf);
+        _addNonceDiscoveryEntry(tokenAddress, nonceDiscoveryEntryX, nonceDiscoveryEntryY, newNonceCommitment);
+
+        bytes32 pubkey_reference_hash = keccak256(abi.encodePacked(receiverPublicKeyX, receiverPublicKeyY));
+        bytes32 note_digest = keccak256(abi.encodePacked(note_p_commitment_x, note_p_commitment_y));
+        if (tokenHistoricalNoteCommitments[tokenAddress][note_digest]) revert NoteAlreadyUsed();
+
+        operationInfo[bytes32(newNonceCommitment)] =
+            OperationInfo({operationType: opType, sharesMinted: 0, tokenAddress: tokenAddress});
+
+        nonceCommitmentToReceiver[bytes32(newNonceCommitment)] = CurvePoint(receiverPublicKeyX, receiverPublicKeyY);
+        tokenHistoricalNoteCommitments[tokenAddress][note_digest] = true;
+
+        tokenUserEncryptedNotes[tokenAddress][pubkey_reference_hash].push(
+            EncryptedNote(encryptedAmount, CurvePoint(senderPubKeyX, senderPubKeyY))
+        );
+
+        CurvePoint storage currentNoteStack = tokenUserNoteStack[tokenAddress][pubkey_reference_hash];
+        BJJ.Point memory newNoteCommitment = BJJ.Point(note_p_commitment_x, note_p_commitment_y);
+        BJJ.Point memory updatedNoteStack;
+        if (currentNoteStack.x == 0 && currentNoteStack.y == 0) {
+            updatedNoteStack = newNoteCommitment;
+        } else {
+            updatedNoteStack = BJJ.add(BJJ.Point(currentNoteStack.x, currentNoteStack.y), newNoteCommitment);
+        }
+        currentNoteStack.x = updatedNoteStack.x;
+        currentNoteStack.y = updatedNoteStack.y;
+
+        uint256 noteStackLeaf = poseidonHasher.hash_2(updatedNoteStack.x, updatedNoteStack.y);
+        return _addLeaf(tokenAddress, noteStackLeaf);
+    }
+
     function send(
         uint256[2] calldata pA,
         uint256[2][2] calldata pB,
         uint256[2] calldata pC,
         uint256[17] calldata publicSignals
     ) public nonReentrant returns (uint256) {
-        require(IVerifierSend(verifiersByIndex[2]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
-
-
-        uint256 newCommitmentLeaf = publicSignals[0];
-        uint256 newNonceCommitment = publicSignals[1];
-        uint256 encryptedAmount = publicSignals[2];
-        bytes32 encryptedBalance = bytes32(publicSignals[3]);
-        bytes32 encryptedNullifier = bytes32(publicSignals[4]);
-        uint256 senderPubKeyX = publicSignals[5];
-        uint256 senderPubKeyY = publicSignals[6];
-        uint256 nonceDiscoveryEntryX = publicSignals[7];
-        uint256 nonceDiscoveryEntryY = publicSignals[8];
-        uint256 note_p_commitment_x = publicSignals[9];
-        uint256 note_p_commitment_y = publicSignals[10];
-
-
-        address tokenAddress = address(uint160(publicSignals[11]));
-        uint256 chainId = publicSignals[12];
-        uint256 expectedRoot = publicSignals[13];
-        uint256 receiverPublicKeyX = publicSignals[14];
-        uint256 receiverPublicKeyY = publicSignals[15];
-        uint256 relayerFeeAmount = publicSignals[16];
-
-
-        if (chainId != block.chainid) {
-            revert InvalidChainId();
+        if (!IVerifierSend(verifiersByIndex[2]).verifyProof(pA, pB, pC, publicSignals)) {
+            revert InvalidProof();
         }
-
-        if (!isHistoricalRoot(tokenAddress, expectedRoot)) {
-            revert InvalidRoot();
-        }
-
-        if (usedCommitments[bytes32(newNonceCommitment)]) {
-            revert CommitmentAlreadyUsed();
-        }
-        usedCommitments[bytes32(newNonceCommitment)] = true;
-        usedCommitments[bytes32(newCommitmentLeaf)] = true;
-        encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(encryptedBalance, encryptedNullifier);
-
-        // Add the new commitment leaf to the token's merkle tree (circuit already hashed it)
-        _addLeaf(tokenAddress, newCommitmentLeaf);
-
-        // Add the nonce discovery entry to the token's stack
-        _addNonceDiscoveryEntry(tokenAddress, nonceDiscoveryEntryX, nonceDiscoveryEntryY, newNonceCommitment);
-
-        bytes32 pubkey_reference_hash = keccak256(abi.encodePacked(receiverPublicKeyX, receiverPublicKeyY));
-        bytes32 note_digest = keccak256(abi.encodePacked(note_p_commitment_x, note_p_commitment_y));
-        if (tokenHistoricalNoteCommitments[tokenAddress][note_digest]) {
-            revert NoteAlreadyUsed();
-        }
-
-        // Store operation info for nonceCommitment (send doesn't mint shares)
-        operationInfo[bytes32(newNonceCommitment)] =
-            OperationInfo({operationType: OperationType.Send, sharesMinted: 0, tokenAddress: tokenAddress});
-
-        nonceCommitmentToReceiver[bytes32(newNonceCommitment)] = CurvePoint(receiverPublicKeyX, receiverPublicKeyY);
-
-        tokenHistoricalNoteCommitments[tokenAddress][note_digest] = true;
-
-        tokenUserEncryptedNotes[tokenAddress][pubkey_reference_hash].push(
-            EncryptedNote(encryptedAmount, CurvePoint(senderPubKeyX, senderPubKeyY))
-        );
-
-        // Get or initialize the cumulative note_stack point for this user
-        CurvePoint storage currentNoteStack = tokenUserNoteStack[tokenAddress][pubkey_reference_hash];
-        BJJ.Point memory newNoteCommitment = BJJ.Point(note_p_commitment_x, note_p_commitment_y);
-
-        BJJ.Point memory updatedNoteStack;
-        if (currentNoteStack.x == 0 && currentNoteStack.y == 0) {
-            // First note for this user: use the note commitment as the starting point, cause 0,0 is an invalid point on curve
-            updatedNoteStack = newNoteCommitment;
-        } else {
-            // Add the new note commitment to the existing cumulative note_stack
-            updatedNoteStack = BJJ.add(BJJ.Point(currentNoteStack.x, currentNoteStack.y), newNoteCommitment);
-        }
-
-        // Update the stored cumulative note_stack point for next send
-        currentNoteStack.x = updatedNoteStack.x;
-        currentNoteStack.y = updatedNoteStack.y;
-
-        // Hash the updated cumulative note_stack point to get the leaf
-        Field.Type noteStackLeaf =
-            poseidon2Hasher.hash_2(Field.toField(updatedNoteStack.x), Field.toField(updatedNoteStack.y));
-        uint256 rootAfterNoteLeaf = _addLeaf(tokenAddress, Field.toUint256(noteStackLeaf));
-
-        return rootAfterNoteLeaf;
+        return _executeSend(publicSignals, OperationType.Send);
     }
 
     /// @notice Absorb+Send: absorb notes into balance then send to receiver (same state updates as send; circuit proves absorb + send)
-    /// @param pA,pB,pC Groth16 proof points (Circom/snarkjs format)
-    /// @param publicSignals [token_address, chain_id, expected_root, receiver_public_key[2], relayer_fee_amount, new_commitment_leaf, new_nonce_commitment, encrypted_note[3], sender_pub_key[2], nonce_discovery_entry[2], note_commitment[2]] (17 elements, same layout as send)
     function absorbSend(
         uint256[2] calldata pA,
         uint256[2][2] calldata pB,
         uint256[2] calldata pC,
         uint256[17] calldata publicSignals
     ) public nonReentrant returns (uint256) {
-        require(IVerifierAbsorbSend(verifiersByIndex[4]).verifyProof(pA, pB, pC, publicSignals), "Invalid proof");
-
-   
-        uint256 newCommitmentLeaf = publicSignals[0];
-        uint256 newNonceCommitment = publicSignals[1];
-        uint256 encryptedAmount = publicSignals[2];
-        bytes32 encryptedBalance = bytes32(publicSignals[3]);
-        bytes32 encryptedNullifier = bytes32(publicSignals[4]);
-        uint256 senderPubKeyX = publicSignals[5];
-        uint256 senderPubKeyY = publicSignals[6];
-        uint256 nonceDiscoveryEntryX = publicSignals[7];
-        uint256 nonceDiscoveryEntryY = publicSignals[8];
-        uint256 note_p_commitment_x = publicSignals[9];
-        uint256 note_p_commitment_y = publicSignals[10];
-
-
-        address tokenAddress = address(uint160(publicSignals[11]));
-        uint256 chainId = publicSignals[12];
-        uint256 expectedRoot = publicSignals[13];
-        uint256 receiverPublicKeyX = publicSignals[14];
-        uint256 receiverPublicKeyY = publicSignals[15];
-        uint256 relayerFeeAmount = publicSignals[16];
-
-        if (chainId != block.chainid) {
-            revert InvalidChainId();
+        if (!IVerifierAbsorbSend(verifiersByIndex[4]).verifyProof(pA, pB, pC, publicSignals)) {
+            revert InvalidProof();
         }
-
-        if (!isHistoricalRoot(tokenAddress, expectedRoot)) {
-            revert InvalidRoot();
-        }
-
-        if (usedCommitments[bytes32(newNonceCommitment)]) {
-            revert CommitmentAlreadyUsed();
-        }
-        usedCommitments[bytes32(newNonceCommitment)] = true;
-        usedCommitments[bytes32(newCommitmentLeaf)] = true;
-        encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(encryptedBalance, encryptedNullifier);
-
-        _addLeaf(tokenAddress, newCommitmentLeaf);
-        _addNonceDiscoveryEntry(tokenAddress, nonceDiscoveryEntryX, nonceDiscoveryEntryY, newNonceCommitment);
-
-        bytes32 pubkey_reference_hash = keccak256(abi.encodePacked(receiverPublicKeyX, receiverPublicKeyY));
-        bytes32 note_digest = keccak256(abi.encodePacked(note_p_commitment_x, note_p_commitment_y));
-        if (tokenHistoricalNoteCommitments[tokenAddress][note_digest]) {
-            revert NoteAlreadyUsed();
-        }
-
-        operationInfo[bytes32(newNonceCommitment)] =
-            OperationInfo({operationType: OperationType.AbsorbSend, sharesMinted: 0, tokenAddress: tokenAddress});
-
-        nonceCommitmentToReceiver[bytes32(newNonceCommitment)] = CurvePoint(receiverPublicKeyX, receiverPublicKeyY);
-
-        tokenHistoricalNoteCommitments[tokenAddress][note_digest] = true;
-
-        tokenUserEncryptedNotes[tokenAddress][pubkey_reference_hash].push(
-            EncryptedNote(encryptedAmount, CurvePoint(senderPubKeyX, senderPubKeyY))
-        );
-
-        CurvePoint storage currentNoteStack = tokenUserNoteStack[tokenAddress][pubkey_reference_hash];
-        BJJ.Point memory newNoteCommitment = BJJ.Point(note_p_commitment_x, note_p_commitment_y);
-
-        BJJ.Point memory updatedNoteStack;
-        if (currentNoteStack.x == 0 && currentNoteStack.y == 0) {
-            updatedNoteStack = newNoteCommitment;
-        } else {
-            updatedNoteStack = BJJ.add(BJJ.Point(currentNoteStack.x, currentNoteStack.y), newNoteCommitment);
-        }
-
-        currentNoteStack.x = updatedNoteStack.x;
-        currentNoteStack.y = updatedNoteStack.y;
-
-        Field.Type noteStackLeaf =
-            poseidon2Hasher.hash_2(Field.toField(updatedNoteStack.x), Field.toField(updatedNoteStack.y));
-        uint256 rootAfterNoteLeaf = _addLeaf(tokenAddress, Field.toUint256(noteStackLeaf));
-
-        return rootAfterNoteLeaf;
+        return _executeSend(publicSignals, OperationType.AbsorbSend);
     }
 
     /// @notice Handle normal withdrawal (with actual vault withdrawal)
     /// @param tokenAddress The token address
     /// @param finalAmount Amount of shares to withdraw
-    /// @param relayerFeeShares Relayer fee in shares
+    /// @param relayerFeeAmount Relayer fee in shares
     /// @param receiverAddress Address to receive withdrawal assets
     /// @param callData Multicall3 call data (if any)
     /// @param arbitraryCalldataHash Hash of the call data for verification
     function _handleWithdrawal(
         address tokenAddress,
         uint256 finalAmount,
-        uint256 relayerFeeShares,
+        uint256 relayerFeeAmount,
         address receiverAddress,
         bytes calldata callData,
         bytes32 arbitraryCalldataHash
     ) internal {
         // Normal withdrawal: Process vault operations with actual withdrawal amount
-        _processWithdrawVaultOperations(tokenAddress, finalAmount, relayerFeeShares, receiverAddress);
+        _processWithdrawVaultOperations(tokenAddress, finalAmount, relayerFeeAmount, receiverAddress);
 
         // Execute Multicall3 call if calldata is provided
         if (callData.length > 0) {
@@ -1178,7 +1011,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @return encryptedBalance The encrypted balance (bytes32)
     /// @return encryptedNullifier The encrypted nullifier (bytes32)
     function getNonceCommitmentInfo(bytes32 nonceCommitment)
-        public
+        external
         view
         returns (
             OperationType operationType,
@@ -1202,7 +1035,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @return m The aggregated M value (or default 1 if empty)
     /// @return r The aggregated R value (or default 1 if empty)
     function getNonceDiscoveryInfo(address tokenAddress)
-        public
+        external
         view
         returns (uint256 x, uint256 y, uint256 m, uint256 r)
     {
@@ -1225,12 +1058,9 @@ contract Arkana is AccessControl, ReentrancyGuard {
         return (point.x, point.y, storedM, storedR);
     }
 
-    // @dev this is used just as utility, ideally this fucntion isnt needed on contract
-    function computeCommitmentLeaf(uint256 x, uint256 y) public view returns (uint256) {
-        Field.Type xField = Field.toField(x);
-        Field.Type yField = Field.toField(y);
-        Field.Type leafField = poseidon2Hasher.hash_2(xField, yField);
-        return Field.toUint256(leafField);
+    /// @notice Hash commitment (x,y) to leaf value (PoseidonT3). Exposed for off-chain / frontend.
+    function computeCommitmentLeaf(uint256 x, uint256 y) external view returns (uint256) {
+        return poseidonHasher.hash_2(x, y);
     }
 
     /// @notice Calculate discounted protocol fee based on lock duration
@@ -1239,6 +1069,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @dev If lockDuration = 0: full fee applies (protocol_fee)
     /// @dev If lockDuration = discount_window: 0 fee (100% discount)
     /// @dev Linear interpolation between these two points
+
     function calculateDiscountedProtocolFee(uint256 lockDuration) public view returns (uint256 effective_fee_bps) {
         if (lockDuration == 0) {
             return protocol_fee; // Full fee
@@ -1250,5 +1081,4 @@ contract Arkana is AccessControl, ReentrancyGuard {
         // effective_fee_bps = protocol_fee * (discount_window - lockDuration) / discount_window
         effective_fee_bps = (protocol_fee * (discount_window - lockDuration)) / discount_window;
     }
-
 }

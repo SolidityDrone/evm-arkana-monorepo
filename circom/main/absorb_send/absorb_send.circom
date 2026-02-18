@@ -4,7 +4,7 @@ pragma circom 2.0.0;
 // Combines absorb and send operations: absorbs notes then sends to receiver
 // Matches circuits/main/absorb/src/main.nr + circuits/main/send/src/main.nr
 
-include "../../lib/poseidon/poseidon2.circom";
+include "../../lib/poseidon/poseidon.circom";
 include "../../lib/poseidon-ctr-encryption/poseidon_ctr_encryption.circom";
 include "../../lib/pedersen-commitments/pedersen_commitments.circom";
 include "../../lib/lean-imt-verify/lean_imt_verify.circom";

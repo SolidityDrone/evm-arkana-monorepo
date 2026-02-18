@@ -10,7 +10,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { poseidon2Hash2 } = require('./poseidon2_hash_helper');
+const { poseidon2Hash2 } = require('./poseidon_hash_helper');
+const { getSignerKeyPair, signSendMessage, TEST_SIGNER_PRIVKEY_HEX } = require('./eddsa_helper');
 const { simulateLeanIMTInsert, generateMerkleProof } = require('./lean_imt_helpers');
 const { simulateContractShareAddition } = require('./babyjub_operations');
 
@@ -70,6 +71,7 @@ async function testEntrySendFlow() {
     console.log('STEP 1: Running Entry Circuit...');
     console.log('');
     
+    const { signer_pubkey_hash } = await getSignerKeyPair();
     const entryInput = {
         user_key: hexToDecimal("0x1234567890abcdef"),
         token_address: hexToDecimal("0x02"),
@@ -195,14 +197,21 @@ async function testEntrySendFlow() {
         hexToDecimal("0x146a1e792e301e0c53e2422f11b3e09c9c4b58f849fc3aa1c34ea13cb8e02254")
     ];
     
-    // IMPORTANT: We can only send up to the actual shares we have
-    // previous_shares = 51 (encoded) represents 50 real shares
-    // So we can send at most 50 total (amount + relayer_fee_amount)
-    // Let's send 49 + 1 = 50 total
     const sendAmount = hexToDecimal("0x31"); // 49 (so total_deduct = 49 + 1 = 50)
-    // After deposit, entry used m1=1 (base value), contract added shares*G
-    // So final commitment has m1 = 1 + shares = 1 + 50 = 51
+    const relayerFeeAmount = "1";
     const previousShares = (BigInt(1) + BigInt(depositAmount)).toString(); // Base 1 + shares 50 = 51
+    const currentNonceForSend = "2"; // previous_nonce is 1, sign with current_nonce = previous + 1
+    const { signature } = await signSendMessage(
+        TEST_SIGNER_PRIVKEY_HEX,
+        entryInput.token_address,
+        entryInput.chain_id,
+        sendAmount,
+        relayerFeeAmount,
+        receiverPublicKey[0],
+        receiverPublicKey[1],
+        currentNonceForSend
+    );
+    const { signer_public_key } = await getSignerKeyPair();
     const sendInput = {
         user_key: entryInput.user_key,
         token_address: entryInput.token_address,
@@ -218,7 +227,7 @@ async function testEntrySendFlow() {
         expected_root: rootAfterDeposit,
         merkle_proof: await generateMerkleProof(depositLeaf, 1, treeDepth, allLeaves, treeSize, hashWrapper),
         receiver_public_key: receiverPublicKey,
-        relayer_fee_amount: "1"
+        relayer_fee_amount: relayerFeeAmount
     };
     
     // Verify we can reconstruct the deposit leaf
@@ -305,6 +314,7 @@ async function testEntrySendFlow() {
         };
         
         const testDataPath = path.join(__dirname, '../../test/inputs/entry_deposit_send_flow_output.json');
+        fs.mkdirSync(path.dirname(testDataPath), { recursive: true });
         fs.writeFileSync(testDataPath, JSON.stringify(testData, null, 2));
         console.log(`✅ Test data saved to: ${testDataPath}`);
         console.log('');

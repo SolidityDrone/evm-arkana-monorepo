@@ -8,6 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { getSignerKeyPair } = require('./eddsa_helper');
 
 async function testEntry(inputFile) {
     const buildDir = path.join(__dirname, '../../build/entry/entry_js');
@@ -31,7 +32,7 @@ async function testEntry(inputFile) {
         }
         input = JSON.parse(fs.readFileSync(inputFile, 'utf8'));
     } else {
-        // Default test input
+        // Default test input (entry circuit has no signer_pubkey_hash)
         input = {
             user_key: "0x1234567890abcdef",
             token_address: "0x02",

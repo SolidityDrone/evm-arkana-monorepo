@@ -53,39 +53,6 @@ contract VerifierDeployer is Script {
         console.log("AbsorbWithdraw Verifier deployed at:", absorbWithdrawAddress);
 
         vm.stopBroadcast();
-
-        address[6] memory addresses =
-            [entryAddress, depositAddress, withdrawAddress, sendAddress, absorbSendAddress, absorbWithdrawAddress];
-        writeVerifiersConst(addresses);
-    }
-
-    function writeVerifiersConst(address[6] memory addresses) internal {
-        string memory header =
-            "//SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.13;\n\nlibrary VerifiersConst {\n";
-
-        string memory entry =
-            string(abi.encodePacked("    address public constant ENTRY_VERIFIER = ", vm.toString(addresses[0]), ";\n"));
-        string memory deposit = string(
-            abi.encodePacked("    address public constant DEPOSIT_VERIFIER = ", vm.toString(addresses[1]), ";\n")
-        );
-        string memory withdraw = string(
-            abi.encodePacked("    address public constant WITHDRAW_VERIFIER = ", vm.toString(addresses[2]), ";\n")
-        );
-        string memory send =
-            string(abi.encodePacked("    address public constant SEND_VERIFIER = ", vm.toString(addresses[3]), ";\n"));
-        string memory absorbSend = string(
-            abi.encodePacked("    address public constant ABSORB_VERIFIER = ", vm.toString(addresses[4]), ";\n")
-        );
-        string memory absorbWithdraw = string(
-            abi.encodePacked("    address public constant ABSORB_WITHDRAW_VERIFIER = ", vm.toString(addresses[5]), ";\n")
-        );
-
-        string memory footer = "}\n";
-
-        string memory content = string(
-            abi.encodePacked(header, entry, deposit, withdraw, send, absorbSend, absorbWithdraw, footer)
-        );
-
-        vm.writeFile("src/VerifiersConst.sol", content);
+        // Addresses are not written to disk; anvil_deploy.sh parses this log and passes them via env to Arkana.s.sol
     }
 }

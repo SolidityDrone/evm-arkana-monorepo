@@ -12,7 +12,7 @@ const ROOT = join(__dirname, '..');
 const LIB = join(ROOT, 'lib', 'circuits');
 const PUBLIC = join(ROOT, 'public', 'circuits');
 
-const CIRCUITS = ['entry', 'deposit', 'withdraw'];
+const CIRCUITS = ['entry', 'deposit', 'withdraw', 'send'];
 
 async function copyCircuits() {
   for (const name of CIRCUITS) {

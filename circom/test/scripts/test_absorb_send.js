@@ -12,7 +12,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { poseidon2Hash2, poseidon2Hash3 } = require('./poseidon2_hash_helper');
+const { poseidon2Hash2, poseidon2Hash3, getSpendingKeyFromHashes } = require('./poseidon_hash_helper');
+const { getSignerKeyPair, signSendMessage, TEST_SIGNER_PRIVKEY_HEX } = require('./eddsa_helper');
 const { simulateLeanIMTInsert, generateMerkleProof } = require('./lean_imt_helpers');
 const { simulateContractShareAddition, scalarMul } = require('./babyjub_operations');
 
@@ -80,6 +81,7 @@ async function testAbsorbSendFlow() {
     const userKey = hexToDecimal("0x1234567890abcdef");
     const tokenAddress = hexToDecimal("0x02");
     const chainId = hexToDecimal("0x01");
+    const { signer_pubkey_hash } = await getSignerKeyPair();
     
     const entryInput = {
         user_key: userKey,
@@ -206,7 +208,11 @@ async function testAbsorbSendFlow() {
     console.log('');
     
     const sendAmount = hexToDecimal("0x32"); // 50
+    const relayerFeeAmountSend = "1";
     const previousShares = (BigInt(1) + BigInt(depositAmount)).toString(); // Base 1 + shares 100 = 101
+    const currentNonceForSend = "2"; // previous_nonce is 1, sign with current_nonce = previous + 1
+    const { signature: sendSignature } = await signSendMessage(TEST_SIGNER_PRIVKEY_HEX, tokenAddress, chainId, sendAmount, relayerFeeAmountSend, myPublicKey[0], myPublicKey[1], currentNonceForSend);
+    const { signer_public_key } = await getSignerKeyPair();
     const sendInput = {
         user_key: userKey,
         token_address: tokenAddress,
@@ -222,7 +228,7 @@ async function testAbsorbSendFlow() {
         expected_root: rootAfterDeposit,
         merkle_proof: await generateMerkleProof(depositLeaf, 1, treeDepth, allLeaves, treeSize, hashWrapper),
         receiver_public_key: myPublicKey, // Send to yourself
-        relayer_fee_amount: "1"
+        relayer_fee_amount: relayerFeeAmountSend
     };
     
     console.log('Send inputs:');
@@ -255,18 +261,12 @@ async function testAbsorbSendFlow() {
     // shared_key = sender_private_key * receiver_public_key (point multiplication)
     // shared_key_hash = Poseidon2Hash2(shared_key.x, shared_key.y)
     
-    // Calculate shared key: shared_key = sender_private_key * receiver_public_key
-    // The send circuit computes: shared_key = DH(...), then shared_key_hash = Poseidon2Hash1(shared_key)
-    // The DH circuit outputs shared_key which is already Poseidon2Hash2(shared_secret_point)
-    // So we need to: 1) compute shared_secret_point, 2) hash it with Hash2 to get shared_key, 3) hash with Hash1 to get shared_key_hash
+    // Calculate shared key: DH outputs shared_key = x-coordinate of (sender_private * receiver_public)
+    // Then send circuit does shared_key_hash = Poseidon2Hash1(shared_key), note_commit.r = shared_key_hash
     const sharedKeyPoint = await scalarMul(senderPrivateKey, myPublicKey);
-    console.log('Debug: Shared key point:', decimalToHex(sharedKeyPoint.x), decimalToHex(sharedKeyPoint.y));
-    const sharedKey = await poseidon2Hash2(sharedKeyPoint.x, sharedKeyPoint.y); // This is what DH outputs
-    console.log('Debug: Shared key (Hash2):', decimalToHex(sharedKey));
-    // Now hash it with Hash1 to get shared_key_hash (what send uses for note commitment)
-    const { poseidon2Hash1 } = require('./poseidon2_hash_helper');
+    const sharedKey = sharedKeyPoint.x.toString(); // DH circuit outputs out[0] (x only)
+    const { poseidon2Hash1 } = require('./poseidon_hash_helper');
     const sharedKeyHash = await poseidon2Hash1(sharedKey);
-    console.log('Debug: Shared key hash (Hash1):', decimalToHex(sharedKeyHash));
     const note_stack_r = sharedKeyHash;
     
     console.log('Note stack (for absorbing):');
@@ -340,9 +340,9 @@ async function testAbsorbSendFlow() {
     const current_balance = finalSharesAfterSend; // 50 (encoded shares value)
     const nullifier_after_send = "1"; // Nullifier stays 0 (encoded as 1) after send
     
-    // Calculate previous_nonce_commitment for absorb
+    // Calculate previous_nonce_commitment for absorb (debug)
     // The send used nonce 1, so previous_nonce should be 1
-    const spending_key = await poseidon2Hash3(userKey, chainId, tokenAddress);
+    const spending_key = await getSpendingKeyFromHashes(userKey, chainId, tokenAddress, signer_pubkey_hash);
     const previous_nonce_commitment_1 = await poseidon2Hash3(spending_key, "1", tokenAddress);
     
     const absorbSendAmount = hexToDecimal("0x1e"); // 30

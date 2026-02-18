@@ -1,6 +1,6 @@
 pragma circom 2.0.0;
 
-include "../../lib/poseidon/poseidon2.circom";
+include "../../lib/poseidon/poseidon.circom";
 include "../../lib/pedersen-commitments/pedersen_commitments.circom";
 
 /// Entry circuit for initializing a new note in the Arkana system

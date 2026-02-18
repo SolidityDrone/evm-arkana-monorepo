@@ -466,7 +466,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                 <DialogHeader className="pb-3 sm:pb-4">
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                         <DialogTitle className="text-lg sm:text-xl">Account</DialogTitle>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-[10px] sm:text-xs text-muted-foreground uppercase">Mode:</span>
                             <div className="flex gap-1 border border-border rounded-lg p-0.5">
                                 <Button

@@ -7,15 +7,5 @@ declare module '@noir-lang/noir_js' {
     }
 }
 
-declare module '@aztec/bb.js' {
-    export class UltraHonkBackend {
-        constructor(bytecode: any, options?: { threads: number }, options2?: { recursive: boolean });
-        generateProof(witness: any, options?: any): Promise<{ proof: string; publicInputs: any[] }>;
-        generateProofForRecursiveAggregation(witness: any): Promise<{ proof: string; publicInputs: any[] }>;
-        generateRecursiveProofArtifacts(proof: string, publicInputElements: number): Promise<{ vkAsFields: any[] }>;
-        verifyProof(proof: any): Promise<boolean>;
-    }
-}
-
-
-
+<｜tool▁call▁end｜><｜tool▁call▁begin｜>
+TodoWrite

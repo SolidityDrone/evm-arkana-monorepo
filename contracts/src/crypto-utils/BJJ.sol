@@ -151,32 +151,6 @@ library BJJ {
     }
 
     /**
-     * @dev Check if two points are equal
-     */
-    function eq(Point memory p1, Point memory p2) internal pure returns (bool) {
-        return p1.x == p2.x && p1.y == p2.y;
-    }
-
-    /**
-     * @dev Check if a point is the zero point (identity: 0, 1)
-     */
-    function isZero(Point memory p) internal pure returns (bool) {
-        return p.x == 0 && p.y == 1;
-    }
-
-    /**
-     * @dev Negate a point (point at infinity remains unchanged)
-     * For Edwards curve: -(x, y) = (-x, y)
-     */
-    function negate(Point memory p) internal pure returns (Point memory) {
-        if (p.x == 0 && p.y == 1) {
-            return p; // Point at infinity
-        }
-        uint256 p_mod = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001;
-        return Point(addmod(0, p_mod - p.x, p_mod), p.y);
-    }
-
-    /**
      * @dev Compute Pedersen commitment single term
      * Optimized convenience function for note stack commitments
      * @param G Generator point

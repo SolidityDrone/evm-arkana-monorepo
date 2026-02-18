@@ -2,6 +2,7 @@ import { PublicClient, Address } from 'viem';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { poseidonCtrDecrypt } from '@/lib/poseidon-ctr-encryption';
 import { padHex } from 'viem';
+import { getSpendingKey, poseidonHash } from './circuit-utils';
 
 // VIEW_STRING constant from circuits: 0x76696577696e675f6b6579 ("viewing_key" in hex)
 const VIEW_STRING = BigInt('0x76696577696e675f6b6579');
@@ -23,63 +24,36 @@ export interface TransactionHistoryEntry {
 }
 
 /**
- * Derive viewkey from user_key
- * view_key = Poseidon2::hash([VIEW_STRING, user_key], 2)
+ * Derive viewkey from user_key (Poseidon via circuit-utils)
  */
 export async function deriveViewKey(userKey: bigint): Promise<bigint> {
-  const { poseidon2Hash } = await import('@aztec/foundation/crypto');
-  const viewKey = await poseidon2Hash([VIEW_STRING, userKey]);
-  if (typeof viewKey === 'bigint') {
-    return viewKey;
-  } else if ('toBigInt' in viewKey && typeof (viewKey as any).toBigInt === 'function') {
-    return (viewKey as any).toBigInt();
-  } else if ('value' in viewKey) {
-    return BigInt((viewKey as any).value);
-  } else {
-    return BigInt((viewKey as any).toString());
-  }
+  return poseidonHash([VIEW_STRING, userKey]);
 }
 
 /**
- * Compute spending_key for a token
- * spending_key = Poseidon2::hash([user_key, chain_id, token_address], 3)
+ * Compute spending_key for a token (4 args: user_key, chain_id, token_address, signer_pubkey_hash)
  */
-export async function computeSpendingKey(userKey: bigint, chainId: bigint, tokenAddress: bigint): Promise<bigint> {
-  const { poseidon2Hash } = await import('@aztec/foundation/crypto');
-  const spendingKey = await poseidon2Hash([userKey, chainId, tokenAddress]);
-  if (typeof spendingKey === 'bigint') {
-    return spendingKey;
-  } else if ('toBigInt' in spendingKey && typeof (spendingKey as any).toBigInt === 'function') {
-    return (spendingKey as any).toBigInt();
-  } else if ('value' in spendingKey) {
-    return BigInt((spendingKey as any).value);
-  } else {
-    return BigInt((spendingKey as any).toString());
-  }
+export async function computeSpendingKey(
+  userKey: bigint,
+  chainId: bigint,
+  tokenAddress: bigint,
+  signerPubkeyHash: bigint | string
+): Promise<bigint> {
+  return getSpendingKey(userKey, chainId, tokenAddress, signerPubkeyHash);
 }
 
 /**
- * Compute nonce commitment for a given nonce
- * nonceCommitment = Poseidon2::hash([spending_key, nonce, token_address], 3)
+ * Compute nonce commitment (spending_key = 4 args)
  */
 export async function computeNonceCommitment(
   userKey: bigint,
   chainId: bigint,
   tokenAddress: bigint,
+  signerPubkeyHash: bigint | string,
   nonce: bigint
 ): Promise<bigint> {
-  const { poseidon2Hash } = await import('@aztec/foundation/crypto');
-  const spendingKey = await computeSpendingKey(userKey, chainId, tokenAddress);
-  const nonceCommitment = await poseidon2Hash([spendingKey, nonce, tokenAddress]);
-  if (typeof nonceCommitment === 'bigint') {
-    return nonceCommitment;
-  } else if ('toBigInt' in nonceCommitment && typeof (nonceCommitment as any).toBigInt === 'function') {
-    return (nonceCommitment as any).toBigInt();
-  } else if ('value' in nonceCommitment) {
-    return BigInt((nonceCommitment as any).value);
-  } else {
-    return BigInt((nonceCommitment as any).toString());
-  }
+  const spendingKey = await getSpendingKey(userKey, chainId, tokenAddress, signerPubkeyHash);
+  return poseidonHash([spendingKey, nonce, tokenAddress]);
 }
 
 /**
@@ -101,22 +75,23 @@ export async function reconstructTokenHistory(
 ): Promise<TransactionHistoryEntry[]> {
   const viewKey = await deriveViewKey(userKey);
   const history: TransactionHistoryEntry[] = [];
+  const { getSignerIdentityFromUserKey } = await import('@/lib/eddsa-circuit');
+  const signerIdentity = await getSignerIdentityFromUserKey(userKey);
+  const signerPubkeyHash = BigInt(signerIdentity.signer_pubkey_hash);
 
-  // Get chain ID dynamically from the connected chain
   const chainId = BigInt(await publicClient.getChainId());
   const tokenAddressBigInt = BigInt(tokenAddress);
 
   try {
     console.log(`[History] Reconstructing history for token ${tokenAddress}, current nonce: ${currentNonce.toString()}`);
 
-    // Check nonces from 0 up to currentNonce - 1
     const lastUsedNonce = currentNonce > BigInt(0) ? currentNonce - BigInt(1) : BigInt(0);
     console.log(`[History] Processing nonces 0 to ${lastUsedNonce.toString()} for token ${tokenAddress}`);
     
     for (let nonce = BigInt(0); nonce <= lastUsedNonce; nonce++) {
       try {
         console.log(`[History] Checking nonce ${nonce.toString()}...`);
-        const nonceCommitment = await computeNonceCommitment(userKey, chainId, tokenAddressBigInt, nonce);
+        const nonceCommitment = await computeNonceCommitment(userKey, chainId, tokenAddressBigInt, signerPubkeyHash, nonce);
         const nonceCommitmentBytes32 = padHex(`0x${nonceCommitment.toString(16)}`, { size: 32 }) as `0x${string}`;
 
         // Check if this nonceCommitment exists in the contract

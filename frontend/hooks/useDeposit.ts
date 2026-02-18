@@ -5,11 +5,12 @@ import { useAccount as useWagmiAccount, useWriteContract, useWaitForTransactionR
 import { useAccount as useAccountContext, useZkAddress } from '@/context/AccountProvider';
 import { useAccountState } from '@/context/AccountStateProvider';
 import { createPublicClient, http, parseAbi, Address } from 'viem';
-import { getActiveChain, getChainById, getRpcUrlForChain } from '@/config';
+import { sepolia, getActiveChain, getChainById, getRpcUrlForChain } from '@/config';
+import { Noir } from '@noir-lang/noir_js';
+import { CachedUltraHonkBackend } from '@/lib/cached-ultra-honk-backend';
+import depositCircuit from '@/lib/circuits/deposit.json';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { ensureBufferPolyfill } from '@/lib/buffer-polyfill';
-import type { Groth16Args } from '@/lib/groth16';
-import { proveWithSnarkjs } from '@/lib/circuit-prove';
 import { useNonceDiscovery } from '@/hooks/useNonceDiscovery';
 import { loadAccountData, saveTokenAccountData, CommitmentState } from '@/lib/indexeddb';
 import { convertAssetsToShares } from '@/lib/shares-to-assets';
@@ -77,7 +78,10 @@ export function useDeposit() {
     const [isCheckingTokenState, setIsCheckingTokenState] = useState(false);
     const [tokenName, setTokenName] = useState<string>('');
     const [tokenSymbol, setTokenSymbol] = useState<string>('');
-    const [groth16Args, setGroth16Args] = useState<Groth16Args | null>(null);
+
+    // Backend and Noir references
+    const backendRef = useRef<CachedUltraHonkBackend | null>(null);
+    const noirRef = useRef<Noir | null>(null);
 
     // Get balanceEntries and currentNonce from context
     const { balanceEntries, currentNonce } = useAccountState();
@@ -98,6 +102,43 @@ export function useDeposit() {
             if (interval) clearInterval(interval);
         };
     }, [isProving]);
+
+    // Initialize backend
+    const initializeBackend = useCallback(async () => {
+        if (isInitialized && backendRef.current && noirRef.current) {
+            return;
+        }
+
+        setIsInitializing(true);
+        try {
+            await ensureBufferPolyfill();
+
+            const backendOptions = { threads: 1 };
+
+            // Handle both string and Uint8Array bytecode
+            let bytecode: string | Uint8Array;
+            if (typeof depositCircuit.bytecode === 'string') {
+                bytecode = depositCircuit.bytecode;
+            } else {
+                if (!globalThis.Buffer) {
+                    const { Buffer } = await import('buffer');
+                    globalThis.Buffer = Buffer;
+                }
+                bytecode = globalThis.Buffer.from(depositCircuit.bytecode).toString('base64');
+            }
+
+            const backend = new CachedUltraHonkBackend(bytecode, backendOptions);
+            const noir = new Noir(depositCircuit);
+            backendRef.current = backend;
+            noirRef.current = noir;
+            setIsInitialized(true);
+        } catch (error) {
+            console.error('Failed to initialize backend:', error);
+            throw error;
+        } finally {
+            setIsInitializing(false);
+        }
+    }, [isInitialized]);
 
     // Initialize user_key from existing signature when component mounts
     useEffect(() => {
@@ -429,7 +470,7 @@ export function useDeposit() {
             nonce: e.nonce.toString(),
             amount: e.amount?.toString() || 'null'
         })));
-        
+
         if (!tokenAddress || !amount) {
             throw new Error('Missing required inputs: tokenAddress or amount');
         }
@@ -528,7 +569,7 @@ export function useDeposit() {
                 nonce: e.nonce.toString(),
                 amount: e.amount?.toString() || 'null'
             })));
-            
+
             if (tokenCurrentNonce !== null && tokenCurrentNonce !== undefined) {
                 // Use the nonce from state (discovered via AccountModal or nonce discovery)
                 tokenCurrentNonceValue = tokenCurrentNonce;
@@ -567,7 +608,7 @@ export function useDeposit() {
             const balanceEntryForPreviousNonce = balanceEntries.find(
                 entry => entry.tokenAddress === tokenAddressBigInt && entry.nonce === finalTokenPreviousNonce
             );
-            
+
             console.log(`  Balance Entry for Previous Nonce ${finalTokenPreviousNonce.toString()}:`, balanceEntryForPreviousNonce ? {
                 nonce: balanceEntryForPreviousNonce.nonce.toString(),
                 amount: balanceEntryForPreviousNonce.amount?.toString() || 'null'
@@ -928,7 +969,7 @@ export function useDeposit() {
             nonce: e.nonce.toString(),
             amount: e.amount?.toString() || 'null'
         })));
-        
+
         // If token is not initialized, redirect to initialize
         if (isTokenInitialized === false) {
             setProofError('Token is not initialized. Please use the Initialize page first.');
@@ -954,28 +995,81 @@ export function useDeposit() {
             setIsProving(true);
             setProofError(null);
             setProvingTime(null);
-            setGroth16Args(null);
 
             const startTime = performance.now();
+            await initializeBackend();
 
-            const circuitInputs = await calculateCircuitInputs();
-            const groth16 = await proveWithSnarkjs(circuitInputs as Record<string, string | string[]>, 'deposit');
-            setGroth16Args(groth16);
-            setProvingTime(Math.round(performance.now() - startTime));
-            setIsProving(false);
-            return;
+            if (!backendRef.current || !noirRef.current) {
+                throw new Error('Failed to initialize backend');
+            }
+
+            // Calculate circuit inputs dynamically
+            const inputs = await calculateCircuitInputs();
+
+            // Calculate new_nonce_commitment exactly as circuit does
+            const { poseidon2Hash } = await import('@aztec/foundation/crypto');
+            const userKeyBigInt = BigInt(inputs.user_key);
+            const chainIdBigInt = BigInt(inputs.chain_id);
+            const tokenAddressBigInt = BigInt(inputs.token_address);
+            const previousNonceBigInt = BigInt(inputs.previous_nonce);
+            const newNonceBigInt = previousNonceBigInt + BigInt(1);
+
+            const spendingKeyResult = await poseidon2Hash([userKeyBigInt, chainIdBigInt, tokenAddressBigInt]);
+            let spendingKeyBigInt: bigint;
+            if (typeof spendingKeyResult === 'bigint') {
+                spendingKeyBigInt = spendingKeyResult;
+            } else if ('toBigInt' in spendingKeyResult && typeof (spendingKeyResult as any).toBigInt === 'function') {
+                spendingKeyBigInt = (spendingKeyResult as any).toBigInt();
+            } else {
+                spendingKeyBigInt = BigInt((spendingKeyResult as any).toString());
+            }
+
+            const newNonceCommitmentResult = await poseidon2Hash([spendingKeyBigInt, newNonceBigInt, tokenAddressBigInt]);
+            let newNonceCommitmentBigInt: bigint;
+            if (typeof newNonceCommitmentResult === 'bigint') {
+                newNonceCommitmentBigInt = newNonceCommitmentResult;
+            } else if ('toBigInt' in newNonceCommitmentResult && typeof (newNonceCommitmentResult as any).toBigInt === 'function') {
+                newNonceCommitmentBigInt = (newNonceCommitmentResult as any).toBigInt();
+            } else {
+                newNonceCommitmentBigInt = BigInt((newNonceCommitmentResult as any).toString());
+            }
+
+            //@ts-ignore
+            const { witness } = await noirRef.current!.execute(inputs, { keccak: true });
+
+            //@ts-ignore
+            const proofResult = await backendRef.current!.generateProof(witness, { keccak: true });
+            const proofHex = Buffer.from(proofResult.proof).toString('hex');
+
+            const publicInputsArray = (proofResult.publicInputs || []).slice(0, 11);
+            const publicInputsHex = publicInputsArray.map((input: any) => {
+                if (typeof input === 'string' && input.startsWith('0x')) {
+                    return input;
+                }
+                if (typeof input === 'bigint') {
+                    return `0x${input.toString(16).padStart(64, '0')}`;
+                }
+                const hex = BigInt(input).toString(16);
+                return `0x${hex.padStart(64, '0')}`;
+            });
+
+            const endTime = performance.now();
+            const provingTimeMs = Math.round(endTime - startTime);
+            setProvingTime(provingTimeMs);
+            setProof(proofHex);
+            setPublicInputs(publicInputsHex);
         } catch (error) {
             console.error('Error generating proof:', error);
             setProofError(error instanceof Error ? error.message : 'Failed to generate proof');
         } finally {
             setIsProving(false);
         }
-    }, [zkAddress, tokenAddress, amount, tokenCurrentNonce, isTokenInitialized, calculateCircuitInputs]);
+    }, [zkAddress, tokenAddress, amount, tokenCurrentNonce, isTokenInitialized, initializeBackend, calculateCircuitInputs]);
 
     // Handle deposit transaction
     const handleDeposit = useCallback(async () => {
-        if (!groth16Args || groth16Args.publicSignals.length < 11) {
-            setTxError('Proof and public inputs are required. Generate a Circom proof first.');
+        if (!proof || !publicInputs || publicInputs.length === 0) {
+            setTxError('Proof and public inputs are required');
             return;
         }
         if (!address) {
@@ -999,7 +1093,7 @@ export function useDeposit() {
             const activeChainId = chainId || publicClient?.chain?.id || getActiveChain().id;
             const activeChain = publicClient?.chain || getChainById(activeChainId);
             const rpcUrl = getRpcUrlForChain(activeChainId);
-            
+
             const client = publicClient || createPublicClient({
                 chain: activeChain,
                 transport: http(rpcUrl)
@@ -1038,13 +1132,24 @@ export function useDeposit() {
                 }
             }
 
-            const publicSignals = groth16Args.publicSignals.slice(0, 11).map((h) => (h.startsWith('0x') ? h : `0x${h}`) as `0x${string}`);
+            // Convert proof hex string to bytes
+            const proofBytes = `0x${proof}`;
+
+            // Slice public inputs to 11 elements (deposit circuit has 11 public inputs)
+            const slicedInputs = publicInputs.slice(0, 11);
+            const publicInputsBytes32 = slicedInputs.map((input: string) => {
+                const hex = input.startsWith('0x') ? input.slice(2) : input;
+                return `0x${hex.padStart(64, '0')}` as `0x${string}`;
+            });
 
             console.log('📤 DEPOSIT TRANSACTION - Parameters:');
             console.log('  Contract Address:', ArkanaAddress);
             console.log('  Function: deposit');
-            console.log('  Public Signals Count:', publicSignals.length);
+            console.log('  Public Inputs Count:', publicInputsBytes32.length);
+            console.log('  Public Inputs (all):', publicInputsBytes32.map((pi, idx) => `[${idx}] ${pi}`));
+            console.log('  Previous Nonce (from public inputs - should match):', tokenCurrentNonce ? (tokenCurrentNonce > BigInt(0) ? tokenCurrentNonce - BigInt(1) : BigInt(0)).toString() : 'null');
 
+            // Simulate the transaction first to catch errors
             setIsSimulating(true);
             try {
                 console.log('🔄 Simulating deposit transaction...');
@@ -1053,13 +1158,23 @@ export function useDeposit() {
                     address: ArkanaAddress as `0x${string}`,
                     abi: ArkanaAbi,
                     functionName: 'deposit',
-                    args: [groth16Args.pA, groth16Args.pB, groth16Args.pC, publicSignals],
+                    args: [proofBytes as `0x${string}`, publicInputsBytes32 as readonly `0x${string}`[]],
                 });
+
                 console.log('✅ Simulation successful!');
+                console.log('📊 Simulation result:', simResult);
                 setSimulationResult(simResult);
-            } catch (simulationError: unknown) {
-                const err = simulationError as { shortMessage?: string; message?: string };
-                setTxError(err?.shortMessage || err?.message || 'Simulation errored');
+            } catch (simulationError: any) {
+                let errorMessage = 'Transaction simulation failed';
+                if (simulationError?.shortMessage) {
+                    errorMessage = simulationError.shortMessage;
+                } else if (simulationError?.message) {
+                    errorMessage = simulationError.message;
+                }
+
+                console.error('❌ Simulation failed:', simulationError);
+                console.error('Error message:', errorMessage);
+                setTxError('Simulation errored');
                 setIsSubmitting(false);
                 setIsSimulating(false);
                 setSimulationResult(null);
@@ -1068,18 +1183,19 @@ export function useDeposit() {
                 setIsSimulating(false);
             }
 
+            // Send transaction using wagmi
             writeContract({
                 address: ArkanaAddress as `0x${string}`,
                 abi: ArkanaAbi,
                 functionName: 'deposit',
-                args: [groth16Args.pA, groth16Args.pB, groth16Args.pC, publicSignals],
+                args: [proofBytes as `0x${string}`, publicInputsBytes32 as readonly `0x${string}`[]],
             });
         } catch (error) {
             console.error('Error in handleDeposit:', error);
             setTxError(error instanceof Error ? error.message : 'Failed to process transaction');
             setIsSubmitting(false);
         }
-    }, [groth16Args, address, tokenAddress, amount, tokenDecimals, publicClient, checkAllowance, allowance, writeContract]);
+    }, [proof, publicInputs, address, tokenAddress, amount, tokenDecimals, publicClient, checkAllowance, allowance, writeContract]);
 
     // Update txHash when hash changes
     useEffect(() => {
@@ -1143,7 +1259,6 @@ export function useDeposit() {
         tokenName,
         tokenSymbol,
         isCalculatingInputs,
-        groth16Args,
         // Actions
         proveDeposit,
         handleDeposit,
@@ -1151,4 +1266,3 @@ export function useDeposit() {
         checkAllowance,
     };
 }
-

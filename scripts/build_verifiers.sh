@@ -440,16 +440,8 @@ echo ""
 # Ensure we're in the circom directory
 cd "$CIRCOM_DIR"
 
-# Build required libraries first
+# Build required libraries first (Poseidon is static lib/poseidon/poseidon.circom; only Lean-IMT is generated)
 echo "Building required libraries..."
-if [ ! -f "lib/poseidon/poseidon2.circom" ]; then
-    echo "Generating Poseidon2 library..."
-    npm run build:poseidon2 || {
-        echo "Error: Failed to build Poseidon2"
-        exit 1
-    }
-fi
-
 if [ ! -f "lib/lean-imt-verify/lean_imt_verify.circom" ]; then
     echo "Generating Lean-IMT library..."
     npm run build:lean-imt || {

@@ -2,10 +2,9 @@
 pragma solidity ^0.8.13;
 
 import "forge-std/Test.sol";
-import "../src/merkle/LeanIMTPoseidon2.sol";
-import "../src/merkle/Poseidon2HuffWrapper.sol";
-import "../lib/poseidon2-evm/src/Field.sol";
-import "foundry-huff/HuffDeployer.sol";
+import "../src/merkle/LeanIMTPoseidon.sol";
+import "../src/merkle/PoseidonHasher.sol";
+import "../src/merkle/IPoseidonHasher.sol";
 
 /**
  * @title MerkleTreeTest
@@ -13,7 +12,7 @@ import "foundry-huff/HuffDeployer.sol";
  *      generates proofs for each leaf, and writes results to JSON
  */
 contract MerkleTreeTest is Test {
-    Poseidon2HuffWrapper public poseidon2Hasher;
+    IPoseidonHasher public poseidonHasher;
     LeanIMTData public tree;
 
     // Store leaves and their insertion order
@@ -24,10 +23,7 @@ contract MerkleTreeTest is Test {
     mapping(uint256 => mapping(uint256 => uint256)) public sideNodesAtInsertion; // [leafIndex][level] => sideNode
 
     function setUp() public {
-        // Deploy the Huff Poseidon2 contract first
-        address poseidon2Huff = HuffDeployer.deploy("huff/Poseidon2");
-        // Then deploy the wrapper with the Huff contract address
-        poseidon2Hasher = new Poseidon2HuffWrapper(poseidon2Huff);
+        poseidonHasher = new PoseidonHasher();
     }
 
     /**
@@ -37,10 +33,7 @@ contract MerkleTreeTest is Test {
      * @return The hash result
      */
     function poseidon_hash2(uint256 x, uint256 y) public view returns (uint256) {
-        Field.Type xField = Field.toField(x);
-        Field.Type yField = Field.toField(y);
-        Field.Type result = poseidon2Hasher.hash_2(xField, yField);
-        return Field.toUint256(result);
+        return poseidonHasher.hash_2(x, y);
     }
 
     /**
@@ -57,9 +50,9 @@ contract MerkleTreeTest is Test {
         }
 
         // Insert the leaf (simulating contract behavior)
-        LeanIMTPoseidon2.insert(tree, poseidon2Hasher, leaf);
+        LeanIMTPoseidon.insert(tree, poseidonHasher, leaf);
 
-        uint256 newRoot = LeanIMTPoseidon2.root(tree);
+        uint256 newRoot = LeanIMTPoseidon.root(tree);
         leaves.push(leaf);
         roots.push(newRoot);
 
@@ -176,7 +169,7 @@ contract MerkleTreeTest is Test {
 
             uint256 node = leaf;
 
-            // Insert logic (same as LeanIMTPoseidon2.insert)
+            // Insert logic (same as LeanIMTPoseidon.insert)
             for (uint256 level = 0; level < tempDepth; level++) {
                 if ((index >> level) & 1 == 1) {
                     // Right child: hash with left sibling
@@ -244,7 +237,7 @@ contract MerkleTreeTest is Test {
      * @dev Hash two values using Poseidon2
      */
     function _hash2(uint256 left, uint256 right) internal view returns (uint256) {
-        return LeanIMTPoseidon2._hash2(poseidon2Hasher, left, right);
+        return poseidonHasher.hash_2(left, right);
     }
 
     /**
@@ -274,7 +267,7 @@ contract MerkleTreeTest is Test {
         console.log("");
 
         // Get final tree state
-        uint256 finalRoot = LeanIMTPoseidon2.root(tree);
+        uint256 finalRoot = LeanIMTPoseidon.root(tree);
         uint256 finalDepth = tree.depth;
         uint256 finalSize = tree.size;
 
@@ -375,7 +368,7 @@ contract MerkleTreeTest is Test {
         console.log("");
 
         // Get final tree state
-        uint256 finalRoot = LeanIMTPoseidon2.root(tree);
+        uint256 finalRoot = LeanIMTPoseidon.root(tree);
         uint256 finalDepth = tree.depth;
         uint256 finalSize = tree.size;
 

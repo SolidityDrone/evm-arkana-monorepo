@@ -1,1 +1,49 @@
-{"name":"evm-arkana-frontend","version":"0.1.0","private":true,"scripts":{"dev":"next dev --turbopack","build":"next build","start":"next start","lint":"next lint","copy-circuits":"node scripts/copy-circuit-artifacts.mjs"},"dependencies":{"@aztec/foundation":"1.2.1","@noble/curves":"2.0.1","@noble/hashes":"^2.0.1","@pinata/sdk":"^2.0.0","@reown/appkit":"^1.7.3","@reown/appkit-adapter-wagmi":"^1.7.3","@tanstack/react-query":"^5.74.4","@wagmi/core":"^2.15.0","@web3icons/react":"^4.1.17","buffer":"^6.0.3","clsx":"^2.1.1","lucide-react":"^0.554.0","next":"15.3.1","qrcode.react":"^4.2.0","react":"^19.0.0","react-dom":"^19.0.0","snarkjs":"^0.7.4","tailwind-merge":"^2.5.4","tlock-js":"^0.9.0","viem":"^2.23.2","wagmi":"^2.15.0"},"devDependencies":{"@eslint/eslintrc":"^3","@tailwindcss/postcss":"^4","@types/node":"^20","@types/react":"^19","@types/react-dom":"^19","eslint":"^9","eslint-config-next":"15.3.1","postcss":"^8.5","tailwindcss":"^4","tailwindcss-animate":"^1.0.7","tw-animate-css":"1.3.3","typescript":"^5"},"packageManager":"pnpm@9.15.0"}
+{
+  "name": "evm-arkana-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@noble/curves": "2.0.1",
+    "@noble/hashes": "^2.0.1",
+    "@pinata/sdk": "^2.0.0",
+    "@reown/appkit": "^1.7.3",
+    "@reown/appkit-adapter-wagmi": "^1.7.3",
+    "@tanstack/react-query": "^5.74.4",
+    "@wagmi/core": "^2.15.0",
+    "@web3icons/react": "^4.1.17",
+    "buffer": "^6.0.3",
+    "circomlibjs": "^0.1.7",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.554.0",
+    "next": "^16.1.6",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "snarkjs": "^0.7.4",
+    "tailwind-merge": "^2.5.4",
+    "tlock-js": "^0.9.0",
+    "viem": "^2.23.2",
+    "wagmi": "^2.15.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "^16.1.6",
+    "postcss": "^8.5",
+    "tailwindcss": "^4",
+    "tailwindcss-animate": "^1.0.7",
+    "tw-animate-css": "1.3.3",
+    "typescript": "^5"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

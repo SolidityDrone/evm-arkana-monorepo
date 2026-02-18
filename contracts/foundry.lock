@@ -1,20 +1,29 @@
 {
-  "../lib/foundry-huff": {
-    "rev": "7d1ce15ccf92bd68458c7e28e0ae847b64b4fc74"
-  },
   "lib/aave-v3-core": {
     "tag": {
       "name": "v1.19.4",
       "rev": "b74526a7bc67a3a117a1963fc871b3eb8cea8435"
     }
   },
+  "lib/forge-std": {
+    "tag": {
+      "name": "v1.15.0",
+      "rev": "0844d7e1fc5e60d77b68e469bff60265f236c398"
+    }
+  },
   "lib/foundry-huff": {
     "rev": "7d1ce15ccf92bd68458c7e28e0ae847b64b4fc74"
   },
-  "lib/v4-core": {
+  "lib/openzeppelin-contracts": {
     "tag": {
-      "name": "v4.0.0",
-      "rev": "e50237c43811bd9b526eff40f26772152a42daba"
+      "name": "v5.5.0",
+      "rev": "fcbae5394ae8ad52d8e580a3477db99814b9d565"
     }
+  },
+  "lib/v4-core": {
+    "rev": "e50237c43811bd9b526eff40f26772152a42daba"
+  },
+  "lib/v4-periphery": {
+    "rev": "3779387e5d296f39df543d23524b050f89a62917"
   }
 }

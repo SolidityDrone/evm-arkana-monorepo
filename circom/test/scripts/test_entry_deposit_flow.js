@@ -10,7 +10,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { poseidon2Hash2 } = require('./poseidon2_hash_helper');
+const { poseidon2Hash2 } = require('./poseidon_hash_helper');
+const { getSignerKeyPair } = require('./eddsa_helper');
 const { simulateLeanIMTInsert, generateMerkleProof } = require('./lean_imt_helpers');
 const { simulateContractShareAddition } = require('./babyjub_operations');
 
@@ -71,6 +72,8 @@ async function testEntryDepositFlow() {
     console.log('STEP 1: Running Entry Circuit...');
     console.log('');
 
+    const { signer_pubkey_hash } = await getSignerKeyPair();
+    // Entry circuit only has user_key, token_address, chain_id (no signer_pubkey_hash)
     const entryInput = {
         user_key: hexToDecimal("0x19e573f3801c7b2e4619998342e8e305e1692184cbacd220c04198a04c36b7d2"),
         token_address: hexToDecimal("0x7775e4b6f4d40be537b55b6c47e09ada0157bd"),
@@ -164,7 +167,7 @@ async function testEntryDepositFlow() {
     console.log(`  previous_shares: ${depositInput.previous_shares}`);
     console.log(`  previous_commitment_leaf: ${decimalToHex(depositInput.previous_commitment_leaf)}`);
     console.log(`  commitment_index: ${depositInput.commitment_index}`);
-    console.log(`  tree_depth: ${depositInput.tree_depth}`);
+    console.log(`  merkle_proof length: ${depositInput.merkle_proof.length}`);
     console.log(`  expected_root: ${decimalToHex(depositInput.expected_root)}`);
     console.log('');
 
@@ -234,6 +237,7 @@ async function testEntryDepositFlow() {
 
         // Write test data to file for reference
         const testDataPath = path.join(__dirname, '../../test/inputs/entry_deposit_flow_output.json');
+        fs.mkdirSync(path.dirname(testDataPath), { recursive: true });
         fs.writeFileSync(testDataPath, JSON.stringify(testData, null, 2));
         console.log(`✅ Test data saved to: ${testDataPath}`);
         console.log('');

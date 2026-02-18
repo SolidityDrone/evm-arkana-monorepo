@@ -7,17 +7,23 @@ import {IERC20} from "@oz/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@oz/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@oz/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@oz/contracts/utils/math/Math.sol";
-import {IPool} from "@aave/core-v3/interfaces/IPool.sol";
+import {IPool, DataTypes} from "@aave/core-v3/interfaces/IPool.sol";
+import {ReserveConfiguration} from "@aave/core-v3/protocol/libraries/configuration/ReserveConfiguration.sol";
+import {WadRayMath} from "@aave/core-v3/protocol/libraries/math/WadRayMath.sol";
+import {IScaledBalanceToken} from "@aave/core-v3/interfaces/IScaledBalanceToken.sol";
 import "./Arkana.sol";
 
 /**
  * @title ArkanaVault
  * @notice ERC4626 vault wrapper for Arkana privacy-preserving payment system
- * @dev This vault implements the ERC4626 standard using oz's implementation
- *      and wraps the Arkana contract to provide a standard vault interface
+ * @dev Compatible with IArkanaVault; Arkana uses the interface to avoid embedding full vault bytecode.
  */
 contract ArkanaVault is ERC4626 {
     using SafeERC20 for IERC20;
+
+    error AaveSupplyFailed();
+    error AaveWithdrawFailed();
+    error AlreadyInitialized();
 
     /// @notice The Arkana contract address
     Arkana public immutable arkana;
@@ -25,8 +31,14 @@ contract ArkanaVault is ERC4626 {
     /// @notice The token address this vault is for (underlying token, not aToken)
     address public immutable vaultToken;
 
-    /// @notice The Aave v3 Pool contract
+    /// @notice The Aave v3 Pool contract (unused when aaveVault is false)
     IPool public immutable aavePool;
+
+    /// @notice When true, vault supplies/withdraws via Aave; when false, acts as a normal vault (no Aave). Set in initialize().
+    bool public aaveVault;
+
+    /// @notice True after initialize() has been called (one-time)
+    bool private _initialized;
 
     /**
      * @dev Modifier to ensure only the Arkana contract can call the function
@@ -37,14 +49,13 @@ contract ArkanaVault is ERC4626 {
     }
 
     /**
-     * @param asset_ The ERC4626 asset (aToken from Aave, not the underlying token)
+     * @param asset_ The ERC4626 asset: aToken when token is on Aave, underlying token otherwise (factory sets this)
      * @param arkana_ The Arkana contract address
-     * @param vaultToken_ The underlying token address in Arkana (used for tracking, not the asset)
+     * @param vaultToken_ The underlying token address in Arkana
      * @param aavePool_ The Aave v3 Pool contract address
      * @param name_ The name of the vault token
      * @param symbol_ The symbol of the vault token
-     * @dev The asset is the aToken because deposits go to Aave and are converted to aTokens
-     * @dev The vaultToken is the underlying token address for Arkana's internal tracking
+     * @dev aaveVault is set in initialize() by checking if the token is supported by AavePool
      */
     constructor(
         IERC20 asset_,
@@ -57,18 +68,30 @@ contract ArkanaVault is ERC4626 {
         arkana = arkana_;
         vaultToken = vaultToken_;
         aavePool = aavePool_;
-        // Note: asset_ is the aToken, vaultToken_ is the underlying token
-        // They are different by design - the vault tracks aToken balance (includes yield)
     }
 
     /**
-     * @dev Returns the total amount of assets managed by this vault
-     * @return Total assets (aTokens) held in this vault
-     * @notice The vault now holds the aTokens directly, so we return the vault's balance
+     * @dev One-time init: sets aaveVault from Aave support (token supported on AavePool => use Aave, else skip Aave ops).
+     * @notice Call once after deployment (e.g. by factory). If asset is aToken then aaveVault = true; else false.
+     */
+    function initialize() external {
+        if (_initialized) revert AlreadyInitialized();
+        _initialized = true;
+        // asset() == vaultToken means we use underlying only (not on Aave); otherwise asset is aToken
+        aaveVault = (address(asset()) != vaultToken);
+    }
+
+    /**
+     * @dev Returns the total amount of assets managed by this vault (in underlying terms)
+     * @return For aaveVault: aToken balance + underlying buffer; for non-Aave: underlying balance only
      */
     function totalAssets() public view override returns (uint256) {
-        // Return the vault's own aToken balance (vault holds the assets per ERC4626)
-        return IERC20(asset()).balanceOf(address(this));
+        if (!aaveVault) {
+            return IERC20(asset()).balanceOf(address(this));
+        }
+        uint256 aTokenBalance = IERC20(asset()).balanceOf(address(this));
+        uint256 underlyingBalance = IERC20(vaultToken).balanceOf(address(this));
+        return aTokenBalance + underlyingBalance;
     }
 
     /**
@@ -290,58 +313,87 @@ contract ArkanaVault is ERC4626 {
         _burn(from, shares);
     }
 
-    /**
-     * @dev Withdraw aTokens directly
-     * @param to Address to receive the aTokens
-     * @param aTokenAmount Amount of aTokens to withdraw
-     * @notice Only callable by the Arkana contract
-     * @dev Transfers aTokens from vault to Arkana contract for fee payments
-     */
-    function withdrawATokens(address to, uint256 aTokenAmount) external onlyArkana {
-        IERC20(asset()).safeTransfer(to, aTokenAmount);
-    }
-
     // ============================================
     // AAVE INTEGRATION FUNCTIONS
     // ============================================
 
     /**
-     * @dev Supply underlying tokens to Aave
-     * @param amount Amount of underlying tokens to supply
-     * @notice Only callable by the Arkana contract
-     * @dev Arkana transfers underlying tokens to vault, then vault supplies to Aave
-     * @dev The vault receives aTokens from Aave which are held as the vault's assets
+     * @dev Supply underlying tokens to Aave, up to the reserve supply cap. No-op for non-Aave vaults (just receives tokens).
+     * @param amount Amount of underlying tokens to supply (or to receive when !aaveVault)
+     * @notice Only callable by the Arkana contract. When aaveVault is false, only pulls tokens to this vault (no Aave).
      */
     function supplyToAave(uint256 amount) external onlyArkana {
-        // Transfer underlying tokens from Arkana to this vault
         IERC20(vaultToken).safeTransferFrom(msg.sender, address(this), amount);
+        if (!aaveVault) {
+            return;
+        }
 
-        // Approve Aave Pool to spend underlying tokens
-        IERC20(vaultToken).approve(address(aavePool), amount);
-        //TODO: IMPORTANT this should be a try catch to avoid supplyCap error from Aave (might be a blocker to access)
-        //      if we do so, we either make explicit that you can only deposit when aave is not full capacity or share the yield,
-        //      thus making this less incentivizing than aave for some market in given periods
+        uint256 supplyAmount = _getAaveSupplyHeadroom(amount);
+        if (supplyAmount == 0) {
+            return;
+        }
 
-        // Supply to Aave - vault receives aTokens
-        aavePool.supply(vaultToken, amount, address(this), 0);
+        IERC20(vaultToken).approve(address(aavePool), supplyAmount);
+        try aavePool.supply(vaultToken, supplyAmount, address(this), 0) {
+        }
+        catch {
+            revert AaveSupplyFailed();
+        }
     }
 
     /**
-     * @dev Withdraw underlying tokens from Aave
-     * @param amount Amount of underlying tokens to withdraw
+     * @dev Returns how much we can supply to Aave without exceeding the supply cap
+     * @param amount Desired supply amount
+     * @return supplyAmount min(amount, headroom); 0 if reserve has no cap or headroom is 0
+     */
+    function _getAaveSupplyHeadroom(uint256 amount) internal view returns (uint256 supplyAmount) {
+        DataTypes.ReserveData memory reserve = aavePool.getReserveData(vaultToken);
+        uint256 supplyCap = ReserveConfiguration.getSupplyCap(reserve.configuration);
+        if (supplyCap == 0) {
+            return amount; // No cap
+        }
+        uint256 decimals = ReserveConfiguration.getDecimals(reserve.configuration);
+        uint256 maxSupplyWei = supplyCap * (10 ** decimals);
+        uint256 scaledTotal =
+            IScaledBalanceToken(reserve.aTokenAddress).scaledTotalSupply() + uint256(reserve.accruedToTreasury);
+        uint256 currentSupplyWei = WadRayMath.rayMul(scaledTotal, uint256(reserve.liquidityIndex));
+        if (currentSupplyWei >= maxSupplyWei) {
+            return 0;
+        }
+        uint256 headroom = maxSupplyWei - currentSupplyWei;
+        return amount < headroom ? amount : headroom;
+    }
+
+    /**
+     * @dev Withdraw underlying tokens: for aaveVault use buffer first then Aave; for non-Aave just transfer from vault.
+     * @param amount Amount of underlying tokens to send to recipient
      * @param to Address to receive the underlying tokens
-     * @return amountWithdrawn The actual amount withdrawn from Aave
-     * @notice Only callable by the Arkana contract
-     * @dev Vault withdraws from Aave (burns aTokens) and transfers underlying tokens to recipient
+     * @return amountWithdrawn The total amount sent to `to`
      */
     function withdrawFromAave(uint256 amount, address to) external onlyArkana returns (uint256 amountWithdrawn) {
-        // Withdraw from Aave - this burns aTokens and sends underlying tokens to this vault
-        amountWithdrawn = aavePool.withdraw(vaultToken, amount, address(this));
-
-        // Transfer underlying tokens to the recipient (Arkana or user)
-        IERC20(vaultToken).safeTransfer(to, amountWithdrawn);
-
-        return amountWithdrawn;
+        if (!aaveVault) {
+            IERC20(vaultToken).safeTransfer(to, amount);
+            return amount;
+        }
+        uint256 fromVault = IERC20(vaultToken).balanceOf(address(this));
+        if (fromVault > amount) {
+            fromVault = amount;
+        }
+        if (fromVault > 0) {
+            IERC20(vaultToken).safeTransfer(to, fromVault);
+        }
+        uint256 needFromAave = amount - fromVault;
+        if (needFromAave == 0) {
+            return amount;
+        }
+        uint256 fromAave;
+        try aavePool.withdraw(vaultToken, needFromAave, address(this)) returns (uint256 withdrawn) {
+            fromAave = withdrawn;
+        } catch {
+            revert AaveWithdrawFailed();
+        }
+        IERC20(vaultToken).safeTransfer(to, fromAave);
+        return fromVault + fromAave;
     }
 }
 

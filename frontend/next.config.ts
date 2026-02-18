@@ -7,6 +7,8 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: false,
   },
+  // Transpile CJS/ESM packages that Next may not resolve by default
+  transpilePackages: ['circomlibjs'],
   // Disable sourcemaps in dev to avoid warnings
   productionBrowserSourceMaps: false,
   webpack: (config, { isServer, webpack, dev }) => {

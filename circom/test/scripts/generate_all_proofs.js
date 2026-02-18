@@ -18,7 +18,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 // Import helpers from flow tests
-const { poseidon2Hash1, poseidon2Hash2, poseidon2Hash3 } = require('./poseidon2_hash_helper');
+const { poseidon2Hash1, poseidon2Hash2, poseidon2Hash3 } = require('./poseidon_hash_helper');
 const { simulateLeanIMTInsert, generateMerkleProof } = require('./lean_imt_helpers');
 const { simulateContractShareAddition, scalarMul } = require('./babyjub_operations');
 
@@ -387,9 +387,9 @@ async function getInputsFromFlow(circuitName, sharedState = {}) {
         const note_commitment_x = sendWitness[10].toString();
         const note_commitment_y = sendWitness[11].toString();
 
-        // Calculate note_stack_r
+        // DH circuit outputs shared_key = x-coordinate; send uses note_stack_r = Poseidon2Hash1(shared_key)
         const sharedKeyPoint = await scalarMul(senderPrivateKey, myPublicKey);
-        const sharedKey = await poseidon2Hash2(sharedKeyPoint.x, sharedKeyPoint.y);
+        const sharedKey = sharedKeyPoint.x.toString();
         const note_stack_r = await poseidon2Hash1(sharedKey);
 
         const note_stack_leaf = await poseidon2Hash2(note_commitment_x, note_commitment_y);

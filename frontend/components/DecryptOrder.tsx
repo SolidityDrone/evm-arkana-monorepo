@@ -109,22 +109,17 @@ export function DecryptOrder() {
         if (!userKey) throw new Error('User key not available');
 
         await ensureBufferPolyfill();
-        const { poseidon2Hash } = await import('@aztec/foundation/crypto');
+        const { getSpendingKey, poseidonHash } = await import('@/lib/circuit-utils');
+        const { getSignerIdentityFromUserKey } = await import('@/lib/eddsa-circuit');
 
         const tokenBigInt = BigInt(tokenAddress);
         const chainIdBigInt = BigInt(chainId);
+        const signerIdentity = await getSignerIdentityFromUserKey(userKey);
+        const signerPubkeyHash = BigInt(signerIdentity.signer_pubkey_hash);
 
-        // spending_key = poseidon2([user_key, chain_id, token_address])
-        const spendingKeyResult = await poseidon2Hash([userKey, chainIdBigInt, tokenBigInt]);
-        const spendingKey = typeof spendingKeyResult === 'bigint'
-            ? spendingKeyResult
-            : spendingKeyResult.toBigInt();
-
-        // nonce_commitment = poseidon2([spending_key, nonce, token_address])
-        const commitmentResult = await poseidon2Hash([spendingKey, nonce, tokenBigInt]);
-        const commitment = typeof commitmentResult === 'bigint'
-            ? commitmentResult
-            : commitmentResult.toBigInt();
+        // spending_key = Hash4(user_key, chain_id, token_address, signer_pubkey_hash)
+        const spendingKey = await getSpendingKey(userKey, chainIdBigInt, tokenBigInt, signerPubkeyHash);
+        const commitment = await poseidonHash([spendingKey, nonce, tokenBigInt]);
 
         return '0x' + commitment.toString(16).padStart(64, '0');
     }, [userKey, chainId]);

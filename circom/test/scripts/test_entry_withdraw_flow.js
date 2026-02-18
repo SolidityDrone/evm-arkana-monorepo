@@ -10,7 +10,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { poseidon2Hash2, poseidon2Hash3 } = require('./poseidon2_hash_helper');
+const { poseidon2Hash2, poseidon2Hash3, getSpendingKeyFromHashes } = require('./poseidon_hash_helper');
+const { getSignerKeyPair, signWithdrawMessage, TEST_SIGNER_PRIVKEY_HEX } = require('./eddsa_helper');
 const { simulateLeanIMTInsert, generateMerkleProof } = require('./lean_imt_helpers');
 const { simulateContractShareAddition } = require('./babyjub_operations');
 
@@ -69,6 +70,7 @@ async function testEntryDepositWithdrawFlow() {
     console.log('STEP 1: Running Entry Circuit...');
     console.log('');
     
+    const { signer_pubkey_hash } = await getSignerKeyPair();
     const entryInput = {
         user_key: hexToDecimal("0x19e573f3801c7b2e4619998342e8e305e1692184cbacd220c04198a04c36b7d2"),
         token_address: hexToDecimal("0x7775e4b6f4d40be537b55b6c47e09ada0157bd"),
@@ -254,6 +256,17 @@ async function testEntryDepositWithdrawFlow() {
     // For withdraw, entry used m1=1 (base value), contract added shares*G
     // So final commitment has m1 = 1 + shares = 1 + 50 = 51
     const previousShares = (BigInt(1) + BigInt(depositAmount)).toString(); // Base 1 + shares 50 = 51
+    const relayerFeeAmount = "1";
+    const currentNonceForWithdraw = "2"; // previous_nonce is 1, sign with current_nonce = previous + 1
+    const { signature } = await signWithdrawMessage(
+        TEST_SIGNER_PRIVKEY_HEX,
+        entryInput.token_address,
+        entryInput.chain_id,
+        withdrawAmount,
+        relayerFeeAmount,
+        currentNonceForWithdraw
+    );
+    const { signer_public_key } = await getSignerKeyPair();
     const withdrawInput = {
         user_key: entryInput.user_key,
         token_address: entryInput.token_address,
@@ -271,7 +284,7 @@ async function testEntryDepositWithdrawFlow() {
         merkle_proof: await generateMerkleProof(depositLeaf, 1, treeDepth, allLeaves, treeSize, hashWrapper),
         arbitrary_calldata_hash: hexToDecimal("0x1234567890abcdef"),
         receiver_address: hexToDecimal("0x742d35cc6634c0532925a3b8d4c9db96c4b4d8b6"),
-        relayer_fee_amount: "1"
+        relayer_fee_amount: relayerFeeAmount
     };
     
     // Verify we can reconstruct the deposit leaf
@@ -285,7 +298,7 @@ async function testEntryDepositWithdrawFlow() {
     
     // Debug: Try to manually reconstruct to see what we get
     try {
-        // Compute spending_key = Poseidon2Hash3(user_key, chain_id, token_address)
+        // Circuit uses spending_key = Hash3(user_key, chain_id, token_address) only (no signer_pubkey_hash)
         const spending_key = await poseidon2Hash3(
             withdrawInput.user_key,
             withdrawInput.chain_id,
@@ -337,7 +350,8 @@ async function testEntryDepositWithdrawFlow() {
             const reconWitness = await wtnsCalculator.calculateWitness(reconInput, 0);
             const reconCommitmentX = reconWitness[1].toString();
             const reconCommitmentY = reconWitness[2].toString();
-            const reconLeaf = reconWitness[3].toString();
+            // Compute leaf in JS with same hash as main flow (circuit witness[3] may use different Poseidon build)
+            const reconLeaf = await poseidon2Hash2(reconCommitmentX, reconCommitmentY);
             
             console.log('Reconstruction test:');
             const depositFinalPoint = global.depositContractResult ? global.depositContractResult.finalPoint : null;
@@ -430,6 +444,7 @@ async function testEntryDepositWithdrawFlow() {
         };
         
         const testDataPath = path.join(__dirname, '../../test/inputs/entry_deposit_withdraw_flow_output.json');
+        fs.mkdirSync(path.dirname(testDataPath), { recursive: true });
         fs.writeFileSync(testDataPath, JSON.stringify(testData, null, 2));
         console.log(`✅ Test data saved to: ${testDataPath}`);
         console.log('');

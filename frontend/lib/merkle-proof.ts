@@ -1,6 +1,6 @@
 'use client';
 
-import { poseidon2Hash } from '@aztec/foundation/crypto';
+import { poseidonHash } from '@/lib/circuit-utils';
 
 // BN254 scalar field modulus
 const BN254_SCALAR_FIELD_MODULUS = BigInt('21888242871839275222246405745257275088548364400416034343698204186575808495617');
@@ -16,26 +16,10 @@ function reduceToField(value: bigint): bigint {
 }
 
 /**
- * Convert Aztec hash result to bigint
+ * Poseidon hash (matches contract)
  */
-function toBigInt(result: any): bigint {
-    if (typeof result === 'bigint') {
-        return result;
-    } else if ('toBigInt' in result && typeof result.toBigInt === 'function') {
-        return result.toBigInt();
-    } else if ('value' in result) {
-        return BigInt(result.value);
-    } else {
-        return BigInt(result.toString());
-    }
-}
-
-/**
- * Poseidon2 hash using Aztec Foundation
- */
-async function poseidon2HashAsync(inputs: bigint[]): Promise<bigint> {
-    const result = await poseidon2Hash(inputs.map(reduceToField));
-    return reduceToField(toBigInt(result));
+async function poseidonHashAsync(inputs: bigint[]): Promise<bigint> {
+    return poseidonHash(inputs.map(reduceToField));
 }
 
 /**
@@ -58,7 +42,7 @@ export class LeanIMTContract {
     }
 
     /**
-     * Insert a leaf - matches LeanIMTPoseidon2._insert exactly
+     * Insert a leaf - matches LeanIMTPoseidon._insert exactly
      */
     async insert(leaf: bigint): Promise<bigint> {
         const index = this.size;
@@ -81,7 +65,7 @@ export class LeanIMTContract {
         for (let level = 0; level < treeDepth; level++) {
             if (((index >> level) & 1) === 1) {
                 // Right child: hash(sideNodes[level], node)
-                node = await poseidon2HashAsync([this.sideNodes[level], node]);
+                node = await poseidonHashAsync([this.sideNodes[level], node]);
             } else {
                 // Left child: save current node to sideNodes
                 this.sideNodes[level] = node;
@@ -231,7 +215,7 @@ export class LeanIMTContract {
             const nextLevel: bigint[] = [];
             for (let i = 0; i < currentLevel.length; i += 2) {
                 if (i + 1 < currentLevel.length) {
-                    nextLevel.push(await poseidon2HashAsync([currentLevel[i], currentLevel[i + 1]]));
+                    nextLevel.push(await poseidonHashAsync([currentLevel[i], currentLevel[i + 1]]));
                 } else {
                     // Odd node - in Lean IMT, it gets promoted
                     nextLevel.push(currentLevel[i]);
@@ -278,7 +262,7 @@ export class SimpleLeanIMT {
             for (let i = 0; i < currentLevel.length; i += 2) {
                 if (i + 1 < currentLevel.length) {
                     // Both children exist: hash them
-                    const hash = await poseidon2HashAsync([currentLevel[i], currentLevel[i + 1]]);
+                    const hash = await poseidonHashAsync([currentLevel[i], currentLevel[i + 1]]);
                     nextLevel.push(hash);
                 } else {
                     // Only left child exists (Lean IMT property): copy it
@@ -343,7 +327,7 @@ export class SimpleLeanIMT {
                     }
 
                     if (rightNode !== BigInt(0)) {
-                        nextLevel.push(await poseidon2HashAsync([leftNode, rightNode]));
+                        nextLevel.push(await poseidonHashAsync([leftNode, rightNode]));
                     } else {
                         nextLevel.push(leftNode);
                     }
@@ -371,11 +355,11 @@ export class SimpleLeanIMT {
 
             if (isRightChild) {
                 // Current node is right child
-                currentHash = await poseidon2HashAsync([sibling, currentHash]);
+                currentHash = await poseidonHashAsync([sibling, currentHash]);
             } else {
                 // Current node is left child
                 if (sibling !== BigInt(0)) {
-                    currentHash = await poseidon2HashAsync([currentHash, sibling]);
+                    currentHash = await poseidonHashAsync([currentHash, sibling]);
                 }
                 // If sibling is 0, it means no right child (Lean IMT), so current hash stays the same
             }
@@ -410,11 +394,11 @@ export async function verifyProofWithDepth(
 
         if (bit === 1) {
             // Right child: hash(sibling, current)
-            current = await poseidon2HashAsync([sibling, current]);
+            current = await poseidonHashAsync([sibling, current]);
         } else {
             // Left child: if sibling exists, hash(current, sibling), else current stays
             if (sibling !== BigInt(0)) {
-                current = await poseidon2HashAsync([current, sibling]);
+                current = await poseidonHashAsync([current, sibling]);
             }
             // If sibling is 0, current stays the same (lean-IMT behavior)
         }
@@ -538,7 +522,7 @@ export async function generateMerkleProof(
                 //     nextLevel[i] = leftNode;
                 // }
                 if (rightNode !== BigInt(0)) {
-                    nextLevel[i] = await poseidon2HashAsync([leftNode, rightNode]);
+                    nextLevel[i] = await poseidonHashAsync([leftNode, rightNode]);
                 } else {
                     nextLevel[i] = leftNode;
                 }

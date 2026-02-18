@@ -2,170 +2,79 @@
 
 import { CommitmentState, CommitmentPoint } from './store';
 import { pedersenCommitment5 } from './pedersen-commitments';
-import { poseidon2Hash } from '@aztec/foundation/crypto';
+import { getSpendingKey, poseidonHash, reduceToBn254Field } from './circuit-utils';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from './abi/ArkanaConst';
 import { PublicClient } from 'viem';
 
 /**
  * Reconstruct a Pedersen commitment point from stored state
- * Matches the logic in circuits/main/deposit/src/test/tests.nr
- * 
+ * Matches the logic in circuits (spending_key = Hash3(Hash2(user_key, chain_id), token_address, signer_pubkey_hash)).
+ *
  * Pedersen commitment: m1*G + m2*H + m3*D + m4*K + r*J
- * where:
- *   m1 = shares
- *   m2 = nullifier
- *   m3 = spending_key (computed from user_key, chain_id, token_address)
- *   m4 = unlocks_at
- *   r = nonce_commitment
+ * where m3 = spending_key, r = nonce_commitment.
  */
 export async function reconstructCommitmentPoint(
     userKey: bigint,
     chainId: bigint,
     tokenAddress: bigint,
+    signerPubkeyHash: bigint | string,
     shares: bigint,
     nullifier: bigint,
     unlocksAt: bigint,
     nonceCommitment: bigint
 ): Promise<CommitmentPoint> {
-    // Calculate spending_key = Poseidon2::hash([user_key, chain_id, token_address], 3)
-    const spendingKeyHash = await poseidon2Hash([userKey, chainId, tokenAddress]);
-    let spendingKey: bigint;
-    if (typeof spendingKeyHash === 'bigint') {
-        spendingKey = spendingKeyHash;
-    } else if ('toBigInt' in spendingKeyHash && typeof (spendingKeyHash as any).toBigInt === 'function') {
-        spendingKey = (spendingKeyHash as any).toBigInt();
-    } else if ('value' in spendingKeyHash) {
-        spendingKey = BigInt((spendingKeyHash as any).value);
-    } else {
-        spendingKey = BigInt((spendingKeyHash as any).toString());
-    }
-
-    // Create Pedersen commitment: pedersen_commitment_5(shares, nullifier, spending_key, unlocks_at, nonce_commitment)
+    const spendingKey = await getSpendingKey(userKey, chainId, tokenAddress, signerPubkeyHash);
     const commitmentPoint = pedersenCommitment5(shares, nullifier, spendingKey, unlocksAt, nonceCommitment);
-
-    return {
-        x: commitmentPoint.x,
-        y: commitmentPoint.y,
-    };
+    return { x: commitmentPoint.x, y: commitmentPoint.y };
 }
 
 /**
- * Compute commitment leaf from Pedersen commitment point
- * Uses the contract's Poseidon2 implementation to ensure consistency
- * Matches: poseidon2Hasher.hash_2(Field.toField(x), Field.toField(y))
- * @param commitmentPoint The commitment point with x and y coordinates
- * @param publicClient Optional PublicClient to call the contract. If not provided, falls back to JavaScript Poseidon2
- * @returns The leaf hash computed using the contract's Poseidon2
+ * Compute commitment leaf from Pedersen commitment point.
+ * Uses the contract's computeCommitmentLeaf (Poseidon) when publicClient is provided.
+ * Falls back to JS (circuit-utils poseidonHash) when no publicClient or contract call fails.
  */
 export async function computeCommitmentLeaf(
     commitmentPoint: CommitmentPoint,
     publicClient?: PublicClient
 ): Promise<bigint> {
-    // Always compute JavaScript Poseidon2 for comparison
-    const jsLeafHash = await poseidon2Hash([commitmentPoint.x, commitmentPoint.y]);
-    let jsLeaf: bigint;
-    if (typeof jsLeafHash === 'bigint') {
-        jsLeaf = jsLeafHash;
-    } else if ('toBigInt' in jsLeafHash && typeof (jsLeafHash as any).toBigInt === 'function') {
-        jsLeaf = (jsLeafHash as any).toBigInt();
-    } else if ('value' in jsLeafHash) {
-        jsLeaf = BigInt((jsLeafHash as any).value);
-    } else {
-        jsLeaf = BigInt((jsLeafHash as any).toString());
-    }
+    const x = reduceToBn254Field(commitmentPoint.x);
+    const y = reduceToBn254Field(commitmentPoint.y);
 
-    // If publicClient is provided, use the contract's computeCommitmentLeaf function
-    // This ensures we use the same Huff Poseidon2 implementation as the contract
     if (publicClient) {
         try {
             const contractLeaf = await publicClient.readContract({
                 address: ArkanaAddress,
                 abi: ArkanaAbi,
                 functionName: 'computeCommitmentLeaf',
-                args: [commitmentPoint.x, commitmentPoint.y],
+                args: [x, y],
             }) as bigint;
-
-            // Compare JavaScript vs Contract (Huff) Poseidon2
-            console.log('');
-            console.log('╔═══════════════════════════════════════════════════════════════════════════════╗');
-            console.log('║           🔬 POSEIDON2 HASH COMPARISON (JS vs Huff Contract)                  ║');
-            console.log('╚═══════════════════════════════════════════════════════════════════════════════╝');
-            console.log(`   Commitment Point:`);
-            console.log(`     x: 0x${commitmentPoint.x.toString(16)}`);
-            console.log(`     y: 0x${commitmentPoint.y.toString(16)}`);
-            console.log('');
-            console.log(`   JavaScript Poseidon2 (Aztec):`);
-            console.log(`     0x${jsLeaf.toString(16)}`);
-            console.log('');
-            console.log(`   Contract Poseidon2 (Huff):`);
-            console.log(`     0x${contractLeaf.toString(16)}`);
-            console.log('');
-
-            if (jsLeaf === contractLeaf) {
-                console.log('   ✅ MATCH: Both implementations produce the same hash');
-            } else {
-                console.log('   ❌ MISMATCH: JavaScript and Huff Poseidon2 produce different hashes!');
-                console.log(`   Difference: 0x${(jsLeaf > contractLeaf ? jsLeaf - contractLeaf : contractLeaf - jsLeaf).toString(16)}`);
-            }
-            console.log('╚═══════════════════════════════════════════════════════════════════════════════╝');
-            console.log('');
-
-            // Always use the contract's hash (Huff) to match what's stored on-chain
             return contractLeaf;
         } catch (error) {
-            console.warn('⚠️ Failed to call contract computeCommitmentLeaf, falling back to JavaScript Poseidon2:', error);
-            console.log('   Using JavaScript Poseidon2 hash: 0x' + jsLeaf.toString(16));
-            // Fall through to JavaScript implementation
+            console.warn('Failed to call contract computeCommitmentLeaf, falling back to JS poseidonHash:', error);
         }
-    } else {
-        console.log('⚠️ No publicClient provided, using JavaScript Poseidon2 (may not match contract):');
-        console.log('   Hash: 0x' + jsLeaf.toString(16));
     }
 
-    return jsLeaf;
+    return poseidonHash([x, y]);
 }
 
 /**
- * Reconstruct commitment state from stored data
- * This is used when we have balance entries but need to reconstruct the full commitment state
- * 
- * @param sharesFromContract Optional shares calculated from contract (for nonce 0, the contract adds shares*G to the commitment point)
+ * Reconstruct commitment state from stored data.
+ * spending_key = Hash3(Hash2(user_key, chain_id), token_address, signer_pubkey_hash) via getSpendingKey.
  */
 export async function reconstructCommitmentStateFromBalanceEntry(
     userKey: bigint,
     chainId: bigint,
     tokenAddress: bigint,
+    signerPubkeyHash: bigint | string,
     nonce: bigint,
-    amount: bigint, // This is the decrypted balance amount
-    previousState: CommitmentState | null, // Previous commitment state (for shares, nullifier, unlocks_at)
-    sharesFromContract?: bigint, // Optional shares from contract (for nonce 0, contract adds shares*G before hashing)
-    sharesMinted?: bigint, // Optional shares minted for this nonce (for nonce > 0 that are Deposit operations, contract adds shares*G before hashing)
-    publicClient?: PublicClient // Optional PublicClient to use contract's Poseidon2 for leaf computation
+    amount: bigint,
+    previousState: CommitmentState | null,
+    sharesFromContract?: bigint,
+    sharesMinted?: bigint,
+    publicClient?: PublicClient
 ): Promise<CommitmentState> {
-    // Calculate nonce commitment: Poseidon2::hash([spending_key, nonce, token_address], 3)
-    const spendingKeyHash = await poseidon2Hash([userKey, chainId, tokenAddress]);
-    let spendingKey: bigint;
-    if (typeof spendingKeyHash === 'bigint') {
-        spendingKey = spendingKeyHash;
-    } else if ('toBigInt' in spendingKeyHash && typeof (spendingKeyHash as any).toBigInt === 'function') {
-        spendingKey = (spendingKeyHash as any).toBigInt();
-    } else if ('value' in spendingKeyHash) {
-        spendingKey = BigInt((spendingKeyHash as any).value);
-    } else {
-        spendingKey = BigInt((spendingKeyHash as any).toString());
-    }
-
-    const nonceCommitmentHash = await poseidon2Hash([spendingKey, nonce, tokenAddress]);
-    let nonceCommitment: bigint;
-    if (typeof nonceCommitmentHash === 'bigint') {
-        nonceCommitment = nonceCommitmentHash;
-    } else if ('toBigInt' in nonceCommitmentHash && typeof (nonceCommitmentHash as any).toBigInt === 'function') {
-        nonceCommitment = (nonceCommitmentHash as any).toBigInt();
-    } else if ('value' in nonceCommitmentHash) {
-        nonceCommitment = BigInt((nonceCommitmentHash as any).value);
-    } else {
-        nonceCommitment = BigInt((nonceCommitmentHash as any).toString());
-    }
+    const spendingKey = await getSpendingKey(userKey, chainId, tokenAddress, signerPubkeyHash);
+    const nonceCommitment = await poseidonHash([spendingKey, nonce, tokenAddress]);
 
     // CRITICAL UNDERSTANDING:
     // For nonce 0 (entry):
@@ -238,7 +147,8 @@ export async function reconstructCommitmentStateFromBalanceEntry(
         userKey,
         chainId,
         tokenAddress,
-        shares, // For nonce 0, this is sharesFromContract (the shares the contract added)
+        signerPubkeyHash,
+        shares,
         nullifier,
         unlocksAt,
         nonceCommitment
@@ -261,7 +171,7 @@ export async function reconstructCommitmentStateFromBalanceEntry(
         console.log(`   Added sharesMinted*G (${sharesMinted.toString()} shares) to commitment point for nonce ${nonce.toString()}`);
     }
 
-    // Compute commitment leaf using contract's Poseidon2 if available
+    // Compute commitment leaf using contract's Poseidon if available
     const commitmentLeaf = await computeCommitmentLeaf(finalCommitmentPoint, publicClient);
 
     // Compute shares for return value

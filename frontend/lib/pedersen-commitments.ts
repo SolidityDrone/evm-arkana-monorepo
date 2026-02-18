@@ -1,287 +1,178 @@
 /**
- * TypeScript implementation of pedersen_commitment_non_hiding
- * Matches the Noir implementation in circuits/lib/pedersen-commitments/src/pedersen_commitments.nr
- * 
- * Uses Grumpkin curve (BN254 scalar field) with generators G and D
- * Commitment: m*G + token_address*D
+ * Pedersen commitments on Baby Jubjub (BJJ) curve.
+ * Matches circom lib/pedersen-commitments (Baby Jubjub) and contract BJJ.sol.
+ * Curve: ax² + y² = 1 + dx²y² with a = 168700, d = 168696.
+ * Field: BN254 scalar field (Fr).
  */
 
-// Grumpkin curve field modulus (BN254 scalar field)
-const GRUMPKIN_FIELD_MODULUS = BigInt('21888242871839275222246405745257275088548364400416034343698204186575808495617');
+// BN254 scalar field (Fr) - same as circom and BJJ.sol
+const P = BigInt('21888242871839275222246405745257275088548364400416034343698204186575808495617');
 
-// Hardcoded generators matching Noir's derive_generators("PEDERSEN_COMMITMENT", 0)
-// Generator G (for shares) - MUST match Generators.sol
-export const GENERATOR_G = {
-  x: BigInt('0x0949873ea2ea8f16b075c794aecf36efd5da1c9c8679737e7ec1aff775cc3b5c'),
-  y: BigInt('0x1336d7f5bf34c2fe63e44461e86dd0a86b852c30d9c7213dd6c5d434ea3f9d38')
+// Baby Jubjub curve parameters (from BJJ.sol / circomlib)
+const A = BigInt(168700);
+const D = BigInt(168696);
+
+// Generators for PedersenCommitment5 - MUST match circom pedersen_commitments.circom (lines 355-365)
+const GENERATOR_G = {
+  x: BigInt('10457101036533406547632367118273992217979173478358440826365724437999023779287'),
+  y: BigInt('19824078218392094440610104313265183977899662750282163392862422243483260492317'),
 };
-
-// Generator H (for nullifier) - MUST match Generators.sol
 const GENERATOR_H = {
-  x: BigInt('0x229d4910f0d7e6fd2bed571a885241049eee73d5f9adc0d9ef2ce724aa1df3fa'),
-  y: BigInt('0x20f8c9b24f986b93052ab51f5068bc690e35e9508d5b0951b0d4cad1ea04b28e')
+  x: BigInt('2671756056509184035029146175565761955751135805354291559563293617232983272177'),
+  y: BigInt('2663205510731142763556352975002641716101654201788071096152948830924149045094'),
 };
-
-// Generator D (for spending_key) - MUST match Generators.sol
 const GENERATOR_D = {
-  x: BigInt('0x2bcc449b1a2840cf9327f846fe78db60aad3ddecff43c3c3facd13aba3cb1479'),
-  y: BigInt('0x25e9a7bcc28000fc69f14bbe8a2ec561fd854ea6489f38e63ba4a40d34113717')
+  x: BigInt('5802099305472655231388284418920769829666717045250560929368476121199858275951'),
+  y: BigInt('5980429700218124965372158798884772646841287887664001482443826541541529227896'),
 };
-
-// Generator K (for unlocks_at) - MUST match Generators.sol
 const GENERATOR_K = {
-  x: BigInt('0x19355291a8bf98b3533c01d677b184a4f6a4c5dd2d40f8b51c4ba0af75b89ed3'),
-  y: BigInt('0x060541537d013b7d1a38b19db2a6be1f49e0002f84b0cc237a87c288154329a7')
+  x: BigInt('7107336197374528537877327281242680114152313102022415488494307685842428166594'),
+  y: BigInt('2857869773864086953506483169737724679646433914307247183624878062391496185654'),
 };
-
-// Generator J (for nonce_commitment) - MUST match Generators.sol
 const GENERATOR_J = {
-  x: BigInt('0x10ed9cb73e6d8d98631a692fbc5761871595a39b9e7ab703d177c9ba9a44837f'),
-  y: BigInt('0x1f76373da7dd8eef4dfada6743746d262ead94c38dd4192a9308aee33ea11594')
+  x: BigInt('20265828622013100949498132415626198973119240347465898028410217039057588424236'),
+  y: BigInt('1160461593266035632937973507065134938065359936056410650153315956301179689506'),
 };
 
-// NULLIFIER_DOMAIN_SEPARATOR from pedersen_commitments.nr
-const NULLIFIER_DOMAIN_SEPARATOR = BigInt('0x100000000000000000000000000000000000000000000000000000000000000');
+export { GENERATOR_G, GENERATOR_H, GENERATOR_D, GENERATOR_K, GENERATOR_J };
 
 export interface GrumpkinPoint {
   x: bigint;
   y: bigint;
 }
 
-/**
- * Add two Grumpkin curve points
- * Curve equation: y^2 = x^3 - 17 (mod p)
- */
-export function grumpkinAdd(p1: GrumpkinPoint, p2: GrumpkinPoint): GrumpkinPoint {
-  const p = GRUMPKIN_FIELD_MODULUS;
-
-  // Ensure all values are BigInt
-  const x1 = typeof p1.x === 'bigint' ? p1.x : BigInt(p1.x);
-  const y1 = typeof p1.y === 'bigint' ? p1.y : BigInt(p1.y);
-  const x2 = typeof p2.x === 'bigint' ? p2.x : BigInt(p2.x);
-  const y2 = typeof p2.y === 'bigint' ? p2.y : BigInt(p2.y);
-
-  // Handle point at infinity (0, 0)
-  if (x1 === BigInt(0) && y1 === BigInt(0)) return { x: x2, y: y2 };
-  if (x2 === BigInt(0) && y2 === BigInt(0)) return { x: x1, y: y1 };
-
-  // Handle negation: if p2 is the negation of p1, result is point at infinity
-  if (x1 === x2 && y1 === (p - y2) % p) {
-    return { x: BigInt(0), y: BigInt(0) };
-  }
-
-  // Same point: use tangent formula
-  if (x1 === x2 && y1 === y2) {
-    // Slope = (3*x^2) / (2*y)
-    const numerator = (BigInt(3) * x1 * x1) % p;
-    const denominator = (BigInt(2) * y1) % p;
-    const invDenominator = modInverse(denominator, p);
-    const slope = (numerator * invDenominator) % p;
-
-    const x3 = (slope * slope - BigInt(2) * x1) % p;
-    const y3 = (slope * (x1 - x3) - y1) % p;
-    return { x: x3 < BigInt(0) ? x3 + p : x3, y: y3 < BigInt(0) ? y3 + p : y3 };
-  }
-
-  // Different points: use secant formula
-  const xDiff = (x2 - x1 + p) % p;
-  const yDiff = (y2 - y1 + p) % p;
-  const invXDiff = modInverse(xDiff, p);
-  const slope = (yDiff * invXDiff) % p;
-
-  const x3 = (slope * slope - x1 - x2) % p;
-  const y3 = (slope * (x1 - x3) - y1) % p;
-  return { x: x3 < BigInt(0) ? x3 + p : x3, y: y3 < BigInt(0) ? y3 + p : y3 };
+function modP(a: bigint): bigint {
+  const r = a % P;
+  return r >= 0n ? r : r + P;
 }
 
-/**
- * Scalar multiplication on Grumpkin curve: k * P
- */
-export function grumpkinMul(point: GrumpkinPoint, scalar: bigint): GrumpkinPoint {
-  const p = GRUMPKIN_FIELD_MODULUS;
-  // Ensure scalar is BigInt
-  const scalarBigInt = typeof scalar === 'bigint' ? scalar : BigInt(scalar);
-  // Ensure point coordinates are BigInt
-  const x = typeof point.x === 'bigint' ? point.x : BigInt(point.x);
-  const y = typeof point.y === 'bigint' ? point.y : BigInt(point.y);
-  const normalizedPoint: GrumpkinPoint = { x, y };
-
-  let result: GrumpkinPoint = { x: BigInt(0), y: BigInt(0) }; // Point at infinity
-  let temp = normalizedPoint;
-  let k = scalarBigInt % p;
-
-  while (k > BigInt(0)) {
-    if (k & BigInt(1)) {
-      result = grumpkinAdd(result, temp);
-    }
-    temp = grumpkinAdd(temp, temp);
-    k = k >> BigInt(1);
-  }
-
-  return result;
+function modInverse(a: bigint): bigint {
+  const aMod = modP(a);
+  if (aMod === 0n) throw new Error('Cannot compute inverse of 0');
+  return modPow(aMod, P - 2n);
 }
 
-/**
- * Modular inverse using Fermat's little theorem: a^(-1) = a^(p-2) mod p
- */
-function modInverse(a: bigint, p: bigint): bigint {
-  if (a === BigInt(0)) throw new Error('Cannot compute inverse of 0');
-  return modPow(a, p - BigInt(2), p);
-}
-
-/**
- * Modular exponentiation: base^exp mod mod
- */
-function modPow(base: bigint, exp: bigint, mod: bigint): bigint {
-  let result = BigInt(1);
-  base = base % mod;
-  while (exp > BigInt(0)) {
-    if (exp & BigInt(1)) {
-      result = (result * base) % mod;
-    }
-    exp = exp >> BigInt(1);
-    base = (base * base) % mod;
+function modPow(base: bigint, exp: bigint): bigint {
+  let result = 1n;
+  base = modP(base);
+  while (exp > 0n) {
+    if (exp & 1n) result = modP(result * base);
+    exp >>= 1n;
+    base = modP(base * base);
   }
   return result;
 }
 
 /**
- * Negate a Grumpkin point: -P = (x, -y mod p)
+ * Add two Baby Jubjub points (twisted Edwards).
+ * Identity is (0, 1). Formula from BJJ.sol / circomlib BabyAdd.
  */
-function grumpkinNegate(point: GrumpkinPoint): GrumpkinPoint {
-  const p = GRUMPKIN_FIELD_MODULUS;
-  // Ensure all values are BigInt
-  const x = typeof point.x === 'bigint' ? point.x : BigInt(point.x);
-  const y = typeof point.y === 'bigint' ? point.y : BigInt(point.y);
-  return {
-    x: x,
-    y: (p - y) % p
-  };
+export function bjjAdd(p1: GrumpkinPoint, p2: GrumpkinPoint): GrumpkinPoint {
+  const x1 = modP(p1.x);
+  const y1 = modP(p1.y);
+  const x2 = modP(p2.x);
+  const y2 = modP(p2.y);
+
+  if (x1 === 0n && y1 === 1n) return { x: x2, y: y2 };
+  if (x2 === 0n && y2 === 1n) return { x: x1, y: y1 };
+
+  const beta = modP(x1 * y2);
+  const gamma = modP(y1 * x2);
+  const delta = modP(modP(y1 - A * x1) * modP(x2 + y2));
+  const tau = modP(beta * gamma);
+
+  const denomX = modP(1n + D * tau);
+  const denomY = modP(1n - D * tau);
+
+  if (denomX === 0n || denomY === 0n) return { x: 0n, y: 1n };
+
+  const xout = modP((beta + gamma) * modInverse(denomX));
+  const yout = modP((delta + modP(A * beta) - gamma + P) * modInverse(denomY));
+  return { x: xout, y: yout };
 }
 
 /**
- * Subtract two Grumpkin points: P1 - P2 = P1 + (-P2)
+ * Scalar multiplication on Baby Jubjub: k * P (double-and-add).
  */
-export function grumpkinSubtract(p1: GrumpkinPoint, p2: GrumpkinPoint): GrumpkinPoint {
-  return grumpkinAdd(p1, grumpkinNegate(p2));
+export function bjjMul(point: GrumpkinPoint, scalar: bigint): GrumpkinPoint {
+  let k = scalar;
+  let result: GrumpkinPoint = { x: 0n, y: 1n };
+  let addend: GrumpkinPoint = { x: modP(point.x), y: modP(point.y) };
+
+  while (k > 0n) {
+    if (k & 1n) result = bjjAdd(result, addend);
+    addend = bjjAdd(addend, addend);
+    k >>= 1n;
+  }
+  return result;
 }
 
-/**
- * Add two Grumpkin points (exported for use in hooks)
- */
+// Legacy names for compatibility (same curve, different name)
+export const grumpkinAdd = bjjAdd;
+export const grumpkinMul = bjjMul;
 export function grumpkinAddPoints(p1: GrumpkinPoint, p2: GrumpkinPoint): GrumpkinPoint {
-  return grumpkinAdd(p1, p2);
+  return bjjAdd(p1, p2);
 }
 
-/**
- * Compute to_nullifier_domain(token_address)
- * Returns: token_address + NULLIFIER_DOMAIN_SEPARATOR
- */
-export function toNullifierDomain(tokenAddress: bigint): bigint {
-  const p = GRUMPKIN_FIELD_MODULUS;
-  const tokenAddressField = tokenAddress % p;
-  return (tokenAddressField + NULLIFIER_DOMAIN_SEPARATOR) % p;
+function grumpkinNegate(point: GrumpkinPoint): GrumpkinPoint {
+  return { x: modP(point.x), y: modP(P - point.y) };
+}
+export function grumpkinSubtract(p1: GrumpkinPoint, p2: GrumpkinPoint): GrumpkinPoint {
+  return bjjAdd(p1, grumpkinNegate(p2));
 }
 
-/**
- * Aggregate opening values using BN254 scalar field addition
- * Matches the contract's aggregateOpeningValue function
- * Uses BN254 scalar field modulus: 21888242871839275222246405745257275088548364400416034343698204186575808495617
- */
-export function aggregateOpeningValue(current: bigint, newValue: bigint): bigint {
-  // BN254 scalar field modulus (BN256 scalar field)
-  const BN254_SCALAR_FIELD_MODULUS = BigInt('21888242871839275222246405745257275088548364400416034343698204186575808495617');
-
-  // Field addition: (current + newValue) mod PRIME
-  const sum = (current + newValue) % BN254_SCALAR_FIELD_MODULUS;
-  return sum;
-}
-
-/**
- * Check if two Grumpkin points are equal
- */
 export function grumpkinPointEqual(p1: GrumpkinPoint, p2: GrumpkinPoint): boolean {
-  return p1.x === p2.x && p1.y === p2.y;
+  return modP(p1.x) === modP(p2.x) && modP(p1.y) === modP(p2.y);
+}
+
+// NULLIFIER_DOMAIN_SEPARATOR (kept for callers that use it)
+const NULLIFIER_DOMAIN_SEPARATOR = BigInt('0x100000000000000000000000000000000000000000000000000000000000000');
+export function toNullifierDomain(tokenAddress: bigint): bigint {
+  return modP(tokenAddress + NULLIFIER_DOMAIN_SEPARATOR);
+}
+
+export function aggregateOpeningValue(current: bigint, newValue: bigint): bigint {
+  return modP(current + newValue);
 }
 
 /**
- * TypeScript implementation of pedersen_commitment_positive
- * Matches: pedersen_commitment_positive(m: Field, r: Field, token_address: Field) -> EmbeddedCurvePoint
- * 
- * This uses pedersen_commitment_token which uses 3 generators (G, H, D)
- * Formula: m*G + r*H + token_address*D
+ * PedersenCommitment5: m1*G + m2*H + m3*D + m4*K + r*J
+ * Matches circom PedersenCommitment5 and contract leaf construction.
  */
-export function pedersenCommitmentPositive(m: bigint, r: bigint, tokenAddress: bigint): GrumpkinPoint {
-  // Full 3-generator version: m*G + r*H + token_address*D
-  const mG = grumpkinMul(GENERATOR_G, m);
-  const rH = grumpkinMul(GENERATOR_H, r);
-  const tokenD = grumpkinMul(GENERATOR_D, tokenAddress);
-
-  // Add all three: mG + rH + tokenD
-  return grumpkinAdd(grumpkinAdd(mG, rH), tokenD);
+export function pedersenCommitment5(
+  m1: bigint,
+  m2: bigint,
+  m3: bigint,
+  m4: bigint,
+  r: bigint
+): GrumpkinPoint {
+  const m1G = bjjMul(GENERATOR_G, modP(m1));
+  const m2H = bjjMul(GENERATOR_H, modP(m2));
+  const m3D = bjjMul(GENERATOR_D, modP(m3));
+  const m4K = bjjMul(GENERATOR_K, modP(m4));
+  const rJ = bjjMul(GENERATOR_J, modP(r));
+  return bjjAdd(bjjAdd(bjjAdd(bjjAdd(m1G, m2H), m3D), m4K), rJ);
 }
 
 /**
- * TypeScript implementation of pedersen_commitment (2 factors: m*G + r*H)
- * Matches: pedersen_commitment(m: Field, r: Field) -> EmbeddedCurvePoint
- * 
- * Formula: m*G + r*H
- * Used for note_stack commitments and nonce_discovery_entry
+ * PedersenCommitment2: m*G + r*H (for note_stack, nonce_discovery_entry)
  */
 export function pedersenCommitment(m: bigint, r: bigint): GrumpkinPoint {
-  const mG = grumpkinMul(GENERATOR_G, m);
-  const rH = grumpkinMul(GENERATOR_H, r);
-  return grumpkinAdd(mG, rH);
+  const mG = bjjMul(GENERATOR_G, modP(m));
+  const rH = bjjMul(GENERATOR_H, modP(r));
+  return bjjAdd(mG, rH);
 }
 
-/**
- * TypeScript implementation of pedersen_commitment_non_hiding
- * Matches: pedersen_commitment_non_hiding(m: Field, r: Field) -> EmbeddedCurvePoint
- * 
- * Formula: m*G + r*H
- * Used for nonce discovery inner commitments
- */
 export function pedersenCommitmentNonHiding(m: bigint, r: bigint): GrumpkinPoint {
   return pedersenCommitment(m, r);
 }
 
 /**
- * TypeScript implementation of pedersen_commitment_5
- * Matches: pedersen_commitment_5(m1: Field, m2: Field, m3: Field, m4: Field, r: Field) -> EmbeddedCurvePoint
- * 
- * Formula: m1*G + m2*H + m3*D + m4*K + r*J
- * where:
- *   m1 = shares
- *   m2 = nullifier
- *   m3 = spending_key
- *   m4 = unlocks_at
- *   r = nonce_commitment
+ * PedersenCommitment3: m*G + r*H + token_address*D
  */
-export function pedersenCommitment5(
-  m1: bigint, // shares
-  m2: bigint, // nullifier
-  m3: bigint, // spending_key
-  m4: bigint, // unlocks_at
-  r: bigint   // nonce_commitment
-): GrumpkinPoint {
-  // IMPORTANT: Reduce all scalars modulo the BN254 field modulus before use
-  // This matches Noir's from_field() behavior which ensures values are within the field
-  const p = GRUMPKIN_FIELD_MODULUS;
-  const m1Reduced = m1 % p;
-  const m2Reduced = m2 % p;
-  const m3Reduced = m3 % p;
-  const m4Reduced = m4 % p;
-  const rReduced = r % p;
-
-  // Compute m1*G + m2*H + m3*D + m4*K + r*J
-  const m1G = grumpkinMul(GENERATOR_G, m1Reduced);
-  const m2H = grumpkinMul(GENERATOR_H, m2Reduced);
-  const m3D = grumpkinMul(GENERATOR_D, m3Reduced);
-  const m4K = grumpkinMul(GENERATOR_K, m4Reduced);
-  const rJ = grumpkinMul(GENERATOR_J, rReduced);
-
-  // Add all five components: m1*G + m2*H + m3*D + m4*K + r*J
-  return grumpkinAdd(grumpkinAdd(grumpkinAdd(grumpkinAdd(m1G, m2H), m3D), m4K), rJ);
+export function pedersenCommitmentPositive(m: bigint, r: bigint, tokenAddress: bigint): GrumpkinPoint {
+  const mG = bjjMul(GENERATOR_G, modP(m));
+  const rH = bjjMul(GENERATOR_H, modP(r));
+  const tokenD = bjjMul(GENERATOR_D, modP(tokenAddress));
+  return bjjAdd(bjjAdd(mG, rH), tokenD);
 }
-
-

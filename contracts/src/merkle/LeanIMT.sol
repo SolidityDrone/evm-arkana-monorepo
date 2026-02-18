@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.4;
 
-import {LeanIMTPoseidon2, LeanIMTData} from "./LeanIMTPoseidon2.sol";
-import "./Poseidon2HuffWrapper.sol";
+import {LeanIMTPoseidon, LeanIMTData} from "./LeanIMTPoseidon.sol";
+import "./IPoseidonHasher.sol";
 
 /// @title LeanIMT - Merkle Tree Operations
 /// @notice Base contract that handles all merkle tree operations and historical state tracking
@@ -15,8 +15,8 @@ contract LeanIMT {
         uint256 size; // Number of leaves
     }
 
-    /// @notice The Poseidon2 hasher instance
-    Poseidon2HuffWrapper public immutable poseidon2Hasher;
+    /// @notice The Poseidon hasher instance (poseidon-solidity)
+    IPoseidonHasher public immutable poseidonHasher;
 
     /// @notice The merkle tree data structure
     LeanIMTData internal _tree;
@@ -44,12 +44,11 @@ contract LeanIMT {
     /// @param index The index in the historical states array
     event RootSaved(uint256 indexed root, uint256 depth, uint256 size, uint256 index);
 
-    /// @notice Constructor initializes the tree and Poseidon2 hasher
-    /// @param _poseidon2Huff Address of the deployed Huff Poseidon2 contract (deploy separately using HuffDeployer in tests/scripts)
-    constructor(address _poseidon2Huff) {
-        require(_poseidon2Huff != address(0), "LeanIMT: invalid address");
-        // Initialize Poseidon2 hasher with Huff contract address
-        poseidon2Hasher = new Poseidon2HuffWrapper(_poseidon2Huff);
+    /// @notice Constructor initializes the tree and Poseidon hasher
+    /// @param _poseidonHasher Address of the deployed PoseidonHasher contract (poseidon-solidity)
+    constructor(address _poseidonHasher) {
+        require(_poseidonHasher != address(0), "LeanIMT: invalid address");
+        poseidonHasher = IPoseidonHasher(_poseidonHasher);
 
         // Initialize with empty state (root=0, depth=0, size=0)
         _historicalStates.push(HistoricalState({root: 0, depth: 0, size: 0}));
@@ -60,12 +59,12 @@ contract LeanIMT {
     /// @param leaf The leaf value to add (must be non-zero and less than SNARK_SCALAR_FIELD)
     /// @return The new root after adding the leaf
     function addLeaf(uint256 leaf) public returns (uint256) {
-        uint256 previousRoot = LeanIMTPoseidon2.root(_tree);
+        uint256 previousRoot = LeanIMTPoseidon.root(_tree);
 
         // Insert the leaf into the tree
-        LeanIMTPoseidon2.insert(_tree, poseidon2Hasher, leaf);
+        LeanIMTPoseidon.insert(_tree, poseidonHasher, leaf);
 
-        uint256 newRoot = LeanIMTPoseidon2.root(_tree);
+        uint256 newRoot = LeanIMTPoseidon.root(_tree);
         uint256 currentLeafCount = leafCount;
 
         // Save historical state
@@ -78,31 +77,10 @@ contract LeanIMT {
         return newRoot;
     }
 
-    /// @notice Add multiple leaves to the merkle tree
-    /// @param leaves Array of leaf values to add
-    /// @return The new root after adding all leaves
-    function addLeaves(uint256[] calldata leaves) public returns (uint256) {
-        uint256 previousRoot = LeanIMTPoseidon2.root(_tree);
-
-        // Insert all leaves into the tree
-        LeanIMTPoseidon2.insertMany(_tree, poseidon2Hasher, leaves);
-
-        uint256 newRoot = LeanIMTPoseidon2.root(_tree);
-
-        // Save historical state
-        _saveHistoricalRoot(newRoot);
-
-        leafCount += leaves.length;
-
-        emit LeafAdded(0, leafCount - leaves.length, newRoot, previousRoot);
-
-        return newRoot;
-    }
-
     /// @notice Get the current root of the merkle tree
     /// @return The current root
     function getRoot() public view returns (uint256) {
-        return LeanIMTPoseidon2.root(_tree);
+        return LeanIMTPoseidon.root(_tree);
     }
 
     /// @notice Get the current depth of the merkle tree
@@ -122,21 +100,21 @@ contract LeanIMT {
     /// @return depth The current depth
     /// @return size The current size (number of leaves)
     function getCurrentState() public view returns (uint256 root, uint256 depth, uint256 size) {
-        return (LeanIMTPoseidon2.root(_tree), _tree.depth, _tree.size);
+        return (LeanIMTPoseidon.root(_tree), _tree.depth, _tree.size);
     }
 
     /// @notice Check if a leaf exists in the tree
     /// @param leaf The leaf value to check
     /// @return True if the leaf exists, false otherwise
     function hasLeaf(uint256 leaf) public view returns (bool) {
-        return LeanIMTPoseidon2.has(_tree, leaf);
+        return LeanIMTPoseidon.has(_tree, leaf);
     }
 
     /// @notice Get the index of a leaf in the tree
     /// @param leaf The leaf value
     /// @return The index of the leaf (reverts if leaf doesn't exist)
     function getLeafIndex(uint256 leaf) public view returns (uint256) {
-        return LeanIMTPoseidon2.indexOf(_tree, leaf);
+        return LeanIMTPoseidon.indexOf(_tree, leaf);
     }
 
     /// @notice Get the total number of historical states
@@ -227,7 +205,7 @@ contract LeanIMT {
     ///         that match the Noir verification logic. The leaves array must contain all leaves
     ///         in the order they were inserted.
     function generateProof(uint256[] calldata leaves, uint256 leafIndex) public view returns (uint256[] memory proof) {
-        return LeanIMTPoseidon2.generateProof(_tree, poseidon2Hasher, leaves, leafIndex);
+        return LeanIMTPoseidon.generateProof(_tree, poseidonHasher, leaves, leafIndex);
     }
 
     /// @notice Internal function to save a root to historical state

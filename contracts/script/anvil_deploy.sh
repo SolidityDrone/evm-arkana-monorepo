@@ -104,9 +104,16 @@ export SEPOLIA_UNIVERSAL_ROUTER="${SEPOLIA_UNIVERSAL_ROUTER:-0x3A9D48AB9751398Bb
 export SEPOLIA_POSITION_MANAGER="${SEPOLIA_POSITION_MANAGER:-0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4}"
 export SEPOLIA_MULTICALL3="${SEPOLIA_MULTICALL3:-0xcA11bde05977b3631167028862bE2a173976CA11}"
 export SEPOLIA_PERMIT2="${SEPOLIA_PERMIT2:-0x000000000022D473030F116dDEE9F6B43aC78BA3}"
+# Stables and additional tokens (used to deploy & register ArkanaVaults when INITIALIZE_VAULTS_TOKENS is unset)
+export SEPOLIA_EURS="${SEPOLIA_EURS:-0x6d906e526a4e2Ca02097BA9d0caA3c382F52278E}"
+export SEPOLIA_USDC="${SEPOLIA_USDC:-0x94a9D9AC8a22534E3FaCa9F4e7F2E2cf85d5E4C8}"
+export SEPOLIA_DAI="${SEPOLIA_DAI:-0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357}"
+export SEPOLIA_USDT="${SEPOLIA_USDT:-0xaa8e23fb1079ea71e0a56f48a2aa51851d8433d0}"
 export SEPOLIA_WBTC="${SEPOLIA_WBTC:-0x29f2D40B0605204364af54EC677bD022dA425d03}"
 export SEPOLIA_WETH="${SEPOLIA_WETH:-0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c}"
+export SEPOLIA_LINK="${SEPOLIA_LINK:-0xf8Fb3713D459D7C1018BD0A49D19b4C44290EBE5}"
 export SEPOLIA_AAVE="${SEPOLIA_AAVE:-0x88541670E55cC00bEEFD87eB59EDd1b7C511AC9a}"
+export SEPOLIA_GHO="${SEPOLIA_GHO:-0xc4bF5CbDaBE595361438F8c6a187bDc330539c60}"
 
 echo "Configuration:"
 echo "  Aave Pool: $SEPOLIA_AAVE_POOL"
@@ -115,108 +122,36 @@ echo "  Universal Router: $SEPOLIA_UNIVERSAL_ROUTER"
 echo "  Position Manager: $SEPOLIA_POSITION_MANAGER"
 echo "  Multicall3: $SEPOLIA_MULTICALL3"
 echo "  Permit2: $SEPOLIA_PERMIT2"
-echo "  WBTC: $SEPOLIA_WBTC"
-echo "  WETH: $SEPOLIA_WETH"
-echo "  AAVE: $SEPOLIA_AAVE"
+echo "  Vault tokens (deploy & register all): EURS, USDC, DAI, USDT, WBTC, WETH, LINK, AAVE, GHO"
 echo ""
 
-echo "Step 1: Deploying Huff Poseidon2 Contract..."
+echo "Step 0: Deploying PoseidonT3 library..."
 echo "----------------------------------------"
-# Deploy Huff contract and capture the address from the return value
-# Using the exact flags that are required for Huff deployment
-# Use a temp file to capture output while still showing it
-TEMP_OUTPUT=$(mktemp)
-forge script script/DeployPoseidon2Huff.s.sol \
-    -vv \
-    --skip test/Arkana.t.sol src/Verifiers/**.sol src/merkle/LeanIMTPoseidon2.sol \
-    --ffi \
-    --via-ir \
+# Deploy PoseidonT3 so PoseidonHasher can link to it (avoids contract size limit on fresh Anvil/Sepolia).
+POSEIDON_T3_OUTPUT=$(mktemp)
+forge script script/DeployPoseidonT3.s.sol \
     --broadcast \
+    --rpc-url "$RPC_URL" \
     --keystore "$KEYSTORE" \
-    --rpc-url "$RPC_URL" 2>&1 | tee "$TEMP_OUTPUT"
+    --sender "$SENDER" 2>&1 | tee "$POSEIDON_T3_OUTPUT"
 
-HUFF_OUTPUT=$(cat "$TEMP_OUTPUT")
-rm "$TEMP_OUTPUT"
+POSEIDON_T3_ADDRESS=$(grep "PoseidonT3 library deployed at:" "$POSEIDON_T3_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+rm "$POSEIDON_T3_OUTPUT"
 
-# Extract the address from multiple possible formats:
-# 1. "Huff Poseidon2 deployed at: 0x..." (from console.log)
-# 2. "poseidon2Huff: address 0x..." (from return value)
-# 3. "Contract Address: 0x..." (from broadcast output, but only from Huff deployment section)
-POSEIDON2_HUFF_ADDRESS=$(echo "$HUFF_OUTPUT" | grep -i "Huff Poseidon2 deployed at" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
-
-if [ -z "$POSEIDON2_HUFF_ADDRESS" ]; then
-    # Try return value format
-    POSEIDON2_HUFF_ADDRESS=$(echo "$HUFF_OUTPUT" | grep -oE 'poseidon2Huff: address 0x[a-fA-F0-9]{40}' | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
-fi
-
-if [ -z "$POSEIDON2_HUFF_ADDRESS" ]; then
-    # Try broadcast output format (but only from this step's output)
-    POSEIDON2_HUFF_ADDRESS=$(echo "$HUFF_OUTPUT" | grep -i "Contract Address:" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
-fi
-
-if [ -z "$POSEIDON2_HUFF_ADDRESS" ]; then
-    echo "Error: Could not find Huff Poseidon2 address in deployment output"
-    echo "Please check the deployment output above"
+if [ -z "$POSEIDON_T3_ADDRESS" ]; then
+    echo "Error: Could not find PoseidonT3 library address in deployment output"
     exit 1
 fi
+echo "PoseidonT3 library deployed at: $POSEIDON_T3_ADDRESS"
 
-# Verify the contract actually exists on-chain by checking its code size
-echo "Verifying Huff Poseidon2 contract exists on-chain..."
-CODE_SIZE=$(cast code "$POSEIDON2_HUFF_ADDRESS" --rpc-url "$RPC_URL" 2>/dev/null | wc -c)
-if [ "$CODE_SIZE" -lt 10 ]; then
-    echo "ERROR: Huff Poseidon2 contract at $POSEIDON2_HUFF_ADDRESS has no code!"
-    echo "The contract was not actually deployed on-chain."
-    echo "Please check the deployment output above and redeploy."
-    exit 1
-fi
-
-echo "✓ Huff Poseidon2 deployed at: $POSEIDON2_HUFF_ADDRESS (code size: $CODE_SIZE bytes)"
-export POSEIDON2_HUFF_ADDRESS
-
-# Verify on Etherscan if on Sepolia
-if [ "$IS_SEPOLIA" = "true" ] && [ -n "$ETHERSCAN_API_KEY" ]; then
-    echo ""
-    echo "Verifying Huff Poseidon2 on Etherscan..."
-    # Note: Huff contracts may not be verifiable via standard forge verify
-    # This is a placeholder - adjust based on your verification needs
-    echo "  ⚠️  Note: Huff contracts may require manual verification"
-fi
-
+echo "Rebuilding with PoseidonT3 library linked..."
+forge build --libraries "poseidon-solidity/PoseidonT3.sol:PoseidonT3:$POSEIDON_T3_ADDRESS"
 echo ""
-echo "Step 2: Deploying Verifiers..."
+
+echo "Step 1: Deploying Verifiers..."
 echo "----------------------------------------"
 # Verifiers need --via-ir to avoid "Stack too deep" in inline assembly.
-# Temporarily rename merkle files so they are not compiled with the verifier step.
-MERKLE_DIR="src/merkle"
-LEAN_IMT_POSEIDON2_FILE="$MERKLE_DIR/LeanIMTPoseidon2.sol"
-LEAN_IMT_POSEIDON2_BACKUP="$MERKLE_DIR/LeanIMTPoseidon2.sol.backup"
-LEAN_IMT_FILE="$MERKLE_DIR/LeanIMT.sol"
-LEAN_IMT_BACKUP="$MERKLE_DIR/LeanIMT.sol.backup"
-
-# Function to restore files
-restore_merkle_files() {
-    if [ -f "$LEAN_IMT_POSEIDON2_BACKUP" ]; then
-        mv "$LEAN_IMT_POSEIDON2_BACKUP" "$LEAN_IMT_POSEIDON2_FILE"
-    fi
-    if [ -f "$LEAN_IMT_BACKUP" ]; then
-        mv "$LEAN_IMT_BACKUP" "$LEAN_IMT_FILE"
-    fi
-}
-
-# Rename files to avoid compilation
-if [ -f "$LEAN_IMT_POSEIDON2_FILE" ]; then
-    echo "Temporarily renaming LeanIMTPoseidon2.sol to avoid compilation..."
-    mv "$LEAN_IMT_POSEIDON2_FILE" "$LEAN_IMT_POSEIDON2_BACKUP"
-fi
-
-if [ -f "$LEAN_IMT_FILE" ]; then
-    echo "Temporarily renaming LeanIMT.sol to avoid compilation..."
-    mv "$LEAN_IMT_FILE" "$LEAN_IMT_BACKUP"
-fi
-
-# Set trap to restore files on exit (success or failure)
-trap restore_merkle_files EXIT
-
+# Step 1 deploys verifiers and writes src/VerifiersConst.sol; Step 2 uses those addresses for Arkana.
 VERIFIER_OUTPUT=$(mktemp)
 forge script script/VerifierDeployer.s.sol \
     --skip "test/**" "src/Arkana.sol" "src/ArkanaVault.sol" "src/tl-limit/**" \
@@ -226,17 +161,19 @@ forge script script/VerifierDeployer.s.sol \
     --sender "$SENDER" \
     --via-ir 2>&1 | tee "$VERIFIER_OUTPUT"
 
-# Extract verifier addresses if needed for verification
-VERIFIER_ADDRESSES=$(grep -oE '0x[a-fA-F0-9]{40}' "$VERIFIER_OUTPUT" | sort -u)
+# Parse verifier addresses from log (order: Entry, Deposit, Withdraw, Send, AbsorbSend, AbsorbWithdraw) and pass to Step 3 via env (no file write). Use head -1 so each var is a single address.
+export ENTRY_VERIFIER=$(grep "Entry Verifier deployed at:" "$VERIFIER_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+export DEPOSIT_VERIFIER=$(grep "Deposit Verifier deployed at:" "$VERIFIER_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+export WITHDRAW_VERIFIER=$(grep "Withdraw Verifier deployed at:" "$VERIFIER_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+export SEND_VERIFIER=$(grep "Send Verifier deployed at:" "$VERIFIER_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+export ABSORB_VERIFIER=$(grep "AbsorbSend Verifier deployed at:" "$VERIFIER_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+export ABSORB_WITHDRAW_VERIFIER=$(grep "AbsorbWithdraw Verifier deployed at:" "$VERIFIER_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+VERIFIER_ADDRESSES="$ENTRY_VERIFIER $DEPOSIT_VERIFIER $WITHDRAW_VERIFIER $SEND_VERIFIER $ABSORB_VERIFIER $ABSORB_WITHDRAW_VERIFIER"
 rm "$VERIFIER_OUTPUT"
-
-# Restore files (trap will also handle this, but doing it explicitly for clarity)
-restore_merkle_files
-trap - EXIT
 
 
 echo ""
-echo "Step 3: Deploying Arkana Contract..."
+echo "Step 2: Deploying Arkana Contract (and PoseidonHasher if not set)..."
 echo "----------------------------------------"
 # Build INITIALIZE_VAULTS_TOKENS from individual Sepolia token env vars
 # This will initialize vaults for all available Sepolia tokens
@@ -275,7 +212,7 @@ if [ -n "$INITIALIZE_VAULTS_TOKENS" ]; then
     # Export the environment variable so forge script can read it via vm.envString()
     export INITIALIZE_VAULTS_TOKENS
     forge script script/Arkana.s.sol \
-        --skip test/Arkana.t.sol src/Verifiers/** src/merkle/LeanIMTPoseidon2.sol \
+        --skip test/Arkana.t.sol src/Verifiers/** \
         --broadcast \
         --rpc-url "$RPC_URL" \
         --keystore "$KEYSTORE" \
@@ -285,7 +222,7 @@ else
     echo "No tokens found for vault initialization"
     echo "Make sure Sepolia token addresses are set in .env (SEPOLIA_EURS, SEPOLIA_USDC, etc.)"
     forge script script/Arkana.s.sol \
-        --skip test/Arkana.t.sol src/Verifiers/** src/merkle/LeanIMTPoseidon2.sol \
+        --skip test/Arkana.t.sol src/Verifiers/** \
         --broadcast \
         --rpc-url "$RPC_URL" \
         --keystore "$KEYSTORE" \
@@ -304,24 +241,27 @@ fi
 # Extract Arkana contract address
 # Try multiple patterns to match different console.log formats
 # Priority: specific console.log messages first, then broadcast output
-# IMPORTANT: Exclude the Huff address that might be logged in Arkana script output
+# Extract PoseidonHasher address (script logs "PoseidonHasher:" or "Deployed new PoseidonHasher at:")
+POSEIDON_HASHER_ADDRESS=$(echo "$ARKANA_OUTPUT" | grep -i "PoseidonHasher:" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+if [ -z "$POSEIDON_HASHER_ADDRESS" ]; then
+    POSEIDON_HASHER_ADDRESS=$(echo "$ARKANA_OUTPUT" | grep -i "Deployed new PoseidonHasher at" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+fi
+export POSEIDON_HASHER_ADDRESS
+
 # First try "Arkana deployed at:" format (this is what the Solidity script actually outputs)
-ARKANA_ADDRESS=$(echo "$ARKANA_OUTPUT" | grep -i "Arkana deployed at" | grep -v -i "poseidon\|huff" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+ARKANA_ADDRESS=$(echo "$ARKANA_OUTPUT" | grep -i "Arkana deployed at" | grep -v -i "poseidon" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 
 if [ -z "$ARKANA_ADDRESS" ]; then
-    # Try "Arkana contract address:" format (fallback for other script versions)
-    ARKANA_ADDRESS=$(echo "$ARKANA_OUTPUT" | grep -i "Arkana contract address:" | grep -v -i "poseidon\|huff" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
+    ARKANA_ADDRESS=$(echo "$ARKANA_OUTPUT" | grep -i "Arkana contract address:" | grep -v -i "poseidon" | grep -oE '0x[a-fA-F0-9]{40}' | head -1)
 fi
 
 if [ -z "$ARKANA_ADDRESS" ]; then
-    # Try broadcast output "Contract Address:" (should be the last one in Arkana deployment)
-    # But exclude any that match the Huff address we already extracted
-    ARKANA_ADDRESS=$(echo "$ARKANA_OUTPUT" | grep -i "Contract Address:" | grep -oE '0x[a-fA-F0-9]{40}' | grep -v "^$POSEIDON2_HUFF_ADDRESS$" | tail -1)
+    # Try broadcast output "Contract Address:" (last one is typically Arkana)
+    ARKANA_ADDRESS=$(echo "$ARKANA_OUTPUT" | grep -i "Contract Address:" | grep -oE '0x[a-fA-F0-9]{40}' | tail -1)
 fi
 
 if [ -z "$ARKANA_ADDRESS" ]; then
-    # Look for "Deployed to:" in broadcast transactions (excluding Huff address)
-    ARKANA_ADDRESS=$(echo "$ARKANA_OUTPUT" | grep -A 2 "Deployed to:" | grep -oE '0x[a-fA-F0-9]{40}' | grep -v "^$POSEIDON2_HUFF_ADDRESS$" | tail -1)
+    ARKANA_ADDRESS=$(echo "$ARKANA_OUTPUT" | grep -A 2 "Deployed to:" | grep -oE '0x[a-fA-F0-9]{40}' | tail -1)
 fi
 
 if [ -z "$ARKANA_ADDRESS" ]; then
@@ -338,21 +278,12 @@ echo ""
 echo "=========================================="
 echo "Deployment completed successfully!"
 echo "=========================================="
-echo "Huff Poseidon2: $POSEIDON2_HUFF_ADDRESS"
+echo "PoseidonT3 (library): $POSEIDON_T3_ADDRESS"
+if [ -n "$POSEIDON_HASHER_ADDRESS" ]; then
+    echo "PoseidonHasher: $POSEIDON_HASHER_ADDRESS"
+fi
 if [ -n "$ARKANA_ADDRESS" ]; then
-    # Validate that addresses are different
-    if [ "$ARKANA_ADDRESS" = "$POSEIDON2_HUFF_ADDRESS" ]; then
-        echo "ERROR: Arkana Contract address matches Huff Poseidon2 address!"
-        echo "This indicates an extraction error. Please check the deployment output above."
-        echo ""
-        echo "Debug: Searching for Arkana address in output..."
-        echo "$ARKANA_OUTPUT" | grep -i "arkana" | head -10
-        echo ""
-        echo "Debug: All addresses in Arkana deployment output:"
-        echo "$ARKANA_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | tail -5
-    else
-        echo "Arkana Contract: $ARKANA_ADDRESS"
-    fi
+    echo "Arkana Contract: $ARKANA_ADDRESS"
 else
     echo "Arkana Contract: (address not extracted, check output above)"
     echo ""
@@ -365,10 +296,11 @@ echo ""
 export ARKANA_ADDRESS
 
 # Optionally save to a file for later use
-if [ -n "$ARKANA_ADDRESS" ] && [ "$ARKANA_ADDRESS" != "$POSEIDON2_HUFF_ADDRESS" ]; then
+if [ -n "$ARKANA_ADDRESS" ]; then
     echo "Saving deployment addresses to deployed_addresses.txt..."
     cat > deployed_addresses.txt << EOF
-POSEIDON2_HUFF_ADDRESS=$POSEIDON2_HUFF_ADDRESS
+POSEIDON_T3_LIB_ADDRESS=$POSEIDON_T3_ADDRESS
+POSEIDON_HASHER_ADDRESS=${POSEIDON_HASHER_ADDRESS:-}
 ARKANA_ADDRESS=$ARKANA_ADDRESS
 EOF
     echo "Addresses saved to deployed_addresses.txt"
@@ -451,7 +383,6 @@ if [ "$IS_SEPOLIA" = "true" ]; then
     echo "Final balance: $FINAL_BALANCE_ETH ETH"
     echo ""
     echo "To check gas used for each transaction, view the broadcast JSON files:"
-    echo "  - Poseidon2: broadcast/DeployPoseidon2Huff.s.sol/11155111/run-latest.json"
     echo "  - Verifiers: broadcast/VerifierDeployer.s.sol/11155111/run-latest.json"
     echo "  - Arkana: broadcast/Arkana.s.sol/11155111/run-latest.json"
 fi

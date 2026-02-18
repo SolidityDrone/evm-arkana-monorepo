@@ -3,7 +3,43 @@ pragma solidity ^0.8.13;
 
 import "forge-std/Test.sol";
 import "../src/crypto-utils/BJJ.sol";
-import "../src/crypto-utils/Generators.sol";
+
+/**
+ * @title GeneratorsFull
+ * @dev All five generators (G, H, D, K, J) for tests. Arkana imports Generators only.
+ */
+library GeneratorsFull {
+    uint256 public constant G_X = 10457101036533406547632367118273992217979173478358440826365724437999023779287;
+    uint256 public constant G_Y = 19824078218392094440610104313265183977899662750282163392862422243483260492317;
+    uint256 public constant H_X = 2671756056509184035029146175565761955751135805354291559563293617232983272177;
+    uint256 public constant H_Y = 2663205510731142763556352975002641716101654201788071096152948830924149045094;
+    uint256 public constant D_X = 5802099305472655231388284418920769829666717045250560929368476121199858275951;
+    uint256 public constant D_Y = 5980429700218124965372158798884772646841287887664001482443826541541529227896;
+    uint256 public constant K_X = 7107336197374528537877327281242680114152313102022415488494307685842428166594;
+    uint256 public constant K_Y = 2857869773864086953506483169737724679646433914307247183624878062391496185654;
+    uint256 public constant J_X = 20265828622013100949498132415626198973119240347465898028410217039057588424236;
+    uint256 public constant J_Y = 1160461593266035632937973507065134938065359936056410650153315956301179689506;
+
+    function getG() internal pure returns (uint256 x, uint256 y) {
+        return (G_X, G_Y);
+    }
+
+    function getH() internal pure returns (uint256 x, uint256 y) {
+        return (H_X, H_Y);
+    }
+
+    function getD() internal pure returns (uint256 x, uint256 y) {
+        return (D_X, D_Y);
+    }
+
+    function getK() internal pure returns (uint256 x, uint256 y) {
+        return (K_X, K_Y);
+    }
+
+    function getJ() internal pure returns (uint256 x, uint256 y) {
+        return (J_X, J_Y);
+    }
+}
 
 /**
  * @title PedersenOverBJJTest
@@ -12,6 +48,21 @@ import "../src/crypto-utils/Generators.sol";
 contract PedersenOverBJJTest is Test {
     using BJJ for BJJ.Point;
 
+    uint256 private constant P_MOD = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001;
+
+    function _bjjEq(BJJ.Point memory p1, BJJ.Point memory p2) internal pure returns (bool) {
+        return p1.x == p2.x && p1.y == p2.y;
+    }
+
+    function _bjjIsZero(BJJ.Point memory p) internal pure returns (bool) {
+        return p.x == 0 && p.y == 1;
+    }
+
+    function _bjjNegate(BJJ.Point memory p) internal pure returns (BJJ.Point memory) {
+        if (p.x == 0 && p.y == 1) return p;
+        return BJJ.Point(addmod(0, P_MOD - p.x, P_MOD), p.y);
+    }
+
     function setUp() public {}
 
     /**
@@ -19,22 +70,22 @@ contract PedersenOverBJJTest is Test {
      */
     function test_AddTwoPoints() public view {
         // Get generator G
-        (uint256 gX, uint256 gY) = Generators.getG();
+        (uint256 gX, uint256 gY) = GeneratorsFull.getG();
         BJJ.Point memory G = BJJ.Point(gX, gY);
 
         // Get generator H
-        (uint256 hX, uint256 hY) = Generators.getH();
+        (uint256 hX, uint256 hY) = GeneratorsFull.getH();
         BJJ.Point memory H = BJJ.Point(hX, hY);
 
         // Add G + H
         BJJ.Point memory result = BJJ.add(G, H);
 
         // Assert result is not zero point
-        assertFalse(BJJ.isZero(result), "Result should not be zero point");
+        assertFalse(_bjjIsZero(result), "Result should not be zero point");
 
         // Assert result is not equal to either input
-        assertFalse(BJJ.eq(result, G), "Result should not equal G");
-        assertFalse(BJJ.eq(result, H), "Result should not equal H");
+        assertFalse(_bjjEq(result, G), "Result should not equal G");
+        assertFalse(_bjjEq(result, H), "Result should not equal H");
 
         // Assert result coordinates are valid (non-zero)
         assertTrue(result.x != 0 || result.y != 1, "Result should have valid coordinates");
@@ -46,8 +97,8 @@ contract PedersenOverBJJTest is Test {
      * Run: forge test --match-test test_DefaultNonceDiscoveryPoint_BJJ -vvv
      */
     function test_DefaultNonceDiscoveryPoint_BJJ() public view {
-        (uint256 gX, uint256 gY) = Generators.getG();
-        (uint256 hX, uint256 hY) = Generators.getH();
+        (uint256 gX, uint256 gY) = GeneratorsFull.getG();
+        (uint256 hX, uint256 hY) = GeneratorsFull.getH();
         BJJ.Point memory G = BJJ.Point(gX, gY);
         BJJ.Point memory H = BJJ.Point(hX, hY);
         BJJ.Point memory defaultPoint = BJJ.add(G, H);
@@ -58,7 +109,7 @@ contract PedersenOverBJJTest is Test {
         console.log("DEFAULT_NONCE_DISCOVERY_Y =");
         console.log(defaultPoint.y);
 
-        assertFalse(BJJ.isZero(defaultPoint), "default point must not be identity");
+        assertFalse(_bjjIsZero(defaultPoint), "default point must not be identity");
     }
 
     /**
@@ -66,17 +117,17 @@ contract PedersenOverBJJTest is Test {
      */
     function test_AddPointToItself() public view {
         // Get generator G
-        (uint256 gX, uint256 gY) = Generators.getG();
+        (uint256 gX, uint256 gY) = GeneratorsFull.getG();
         BJJ.Point memory G = BJJ.Point(gX, gY);
 
         // Add G + G (doubling)
         BJJ.Point memory doubled = BJJ.add(G, G);
 
         // Assert result is not zero point
-        assertFalse(BJJ.isZero(doubled), "Doubled point should not be zero");
+        assertFalse(_bjjIsZero(doubled), "Doubled point should not be zero");
 
         // Assert result is not equal to original G
-        assertFalse(BJJ.eq(doubled, G), "Doubled point should not equal original G");
+        assertFalse(_bjjEq(doubled, G), "Doubled point should not equal original G");
     }
 
     /**
@@ -84,7 +135,7 @@ contract PedersenOverBJJTest is Test {
      */
     function test_CreatePedersenCommitmentWithGetTerm() public view {
         // Get generator G
-        (uint256 gX, uint256 gY) = Generators.getG();
+        (uint256 gX, uint256 gY) = GeneratorsFull.getG();
         BJJ.Point memory G = BJJ.Point(gX, gY);
 
         // Create a term: scalar * G
@@ -92,10 +143,10 @@ contract PedersenOverBJJTest is Test {
         BJJ.Point memory term = BJJ.getTerm(G, scalar);
 
         // Assert term is not zero
-        assertFalse(BJJ.isZero(term), "Term should not be zero point");
+        assertFalse(_bjjIsZero(term), "Term should not be zero point");
 
         // Assert term is not equal to G
-        assertFalse(BJJ.eq(term, G), "Term should not equal generator G");
+        assertFalse(_bjjEq(term, G), "Term should not equal generator G");
     }
 
     /**
@@ -104,19 +155,19 @@ contract PedersenOverBJJTest is Test {
      */
     function test_CreatePedersenCommitmentWithFiveTerms() public view {
         // Get all generators
-        (uint256 gX, uint256 gY) = Generators.getG();
+        (uint256 gX, uint256 gY) = GeneratorsFull.getG();
         BJJ.Point memory G = BJJ.Point(gX, gY);
 
-        (uint256 hX, uint256 hY) = Generators.getH();
+        (uint256 hX, uint256 hY) = GeneratorsFull.getH();
         BJJ.Point memory H = BJJ.Point(hX, hY);
 
-        (uint256 dX, uint256 dY) = Generators.getD();
+        (uint256 dX, uint256 dY) = GeneratorsFull.getD();
         BJJ.Point memory D = BJJ.Point(dX, dY);
 
-        (uint256 kX, uint256 kY) = Generators.getK();
+        (uint256 kX, uint256 kY) = GeneratorsFull.getK();
         BJJ.Point memory K = BJJ.Point(kX, kY);
 
-        (uint256 jX, uint256 jY) = Generators.getJ();
+        (uint256 jX, uint256 jY) = GeneratorsFull.getJ();
         BJJ.Point memory J = BJJ.Point(jX, jY);
 
         // Define 5 scalar values
@@ -134,11 +185,11 @@ contract PedersenOverBJJTest is Test {
         BJJ.Point memory term5 = BJJ.getTerm(J, m5); // m5 * J
 
         // Assert all terms are non-zero
-        assertFalse(BJJ.isZero(term1), "Term1 should not be zero");
-        assertFalse(BJJ.isZero(term2), "Term2 should not be zero");
-        assertFalse(BJJ.isZero(term3), "Term3 should not be zero");
-        assertFalse(BJJ.isZero(term4), "Term4 should not be zero");
-        assertFalse(BJJ.isZero(term5), "Term5 should not be zero");
+        assertFalse(_bjjIsZero(term1), "Term1 should not be zero");
+        assertFalse(_bjjIsZero(term2), "Term2 should not be zero");
+        assertFalse(_bjjIsZero(term3), "Term3 should not be zero");
+        assertFalse(_bjjIsZero(term4), "Term4 should not be zero");
+        assertFalse(_bjjIsZero(term5), "Term5 should not be zero");
 
         // Add all terms together to create the Pedersen commitment
         BJJ.Point memory commitment = BJJ.add(term1, term2);
@@ -147,14 +198,14 @@ contract PedersenOverBJJTest is Test {
         commitment = BJJ.add(commitment, term5);
 
         // Assert final commitment is not zero
-        assertFalse(BJJ.isZero(commitment), "Final commitment should not be zero");
+        assertFalse(_bjjIsZero(commitment), "Final commitment should not be zero");
 
         // Assert commitment is not equal to any individual term
-        assertFalse(BJJ.eq(commitment, term1), "Commitment should not equal term1");
-        assertFalse(BJJ.eq(commitment, term2), "Commitment should not equal term2");
-        assertFalse(BJJ.eq(commitment, term3), "Commitment should not equal term3");
-        assertFalse(BJJ.eq(commitment, term4), "Commitment should not equal term4");
-        assertFalse(BJJ.eq(commitment, term5), "Commitment should not equal term5");
+        assertFalse(_bjjEq(commitment, term1), "Commitment should not equal term1");
+        assertFalse(_bjjEq(commitment, term2), "Commitment should not equal term2");
+        assertFalse(_bjjEq(commitment, term3), "Commitment should not equal term3");
+        assertFalse(_bjjEq(commitment, term4), "Commitment should not equal term4");
+        assertFalse(_bjjEq(commitment, term5), "Commitment should not equal term5");
 
         // Assert commitment coordinates are valid
         assertTrue(commitment.x != 0 || commitment.y != 1, "Commitment should have valid coordinates");
@@ -165,17 +216,17 @@ contract PedersenOverBJJTest is Test {
      */
     function test_AddPointAndNegation() public view {
         // Get generator G
-        (uint256 gX, uint256 gY) = Generators.getG();
+        (uint256 gX, uint256 gY) = GeneratorsFull.getG();
         BJJ.Point memory G = BJJ.Point(gX, gY);
 
         // Negate G
-        BJJ.Point memory negG = BJJ.negate(G);
+        BJJ.Point memory negG = _bjjNegate(G);
 
         // Add G + (-G) should equal zero point
         BJJ.Point memory result = BJJ.add(G, negG);
 
         // Assert result is zero point
-        assertTrue(BJJ.isZero(result), "G + (-G) should equal zero point");
+        assertTrue(_bjjIsZero(result), "G + (-G) should equal zero point");
     }
 
     /**
@@ -183,14 +234,14 @@ contract PedersenOverBJJTest is Test {
      */
     function test_GetTermWithZeroScalar() public view {
         // Get generator G
-        (uint256 gX, uint256 gY) = Generators.getG();
+        (uint256 gX, uint256 gY) = GeneratorsFull.getG();
         BJJ.Point memory G = BJJ.Point(gX, gY);
 
         // Create term with zero scalar
         BJJ.Point memory term = BJJ.getTerm(G, 0);
 
         // Assert term is zero point
-        assertTrue(BJJ.isZero(term), "0 * G should equal zero point");
+        assertTrue(_bjjIsZero(term), "0 * G should equal zero point");
     }
 
     /**
@@ -198,14 +249,14 @@ contract PedersenOverBJJTest is Test {
      */
     function test_GetTermWithScalarOne() public view {
         // Get generator G
-        (uint256 gX, uint256 gY) = Generators.getG();
+        (uint256 gX, uint256 gY) = GeneratorsFull.getG();
         BJJ.Point memory G = BJJ.Point(gX, gY);
 
         // Create term with scalar 1
         BJJ.Point memory term = BJJ.getTerm(G, 1);
 
         // Assert term equals G
-        assertTrue(BJJ.eq(term, G), "1 * G should equal G");
+        assertTrue(_bjjEq(term, G), "1 * G should equal G");
     }
 
     /**
@@ -213,19 +264,19 @@ contract PedersenOverBJJTest is Test {
      */
     function test_PedersenCommitmentWithDifferentScalars() public view {
         // Get all generators
-        (uint256 gX, uint256 gY) = Generators.getG();
+        (uint256 gX, uint256 gY) = GeneratorsFull.getG();
         BJJ.Point memory G = BJJ.Point(gX, gY);
 
-        (uint256 hX, uint256 hY) = Generators.getH();
+        (uint256 hX, uint256 hY) = GeneratorsFull.getH();
         BJJ.Point memory H = BJJ.Point(hX, hY);
 
-        (uint256 dX, uint256 dY) = Generators.getD();
+        (uint256 dX, uint256 dY) = GeneratorsFull.getD();
         BJJ.Point memory D = BJJ.Point(dX, dY);
 
-        (uint256 kX, uint256 kY) = Generators.getK();
+        (uint256 kX, uint256 kY) = GeneratorsFull.getK();
         BJJ.Point memory K = BJJ.Point(kX, kY);
 
-        (uint256 jX, uint256 jY) = Generators.getJ();
+        (uint256 jX, uint256 jY) = GeneratorsFull.getJ();
         BJJ.Point memory J = BJJ.Point(jX, jY);
 
         // Test with different scalar values
@@ -261,14 +312,11 @@ contract PedersenOverBJJTest is Test {
         commitment2 = BJJ.add(commitment2, term5_2);
 
         // Assert both commitments are valid
-        assertFalse(BJJ.isZero(commitment1), "Commitment1 should not be zero");
-        assertFalse(BJJ.isZero(commitment2), "Commitment2 should not be zero");
+        assertFalse(_bjjIsZero(commitment1), "Commitment1 should not be zero");
+        assertFalse(_bjjIsZero(commitment2), "Commitment2 should not be zero");
 
         // Assert commitments are different (different scalars should produce different commitments)
-        assertFalse(BJJ.eq(commitment1, commitment2), "Different scalars should produce different commitments");
+        assertFalse(_bjjEq(commitment1, commitment2), "Different scalars should produce different commitments");
     }
 }
-
-
-
 

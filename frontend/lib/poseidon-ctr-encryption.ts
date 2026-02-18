@@ -36,15 +36,14 @@ export async function poseidonKeystream(key: bigint, nonce: number): Promise<big
     const { ensureBufferPolyfill } = await import('@/lib/buffer-polyfill');
     await ensureBufferPolyfill();
 
-    // Dynamic import of poseidon2Hash
-    const { poseidon2Hash } = await import('@aztec/foundation/crypto');
+    // Dynamic import of poseidonHash
+    const { poseidonHash } = await import('@/lib/circuit-utils');
 
     // Reduce key to field
     const keyField = reduceToField(key);
 
-    // Generate keystream using Poseidon2 with key and nonce
-    // Poseidon2::hash([key, nonce as Field], 2)
-    const keystream = await poseidon2Hash([keyField, BigInt(nonce)]);
+    // Generate keystream using Poseidon with key and nonce
+    const keystream = await poseidonHash([keyField, BigInt(nonce)]);
 
     // Convert to bigint
     let keystreamBigInt: bigint;

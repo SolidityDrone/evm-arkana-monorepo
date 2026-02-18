@@ -16,7 +16,7 @@ export interface CommitmentState {
     nonce: bigint;
     tokenAddress: bigint;
     commitmentPoint: CommitmentPoint; // Pedersen commitment point (x, y)
-    commitmentLeaf: bigint; // Hash of commitment point: Poseidon2::hash([x, y], 2)
+    commitmentLeaf: bigint; // Hash of commitment point: Poseidon([x, y])
     nonceCommitment: bigint; // Nonce commitment for this nonce
     shares: bigint; // Shares for this commitment
     nullifier: bigint; // Nullifier for this commitment
@@ -48,17 +48,25 @@ const DB_VERSION = 3;
 const STORE_NAME = 'account_data';
 
 let dbInstance: IDBDatabase | null = null;
+let dbOpenFailed = false;
 
-async function getDB(): Promise<IDBDatabase> {
+async function getDB(): Promise<IDBDatabase | null> {
     if (dbInstance) {
         return dbInstance;
     }
+    if (dbOpenFailed) {
+        return null;
+    }
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
         const request = indexedDB.open(DB_NAME, DB_VERSION);
 
         request.onerror = () => {
-            reject(new Error('Failed to open IndexedDB'));
+            if (!dbOpenFailed) {
+                dbOpenFailed = true;
+                console.warn('IndexedDB unavailable (private mode or storage disabled). Account cache will not persist.');
+            }
+            resolve(null);
         };
 
         request.onsuccess = () => {
@@ -79,6 +87,7 @@ async function getDB(): Promise<IDBDatabase> {
 export async function saveAccountData(data: AccountData): Promise<void> {
     try {
         const db = await getDB();
+        if (!db) return;
         const transaction = db.transaction([STORE_NAME], 'readwrite');
         const store = transaction.objectStore(STORE_NAME);
 
@@ -125,6 +134,7 @@ export async function saveAccountData(data: AccountData): Promise<void> {
 export async function loadAccountData(zkAddress: string): Promise<AccountData | null> {
     try {
         const db = await getDB();
+        if (!db) return null;
         const transaction = db.transaction([STORE_NAME], 'readonly');
         const store = transaction.objectStore(STORE_NAME);
 
@@ -175,6 +185,10 @@ export async function loadAccountData(zkAddress: string): Promise<AccountData | 
         console.error('Error loading account data from IndexedDB:', error);
         return null;
     }
+}
+
+export function isIndexedDBAvailable(): boolean {
+    return !dbOpenFailed && dbInstance !== null;
 }
 
 export async function saveTokenAccountData(

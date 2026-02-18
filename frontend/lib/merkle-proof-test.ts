@@ -1,5 +1,4 @@
 import { LeanIMTContract } from './merkle-proof';
-import { poseidon2HashAsync } from './poseidon2-hash';
 
 // Test leaves: 0x000000..., 0x1111111..., 0x22222..., etc
 const LEAVES: bigint[] = [
