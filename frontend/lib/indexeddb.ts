@@ -116,6 +116,7 @@ export async function saveAccountData(data: AccountData): Promise<void> {
                     tokenAddress: entry.tokenAddress.toString(),
                     amount: entry.amount.toString(),
                     nonce: entry.nonce.toString(),
+                    nullifier: (entry as any).nullifier != null ? (entry as any).nullifier.toString() : '0',
                 })),
                 incomingNotes: (token.incomingNotes ?? []).map((n: IncomingNote) => ({
                     tokenAddress: n.tokenAddress,
@@ -138,6 +139,7 @@ export async function saveAccountData(data: AccountData): Promise<void> {
                 tokenAddress: entry.tokenAddress.toString(),
                 amount: entry.amount.toString(),
                 nonce: entry.nonce.toString(),
+                nullifier: (entry as any).nullifier != null ? (entry as any).nullifier.toString() : '0',
             })) : [],
             discoveryMode: data.discoveryMode || 'mage',
             mageTokenData: serializeTokenData(data.mageTokenData),
@@ -179,6 +181,7 @@ export async function loadAccountData(zkAddress: string): Promise<AccountData | 
                             tokenAddress: BigInt(entry.tokenAddress),
                             amount: BigInt(entry.amount),
                             nonce: BigInt(entry.nonce),
+                            nullifier: entry.nullifier != null ? BigInt(entry.nullifier) : BigInt(0),
                         })) : [],
                         incomingNotes: token.incomingNotes?.map((n: any): IncomingNote => ({
                             tokenAddress: n.tokenAddress,
@@ -201,6 +204,7 @@ export async function loadAccountData(zkAddress: string): Promise<AccountData | 
                         tokenAddress: BigInt(entry.tokenAddress),
                         amount: BigInt(entry.amount),
                         nonce: BigInt(entry.nonce),
+                        nullifier: entry.nullifier != null ? BigInt(entry.nullifier) : BigInt(0),
                     })) : [],
                     discoveryMode: result.discoveryMode || 'mage',
                     mageTokenData: deserializeTokenData(result.mageTokenData),
@@ -226,7 +230,8 @@ export async function saveTokenAccountData(
     tokenAddress: string,
     currentNonce: bigint | null,
     balanceEntries: BalanceEntry[],
-    mode: DiscoveryMode = 'mage'
+    mode: DiscoveryMode = 'mage',
+    incomingNotes?: IncomingNote[]
 ): Promise<void> {
     try {
         const existingData = await loadAccountData(zkAddress);
@@ -237,6 +242,7 @@ export async function saveTokenAccountData(
             currentNonce,
             balanceEntries,
             lastUpdated: Date.now(),
+            ...(incomingNotes != null && incomingNotes.length > 0 ? { incomingNotes } : {}),
         };
 
         // Get the appropriate token array based on mode

@@ -15,6 +15,8 @@ export interface BalanceEntry {
   tokenAddress: bigint;
   amount: bigint;
   nonce: bigint;
+  /** Decrypted nullifier for this commitment (from encryptedStateDetails, counter 1) */
+  nullifier?: bigint;
 }
 
 export interface PersonalCommitmentState {
@@ -226,7 +228,10 @@ export function useNonceDiscovery() {
         }) as [`0x${string}`, `0x${string}`];
 
         const encryptedBalance = BigInt(encryptedState[0]);
+        const encryptedNullifier = BigInt(encryptedState[1]);
         const encryptedTokenAddress = tokenAddress;
+
+        const nullifier = await poseidonCtrDecrypt(encryptedNullifier, viewKeyBigInt, 1);
 
         let amount: bigint;
         let decryptedTokenAddress: bigint;
@@ -257,7 +262,7 @@ export function useNonceDiscovery() {
           decryptedTokenAddress = tokenAddress;
         }
 
-        entries.push({ tokenAddress: decryptedTokenAddress, amount, nonce });
+        entries.push({ tokenAddress: decryptedTokenAddress, amount, nonce, nullifier });
       }
 
       setBalanceEntries(entries);

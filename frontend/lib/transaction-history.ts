@@ -8,7 +8,7 @@ import { getSpendingKeyCircuit, poseidonHash } from './circuit-utils';
 const VIEW_STRING = BigInt('0x76696577696e675f6b6579');
 
 export interface TransactionHistoryEntry {
-  type: 'initialize' | 'deposit' | 'send' | 'withdraw' | 'absorb';
+  type: 'initialize' | 'deposit' | 'send' | 'withdraw' | 'absorb' | 'absorb_send' | 'absorb_withdraw';
   nonce: bigint;
   nonceCommitment: bigint;
   tokenAddress: bigint;
@@ -119,9 +119,8 @@ export async function reconstructTokenHistory(
           continue;
         }
 
-        // Map operation type
-        // Special case: nonce 0 is always initialize
-        let transactionType: 'initialize' | 'deposit' | 'send' | 'withdraw' | 'absorb';
+        // Map operation type (contract enum: Initialize=0, Deposit=1, Send=2, Withdraw=3, AbsorbSend=4, AbsorbWithdraw=5)
+        let transactionType: TransactionHistoryEntry['type'];
         if (nonce === BigInt(0)) {
           transactionType = 'initialize';
         } else {
@@ -139,17 +138,14 @@ export async function reconstructTokenHistory(
               transactionType = 'withdraw';
               break;
             case 4:
-              transactionType = 'absorb';
+              transactionType = 'absorb_send';
+              break;
+            case 5:
+              transactionType = 'absorb_withdraw';
               break;
             default:
               transactionType = 'deposit';
           }
-        }
-
-        // Filter: Only include ENTRY (initialize), DEPOSIT, and WITHDRAW
-        if (transactionType !== 'initialize' && transactionType !== 'deposit' && transactionType !== 'withdraw') {
-          console.log(`[History] Skipping ${transactionType} operation (only showing initialize/deposit/withdraw)`);
-          continue;
         }
 
         // Decrypt balance
