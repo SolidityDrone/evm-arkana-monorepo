@@ -13,6 +13,8 @@ import { useToast } from '@/components/Toast';
 import { TokenIcon } from '@/lib/token-icons';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { encodeFunctionData } from 'viem';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { ARKANA_MESSAGE } from '@/lib/zk-address';
 
 export default function WithdrawPage() {
     const { toast } = useToast();
@@ -50,8 +52,11 @@ export default function WithdrawPage() {
         isTokenInitialized,
         isCheckingTokenState,
         availableBalance,
+        availableBalanceAssets,
         isCalculatingInputs,
+        canAbsorb,
         groth16Result,
+        withdrawCircuit,
         proveWithdraw,
         handleWithdraw,
     } = useWithdraw();
@@ -64,6 +69,7 @@ export default function WithdrawPage() {
     const [relayerTxHash, setRelayerTxHash] = useState<string | null>(null);
     const [relayerError, setRelayerError] = useState<string | null>(null);
     const [isCustomSpell, setIsCustomSpell] = useState(false);
+    const [showSignDataModal, setShowSignDataModal] = useState(false);
 
     React.useEffect(() => {
         if (isProving || isPending || isConfirming || isConfirmed) {
@@ -111,7 +117,7 @@ export default function WithdrawPage() {
             const callDataBytes: `0x${string}` = arbitraryCalldata?.trim() ? (arbitraryCalldata.startsWith('0x') ? arbitraryCalldata : `0x${arbitraryCalldata}`) as `0x${string}` : '0x';
             const calldata = encodeFunctionData({
                 abi: ArkanaAbi,
-                functionName: 'withdraw',
+                functionName: withdrawCircuit === 'absorb_withdraw' ? 'absorbWithdraw' : 'withdraw',
                 args: [pA, pB, pC, publicSignals, callDataBytes],
             });
             const response = await fetch('/api/relayer', {
@@ -128,7 +134,7 @@ export default function WithdrawPage() {
         } finally {
             setIsRelayerSubmitting(false);
         }
-    }, [groth16Result, arbitraryCalldata, toast]);
+    }, [groth16Result, withdrawCircuit, arbitraryCalldata, toast]);
 
     return (
         <div className="min-h-screen pt-24 pb-12 px-4 sm:px-6 lg:px-8 w-full overflow-x-hidden relative">
@@ -176,9 +182,51 @@ export default function WithdrawPage() {
                         <CardContent className="p-3 sm:p-6 w-full">
                             <div className="space-y-4 w-full">
                                 {!zkAddress && (
-                                    <SpellButton onClick={handleSign} disabled={isSigning} variant="primary" className="w-full">
-                                        {isSigning ? 'SIGNING...' : 'SIGN MESSAGE FOR ARKANA NETWORK ACCESS'}
-                                    </SpellButton>
+                                    <>
+                                        <SpellButton onClick={() => setShowSignDataModal(true)} disabled={isSigning} variant="primary" className="w-full">
+                                            {isSigning ? 'SIGNING...' : 'SIGN MESSAGE FOR ARKANA NETWORK ACCESS'}
+                                        </SpellButton>
+                                        <Dialog open={showSignDataModal} onOpenChange={setShowSignDataModal}>
+                                            <DialogContent className="max-w-lg max-h-[85vh] flex flex-col bg-card/95 backdrop-blur-sm border-primary/30">
+                                                <DialogHeader>
+                                                    <DialogTitle className="text-base font-sans uppercase tracking-wider">
+                                                        Data you are signing
+                                                    </DialogTitle>
+                                                </DialogHeader>
+                                                <p className="text-xs text-muted-foreground">
+                                                    Your wallet will ask you to sign the message below. This signature is used to derive your private Arkana identity. Verify the content and domain before signing.
+                                                </p>
+                                                <div className="rounded-lg border border-border/60 bg-muted/30 p-3 overflow-y-auto max-h-[240px]">
+                                                    <pre className="text-[11px] font-mono text-foreground whitespace-pre-wrap break-words">
+                                                        {ARKANA_MESSAGE}
+                                                    </pre>
+                                                </div>
+                                                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+                                                    <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                                                        ⚠️ Disclaimer: Verify that this data is correct before signing. Only sign on the official Arkana domain. Never share your signature with anyone.
+                                                    </p>
+                                                </div>
+                                                <div className="flex gap-3 justify-end pt-2">
+                                                    <Button variant="outline" onClick={() => setShowSignDataModal(false)} disabled={isSigning}>
+                                                        Cancel
+                                                    </Button>
+                                                    <Button
+                                                        onClick={async () => {
+                                                            try {
+                                                                await handleSign();
+                                                                setShowSignDataModal(false);
+                                                            } catch {
+                                                                // Keep modal open on error
+                                                            }
+                                                        }}
+                                                        disabled={isSigning}
+                                                    >
+                                                        {isSigning ? 'Signing…' : 'Sign'}
+                                                    </Button>
+                                                </div>
+                                            </DialogContent>
+                                        </Dialog>
+                                    </>
                                 )}
 
                                 {zkAddress && (
@@ -233,9 +281,15 @@ export default function WithdrawPage() {
                                                         <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider mb-1 sm:mb-2">WITHDRAW AMOUNT {tokenDecimals != null ? `(${tokenDecimals} decimals)` : ''}</label>
                                                         <div className="flex gap-2">
                                                             <Input type="text" value={amount} onChange={(e) => { const v = e.target.value; if (v === '') setAmount(''); else setAmount(v.replace(',', '.')); }} placeholder={tokenDecimals != null ? `e.g. 1.5` : 'Amount'} className="text-xs sm:text-sm flex-1" />
-                                                            <Button type="button" onClick={() => { if (availableBalance != null && tokenDecimals != null) setAmount(formatBalance(availableBalance, tokenDecimals)); }} disabled={availableBalance == null || tokenDecimals == null} className="text-xs px-3 py-2 h-auto bg-accent/20 hover:bg-accent/30 text-accent border border-accent/50 font-mono uppercase">MAX</Button>
+                                                            <Button type="button" onClick={() => { if (availableBalanceAssets != null && tokenDecimals != null) setAmount(formatBalance(availableBalanceAssets, tokenDecimals)); }} disabled={availableBalanceAssets == null || tokenDecimals == null} className="text-xs px-3 py-2 h-auto bg-accent/20 hover:bg-accent/30 text-accent border border-accent/50 font-mono uppercase">MAX</Button>
                                                         </div>
-                                                        {availableBalance != null && tokenDecimals != null && <p className="text-[10px] font-mono text-muted-foreground mt-1 text-right">Available: {formatBalance(availableBalance, tokenDecimals)}</p>}
+                                                        {availableBalance != null && (
+                                                            <p className="text-[10px] font-mono text-muted-foreground mt-1 text-right">
+                                                                Available: {availableBalance.toString()} shares
+                                                                {availableBalanceAssets != null && tokenDecimals != null && tokenSymbol && <> ≈ {formatBalance(availableBalanceAssets, tokenDecimals)} {tokenSymbol}</>}
+                                                                {canAbsorb && <span className="ml-1 text-primary">(includes absorbable)</span>}
+                                                            </p>
+                                                        )}
                                                     </div>
 
                                                     <div>

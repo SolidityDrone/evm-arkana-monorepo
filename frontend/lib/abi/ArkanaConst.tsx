@@ -1115,6 +1115,25 @@ const ARKANA_ABI = [
     },
     {
         "type": "function",
+        "name": "absorbWithdraw",
+        "inputs": [
+            { "name": "pA", "type": "uint256[2]", "internalType": "uint256[2]" },
+            { "name": "pB", "type": "uint256[2][2]", "internalType": "uint256[2][2]" },
+            { "name": "pC", "type": "uint256[2]", "internalType": "uint256[2]" },
+            { "name": "publicSignals", "type": "uint256[15]", "internalType": "uint256[15]" },
+            { "name": "call", "type": "bytes", "internalType": "bytes" }
+        ],
+        "outputs": [
+            {
+                "name": "newRoot",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
         "name": "withdrawForSwap",
         "inputs": [
             {

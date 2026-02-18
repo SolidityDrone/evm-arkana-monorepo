@@ -6,7 +6,7 @@
 import type { Groth16Args, SnarkjsProofResult } from './groth16';
 import { formatSnarkjsProofForContract } from './groth16';
 
-export type CircuitName = 'entry' | 'deposit' | 'withdraw' | 'send';
+export type CircuitName = 'entry' | 'deposit' | 'withdraw' | 'send' | 'absorb_withdraw' | 'absorb_send';
 
 /** Input object for snarkjs: keys must match the circom circuit's input signal names (string values). */
 export type CircuitInputs = Record<string, string | string[]>;

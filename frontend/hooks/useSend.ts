@@ -8,6 +8,7 @@ import { parseAbi, Address, padHex } from 'viem';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { useNonceDiscovery } from '@/hooks/useNonceDiscovery';
 import { loadAccountData, saveTokenAccountData } from '@/lib/indexeddb';
+import { convertSharesToAssets } from '@/lib/shares-to-assets';
 import { convertAssetsToShares } from '@/lib/shares-to-assets';
 import { computePrivateKeyFromSignature, getSpendingKeyCircuit, getViewKeyFromUserKey, poseidonHash } from '@/lib/circuit-utils';
 import { proveWithSnarkjs } from '@/lib/circuit-prove';
@@ -29,7 +30,7 @@ export function useSend() {
     const { writeContract, data: hash, isPending, error: writeError } = useWriteContract();
     const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({ hash });
 
-    const { computeCurrentNonce } = useNonceDiscovery();
+    const { computeCurrentNonce, fetchIncomingNotes } = useNonceDiscovery();
 
     const [tokenAddress, setTokenAddress] = useState('');
     const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
@@ -55,6 +56,8 @@ export function useSend() {
     const [tokenName, setTokenName] = useState('');
     const [tokenSymbol, setTokenSymbol] = useState('');
     const [availableBalance, setAvailableBalance] = useState<bigint | null>(null);
+    const [availableBalanceAssets, setAvailableBalanceAssets] = useState<bigint | null>(null);
+    const [canAbsorb, setCanAbsorb] = useState(false);
 
     const groth16ResultRef = useRef<Groth16Args | null>(null);
     const [groth16Result, setGroth16Result] = useState<Groth16Args | null>(null);
@@ -189,9 +192,12 @@ export function useSend() {
         };
     }, [tokenAddress, zkAddress, publicClient, account?.signature, computeCurrentNonce, setBalanceEntries]);
 
+    // Available balance = current + (incoming - nullifier)
     useEffect(() => {
-        if (!tokenAddress || !zkAddress || !balanceEntries.length || tokenCurrentNonce == null || tokenCurrentNonce === 0n) {
+        if (!tokenAddress || !zkAddress || tokenCurrentNonce == null || tokenCurrentNonce === 0n) {
             setAvailableBalance(null);
+            setAvailableBalanceAssets(null);
+            setCanAbsorb(false);
             return;
         }
         const tokenBigInt = BigInt(tokenAddress.startsWith('0x') ? tokenAddress : '0x' + tokenAddress);
@@ -201,9 +207,58 @@ export function useSend() {
             const n = typeof e.nonce === 'string' ? BigInt(e.nonce) : e.nonce;
             return a === tokenBigInt && n === prevNonce;
         });
-        if (entry?.amount != null) setAvailableBalance(typeof entry.amount === 'string' ? BigInt(entry.amount) : entry.amount);
-        else setAvailableBalance(null);
-    }, [tokenAddress, zkAddress, balanceEntries, tokenCurrentNonce]);
+        const currentShares = entry?.amount != null ? (typeof entry.amount === 'string' ? BigInt(entry.amount) : entry.amount) : 0n;
+        const nullifier = (entry as { nullifier?: bigint } | undefined)?.nullifier ?? 0n;
+
+        if (!fetchIncomingNotes || !account?.signature || !publicClient) {
+            setAvailableBalance(currentShares);
+            setCanAbsorb(false);
+            return;
+        }
+        setAvailableBalance(currentShares);
+
+        let cancelled = false;
+        (async () => {
+            try {
+                let userKeyBigInt: bigint | null = contextUserKey ? BigInt('0x' + contextUserKey.toString(16)) : BigInt(userKey || '0');
+                if (!userKeyBigInt && account?.signature) {
+                    const { computePrivateKeyFromSignature } = await import('@/lib/circuit-utils');
+                    const hex = await computePrivateKeyFromSignature(account.signature);
+                    userKeyBigInt = BigInt(hex.startsWith('0x') ? hex : '0x' + hex);
+                }
+                if (!userKeyBigInt) {
+                    if (!cancelled) setAvailableBalance(currentShares);
+                    return;
+                }
+                const { x: rx, y: ry } = parseZkAddress(zkAddress);
+                const { notes } = await fetchIncomingNotes(tokenAddress as `0x${string}`, rx, ry, userKeyBigInt);
+                if (cancelled) return;
+                const sumIncoming = notes.reduce((acc, n) => acc + n.amount, 0n);
+                const absorbable = sumIncoming > nullifier ? sumIncoming - nullifier : 0n;
+                const displayBalance = currentShares + absorbable;
+                setAvailableBalance(displayBalance);
+                setCanAbsorb(absorbable > 0n);
+            } catch {
+                if (!cancelled) {
+                    setAvailableBalance(currentShares);
+                    setCanAbsorb(false);
+                }
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [tokenAddress, zkAddress, balanceEntries, tokenCurrentNonce, account?.signature, contextUserKey, userKey, fetchIncomingNotes, publicClient]);
+
+    useEffect(() => {
+        if (!publicClient || !tokenAddress || availableBalance === null) {
+            setAvailableBalanceAssets(null);
+            return;
+        }
+        let cancelled = false;
+        convertSharesToAssets(publicClient, tokenAddress as Address, availableBalance).then((assets) => {
+            if (!cancelled && assets != null) setAvailableBalanceAssets(assets);
+        }).catch(() => { if (!cancelled) setAvailableBalanceAssets(null); });
+        return () => { cancelled = true; };
+    }, [publicClient, tokenAddress, availableBalance]);
 
     const calculateCircuitInputs = useCallback(async () => {
         if (!tokenAddress || !amount || !receiverZkAddress.trim() || !relayerFeeAmount || !zkAddress || !publicClient)
@@ -541,7 +596,9 @@ export function useSend() {
         isTokenInitialized,
         isCheckingTokenState,
         availableBalance,
+        availableBalanceAssets,
         isCalculatingInputs,
+        canAbsorb,
         groth16Result,
         proveSend,
         handleSend,

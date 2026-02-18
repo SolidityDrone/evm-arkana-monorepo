@@ -46,7 +46,9 @@ export default function SendPage() {
         isTokenInitialized,
         isCheckingTokenState,
         availableBalance,
+        availableBalanceAssets,
         isCalculatingInputs,
+        canAbsorb,
         groth16Result,
         proveSend,
         handleSend,
@@ -201,9 +203,15 @@ export default function SendPage() {
                                                         <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider mb-1 sm:mb-2">AMOUNT {tokenDecimals != null ? `(${tokenDecimals} decimals)` : ''}</label>
                                                         <div className="flex gap-2">
                                                             <Input type="text" value={amount} onChange={(e) => { const v = e.target.value; if (v === '') setAmount(''); else setAmount(v.replace(',', '.')); }} placeholder={tokenDecimals != null ? 'e.g. 1.5' : 'Amount'} className="text-xs sm:text-sm flex-1" />
-                                                            <Button type="button" onClick={() => { if (availableBalance != null && tokenDecimals != null) setAmount(formatBalance(availableBalance, tokenDecimals)); }} disabled={availableBalance == null || tokenDecimals == null} className="text-xs px-3 py-2 h-auto bg-accent/20 hover:bg-accent/30 text-accent border border-accent/50 font-mono uppercase">MAX</Button>
+                                                            <Button type="button" onClick={() => { if (availableBalanceAssets != null && tokenDecimals != null) setAmount(formatBalance(availableBalanceAssets, tokenDecimals)); }} disabled={availableBalanceAssets == null || tokenDecimals == null} className="text-xs px-3 py-2 h-auto bg-accent/20 hover:bg-accent/30 text-accent border border-accent/50 font-mono uppercase">MAX</Button>
                                                         </div>
-                                                        {availableBalance != null && tokenDecimals != null && <p className="text-[10px] font-mono text-muted-foreground mt-1 text-right">Available: {formatBalance(availableBalance, tokenDecimals)}</p>}
+                                                        {availableBalance != null && (
+                                                            <p className="text-[10px] font-mono text-muted-foreground mt-1 text-right">
+                                                                Available: {availableBalance.toString()} shares
+                                                                {availableBalanceAssets != null && tokenDecimals != null && tokenSymbol && <> ≈ {formatBalance(availableBalanceAssets, tokenDecimals)} {tokenSymbol}</>}
+                                                                {canAbsorb && <span className="ml-1 text-primary">(includes absorbable)</span>}
+                                                            </p>
+                                                        )}
                                                     </div>
 
                                                     <div>

@@ -9,10 +9,13 @@ import { getChainId } from '@/config';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { useNonceDiscovery } from '@/hooks/useNonceDiscovery';
 import { loadAccountData, saveTokenAccountData } from '@/lib/indexeddb';
+import { parseZkAddress } from '@/lib/zk-address';
+import { convertSharesToAssets } from '@/lib/shares-to-assets';
 import { convertAssetsToShares } from '@/lib/shares-to-assets';
-import { computePrivateKeyFromSignature, getSpendingKeyCircuit, getViewKeyFromUserKey, poseidonHash } from '@/lib/circuit-utils';
+import { computePrivateKeyFromSignature, getSpendingKeyCircuit, getViewKeyFromUserKey, poseidonHash, reduceToBn254Field } from '@/lib/circuit-utils';
 import { proveWithSnarkjs } from '@/lib/circuit-prove';
 import type { Groth16Args } from '@/lib/groth16';
+import { pedersenCommitment } from '@/lib/pedersen-commitments';
 
 const ERC20_ABI = parseAbi([
     'function decimals() view returns (uint8)',
@@ -29,7 +32,7 @@ export function useWithdraw() {
     const { writeContract, data: hash, isPending, error: writeError } = useWriteContract();
     const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({ hash });
 
-    const { computeCurrentNonce } = useNonceDiscovery();
+    const { computeCurrentNonce, fetchIncomingNotes } = useNonceDiscovery();
 
     const [tokenAddress, setTokenAddress] = useState('');
     const [tokenDecimals, setTokenDecimals] = useState<number | null>(null);
@@ -57,10 +60,14 @@ export function useWithdraw() {
     const [tokenName, setTokenName] = useState<string>('');
     const [tokenSymbol, setTokenSymbol] = useState<string>('');
     const [availableBalance, setAvailableBalance] = useState<bigint | null>(null);
+    const [availableBalanceAssets, setAvailableBalanceAssets] = useState<bigint | null>(null);
     const [isLoadingBalance, setIsLoadingBalance] = useState(false);
+    const [canAbsorb, setCanAbsorb] = useState(false);
 
     const groth16ResultRef = useRef<Groth16Args | null>(null);
     const [groth16Result, setGroth16Result] = useState<Groth16Args | null>(null);
+    const withdrawCircuitRef = useRef<'withdraw' | 'absorb_withdraw'>('withdraw');
+    const [withdrawCircuit, setWithdrawCircuit] = useState<'withdraw' | 'absorb_withdraw'>('withdraw');
 
     const { balanceEntries } = useAccountState();
 
@@ -191,23 +198,77 @@ export function useWithdraw() {
         return () => clearTimeout(t);
     }, [tokenAddress, zkAddress, publicClient, account?.signature, computeCurrentNonce, setBalanceEntries]);
 
+    // Available balance = current + (incoming - nullifier). Fetch incoming notes when token/zk/nonce/balanceEntries ready.
     useEffect(() => {
-        if (!tokenAddress || !zkAddress || !balanceEntries.length || !tokenCurrentNonce || tokenCurrentNonce === BigInt(0)) {
+        if (!tokenAddress || !zkAddress || !tokenCurrentNonce || tokenCurrentNonce === BigInt(0)) {
             setAvailableBalance(null);
+            setAvailableBalanceAssets(null);
+            setCanAbsorb(false);
             return;
         }
         const tokenAddrBigInt = BigInt(tokenAddress.startsWith('0x') ? tokenAddress : '0x' + tokenAddress);
+        const prevNonce = tokenCurrentNonce - BigInt(1);
         const entry = balanceEntries.find(e => {
             const a = typeof e.tokenAddress === 'string' ? BigInt(e.tokenAddress) : e.tokenAddress;
-            return a === tokenAddrBigInt && (typeof e.nonce === 'string' ? BigInt(e.nonce) : e.nonce) === tokenCurrentNonce - BigInt(1);
+            const n = typeof e.nonce === 'string' ? BigInt(e.nonce) : e.nonce;
+            return a === tokenAddrBigInt && n === prevNonce;
         });
-        if (entry?.amount != null) {
-            const amt = typeof entry.amount === 'string' ? BigInt(entry.amount) : entry.amount;
-            setAvailableBalance(amt);
-        } else {
-            setAvailableBalance(null);
+        const currentShares = entry?.amount != null ? (typeof entry.amount === 'string' ? BigInt(entry.amount) : entry.amount) : BigInt(0);
+        const nullifier = (entry as { nullifier?: bigint } | undefined)?.nullifier ?? BigInt(0);
+
+        if (!fetchIncomingNotes || !account?.signature || !publicClient) {
+            setAvailableBalance(currentShares);
+            setCanAbsorb(false);
+            return;
         }
-    }, [tokenAddress, zkAddress, balanceEntries, tokenCurrentNonce]);
+        // Show current balance immediately; async will add absorbable
+        setAvailableBalance(currentShares);
+
+        let cancelled = false;
+        (async () => {
+            try {
+                const userKeyHex = contextUserKey ? '0x' + contextUserKey.toString(16) : userKey;
+                let userKeyBigInt: bigint | null = userKeyHex ? BigInt(userKeyHex.startsWith('0x') ? userKeyHex : '0x' + userKeyHex) : null;
+                if (!userKeyBigInt && account?.signature) {
+                    const hex = await computePrivateKeyFromSignature(account.signature);
+                    userKeyBigInt = BigInt(hex.startsWith('0x') ? hex : '0x' + hex);
+                }
+                if (!userKeyBigInt) {
+                    if (!cancelled) setAvailableBalance(currentShares);
+                    return;
+                }
+                const { x: rx, y: ry } = parseZkAddress(zkAddress);
+                const { notes } = await fetchIncomingNotes(tokenAddress as `0x${string}`, rx, ry, userKeyBigInt);
+                if (cancelled) return;
+                const sumIncoming = notes.reduce((acc, n) => acc + n.amount, BigInt(0));
+                const absorbable = sumIncoming > nullifier ? sumIncoming - nullifier : BigInt(0);
+                const displayBalance = currentShares + absorbable;
+                setAvailableBalance(displayBalance);
+                setCanAbsorb(absorbable > BigInt(0));
+            } catch {
+                if (!cancelled) {
+                    setAvailableBalance(currentShares);
+                    setCanAbsorb(false);
+                }
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [tokenAddress, zkAddress, balanceEntries, tokenCurrentNonce, account?.signature, contextUserKey, userKey, fetchIncomingNotes, publicClient]);
+
+    // Convert available balance (shares) to assets for display
+    useEffect(() => {
+        if (!publicClient || !tokenAddress || availableBalance === null) {
+            setAvailableBalanceAssets(null);
+            return;
+        }
+        let cancelled = false;
+        convertSharesToAssets(publicClient, tokenAddress as Address, availableBalance).then((assets) => {
+            if (!cancelled && assets != null) setAvailableBalanceAssets(assets);
+        }).catch(() => {
+            if (!cancelled) setAvailableBalanceAssets(null);
+        });
+        return () => { cancelled = true; };
+    }, [publicClient, tokenAddress, availableBalance]);
 
     const calculateCircuitInputs = useCallback(async () => {
         if (!tokenAddress || !amount || !receiverAddress || !receiverFeeAmount || !zkAddress || !publicClient) {
@@ -248,7 +309,9 @@ export function useWithdraw() {
         const amountBigInt = amountShares ?? amountInRaw;
         const receiverFeeAmountBigInt = feeShares ?? feeInRaw;
         const receiverAddressBigInt = BigInt(receiverAddress.startsWith('0x') ? receiverAddress : '0x' + receiverAddress);
-        const declaredTimeReference = BigInt(Math.floor(Date.now() / 1000));
+        // Use chain block timestamp (+ 1 min buffer) so proof is valid regardless of system clock (contract: 30 min tolerance)
+        const block = await publicClient.getBlock({ blockTag: 'latest' });
+        const declaredTimeReference = block.timestamp + 60n;
 
         const userKeyBigInt = BigInt(userKeyToUse.startsWith('0x') ? userKeyToUse : '0x' + userKeyToUse);
         const chainId = BigInt(await publicClient.getChainId());
@@ -415,24 +478,120 @@ export function useWithdraw() {
         const leafFromContract = contractLeaves[Number(commitmentIndex)];
         const previousCommitmentLeafPassed = leafFromContract ?? previousCommitmentLeaf;
 
+        // Withdraw circuit asserts: previous_shares >= amount + relayer_fee_amount + 1 (encoded: actual = previous_shares - 1)
+        const previousSharesNum = BigInt(previousSharesEncoded);
+        const totalRequired = amountBigInt + receiverFeeAmountBigInt + BigInt(1);
+        const actualBalance = previousSharesNum > BigInt(0) ? previousSharesNum - BigInt(1) : BigInt(0);
+
+        if (previousSharesNum < totalRequired) {
+            // Try absorb_withdraw: need absorbable notes to cover the shortfall
+            const { x: receiverX, y: receiverY } = parseZkAddress(zkAddress);
+            const { noteStackM, noteStackR } = await fetchIncomingNotes(
+                tokenAddr,
+                receiverX,
+                receiverY,
+                userKeyBigInt
+            );
+            const absorbable = noteStackM > nullifierValue ? noteStackM - nullifierValue : BigInt(0);
+            const totalAvailable = actualBalance + absorbable;
+            if (amountBigInt + receiverFeeAmountBigInt > totalAvailable) {
+                throw new Error(
+                    `Insufficient balance (on-chain + absorbable). Available: ${totalAvailable.toString()} shares, required: ${amountBigInt + receiverFeeAmountBigInt}.`
+                );
+            }
+            if (absorbable === BigInt(0)) {
+                throw new Error(
+                    `Insufficient on-chain balance (${actualBalance.toString()} shares) and no absorbable notes. Required: ${amountBigInt + receiverFeeAmountBigInt}.`
+                );
+            }
+            // Build absorb_withdraw inputs. current_balance for commitment = same encoding as leaf (previousSharesEncoded)
+            const noteStackPoint = pedersenCommitment(noteStackM, noteStackR);
+            const noteStackX = reduceToBn254Field(noteStackPoint.x);
+            const noteStackY = reduceToBn254Field(noteStackPoint.y);
+            const noteStackLeaf = await publicClient.readContract({
+                address: ArkanaAddress,
+                abi: ArkanaAbi,
+                functionName: 'computeCommitmentLeaf',
+                args: [noteStackX, noteStackY],
+            }) as bigint;
+            let noteStackCommitmentIndex: bigint;
+            try {
+                noteStackCommitmentIndex = await publicClient.readContract({
+                    address: ArkanaAddress,
+                    abi: ArkanaAbi,
+                    functionName: 'getLeafIndex',
+                    args: [tokenAddr, noteStackLeaf],
+                }) as bigint;
+            } catch {
+                throw new Error('Note stack leaf not found in tree. Ensure incoming notes are indexed.');
+            }
+            let noteStackProof: bigint[];
+            try {
+                noteStackProof = await publicClient.readContract({
+                    address: ArkanaAddress,
+                    abi: ArkanaAbi,
+                    functionName: 'generateProof',
+                    args: [tokenAddr, noteStackCommitmentIndex],
+                }) as unknown as bigint[];
+            } catch {
+                const { generateMerkleProof } = await import('@/lib/merkle-proof');
+                const res = await generateMerkleProof(contractLeaves, Number(noteStackCommitmentIndex), 32);
+                if (res.root !== expectedRoot) throw new Error('Note stack merkle proof root mismatch');
+                noteStackProof = res.siblings.map(s => BigInt(s));
+            }
+            const noteStackMerkleFormatted: string[] = [];
+            for (let i = 0; i < 32; i++) {
+                noteStackMerkleFormatted.push(i < noteStackProof.length ? noteStackProof[i].toString() : '0');
+            }
+            const absorbInputs: Record<string, string | string[]> = {
+                user_key: formatForNoir(userKeyToUse),
+                previous_nonce: tokenPreviousNonce.toString(),
+                current_balance: previousSharesEncoded.toString(),
+                nullifier: nullifierEncoded.toString(),
+                previous_unlocks_at: previousUnlocksAtEncoded.toString(),
+                previous_commitment_leaf: previousCommitmentLeafPassed.toString(),
+                commitment_index: commitmentIndex.toString(),
+                tree_depth: treeDepth.toString(),
+                merkle_proof: merkleProofFormatted,
+                note_stack_m: noteStackM.toString(),
+                note_stack_r: noteStackR.toString(),
+                note_stack_commitment_index: noteStackCommitmentIndex.toString(),
+                note_stack_merkle_proof: noteStackMerkleFormatted,
+                note_stack_x: noteStackX.toString(),
+                note_stack_y: noteStackY.toString(),
+                token_address: formatForNoir(tokenAddressBigInt),
+                amount: formatForNoir(amountBigInt),
+                chain_id: chainId.toString(),
+                expected_root: expectedRoot.toString(),
+                declared_time_reference: declaredTimeReference.toString(),
+                arbitrary_calldata_hash: formatForNoir(BigInt(arbitraryCalldataHash)),
+                receiver_address: formatForNoir(receiverAddressBigInt),
+                relayer_fee_amount: formatForNoir(receiverFeeAmountBigInt),
+            };
+            return { circuit: 'absorb_withdraw' as const, inputs: absorbInputs };
+        }
+
         return {
-            user_key: formatForNoir(userKeyToUse),
-            token_address: formatForNoir(tokenAddressBigInt),
-            amount: formatForNoir(amountBigInt),
-            chain_id: chainId.toString(),
-            previous_nonce: tokenPreviousNonce.toString(),
-            previous_shares: previousSharesEncoded.toString(),
-            nullifier: nullifierEncoded.toString(),
-            previous_unlocks_at: previousUnlocksAtEncoded.toString(),
-            declared_time_reference: declaredTimeReference.toString(),
-            previous_commitment_leaf: previousCommitmentLeafPassed.toString(),
-            commitment_index: commitmentIndex.toString(),
-            tree_depth: treeDepth.toString(),
-            expected_root: expectedRoot.toString(),
-            merkle_proof: merkleProofFormatted,
-            receiver_address: formatForNoir(receiverAddressBigInt),
-            relayer_fee_amount: formatForNoir(receiverFeeAmountBigInt),
-            arbitrary_calldata_hash: formatForNoir(BigInt(arbitraryCalldataHash)),
+            circuit: 'withdraw' as const,
+            inputs: {
+                user_key: formatForNoir(userKeyToUse),
+                token_address: formatForNoir(tokenAddressBigInt),
+                amount: formatForNoir(amountBigInt),
+                chain_id: chainId.toString(),
+                previous_nonce: tokenPreviousNonce.toString(),
+                previous_shares: previousSharesEncoded.toString(),
+                nullifier: nullifierEncoded.toString(),
+                previous_unlocks_at: previousUnlocksAtEncoded.toString(),
+                declared_time_reference: declaredTimeReference.toString(),
+                previous_commitment_leaf: previousCommitmentLeafPassed.toString(),
+                commitment_index: commitmentIndex.toString(),
+                tree_depth: treeDepth.toString(),
+                expected_root: expectedRoot.toString(),
+                merkle_proof: merkleProofFormatted,
+                receiver_address: formatForNoir(receiverAddressBigInt),
+                relayer_fee_amount: formatForNoir(receiverFeeAmountBigInt),
+                arbitrary_calldata_hash: formatForNoir(BigInt(arbitraryCalldataHash)),
+            },
         };
     } finally {
         setIsCalculatingInputs(false);
@@ -440,6 +599,7 @@ export function useWithdraw() {
     }, [
         tokenAddress, amount, receiverAddress, receiverFeeAmount, arbitraryCalldataHash, tokenDecimals,
         zkAddress, publicClient, account?.signature, contextUserKey, userKey, tokenCurrentNonce, balanceEntries,
+        fetchIncomingNotes,
     ]);
 
     const proveWithdraw = useCallback(async () => {
@@ -465,17 +625,26 @@ export function useWithdraw() {
             setProvingTime(null);
             groth16ResultRef.current = null;
             const startTime = performance.now();
-            const inputs = await calculateCircuitInputs();
-            console.log('Circuit inputs (before proof):', inputs);
-            const result = await proveWithSnarkjs(inputs, 'withdraw');
+            const { circuit, inputs } = await calculateCircuitInputs();
+            withdrawCircuitRef.current = circuit;
+            console.log('Circuit (before proof):', circuit, 'inputs:', inputs);
+            const result = await proveWithSnarkjs(inputs, circuit);
             groth16ResultRef.current = result;
             setGroth16Result(result);
+            setWithdrawCircuit(circuit);
             setProof('0x01');
             setPublicInputs(result.publicSignals ?? []);
             setProvingTime(Math.round(performance.now() - startTime));
         } catch (e) {
             console.error('Error generating withdraw proof:', e);
-            setProofError(e instanceof Error ? e.message : 'Failed to generate proof');
+            const msg = e instanceof Error ? e.message : 'Failed to generate proof';
+            if (msg.includes('Assert Failed') && msg.includes('Withdraw')) {
+                setProofError(
+                    msg + ' Usually this means: (1) amount + fee exceeds your on-chain balance, or (2) reconstructed commitment leaf does not match the tree (wrong nonce/state). Try a smaller amount or ensure token discovery has finished.'
+                );
+            } else {
+                setProofError(msg);
+            }
         } finally {
             setIsProving(false);
         }
@@ -514,23 +683,24 @@ export function useWithdraw() {
             const publicSignalsTuple = groth16.publicSignals.slice(0, 15).map((s: string) => BigInt(s)) as [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint];
             const callData = callDataBytes();
 
+            const fn = withdrawCircuitRef.current === 'absorb_withdraw' ? 'absorbWithdraw' : 'withdraw';
             setIsSimulating(true);
             try {
-                console.log('Simulating withdraw...', { publicSignalsCount: publicSignalsTuple.length, callDataLength: callData.length });
+                console.log(`Simulating ${fn}...`, { publicSignalsCount: publicSignalsTuple.length, callDataLength: callData.length });
                 const sim = await publicClient.simulateContract({
                     account: address as `0x${string}`,
                     address: ArkanaAddress as `0x${string}`,
                     abi: ArkanaAbi,
-                    functionName: 'withdraw',
+                    functionName: fn,
                     args: [pA, pB, pC, publicSignalsTuple, callData],
                 });
                 setSimulationResult(sim);
-                console.log('Withdraw simulation success', sim);
+                console.log(`${fn} simulation success`, sim);
             } catch (simErr: unknown) {
                 const err = simErr as { shortMessage?: string; message?: string; details?: string; cause?: unknown };
                 const msg = err?.shortMessage ?? err?.message ?? (err?.details as string) ?? (err?.cause as Error)?.message ?? 'Simulation failed';
-                console.error('Withdraw simulation failed:', simErr);
-                console.error('Withdraw simulation error message:', msg);
+                console.error(`${fn} simulation failed:`, simErr);
+                console.error(`${fn} simulation error message:`, msg);
                 setTxError(msg);
                 setIsSubmitting(false);
                 setIsSimulating(false);
@@ -542,7 +712,7 @@ export function useWithdraw() {
             writeContract({
                 address: ArkanaAddress as `0x${string}`,
                 abi: ArkanaAbi,
-                functionName: 'withdraw',
+                functionName: fn,
                 args: [pA, pB, pC, publicSignalsTuple, callData],
                 gas: BigInt(3_000_000),
             });
@@ -600,9 +770,12 @@ export function useWithdraw() {
         isTokenInitialized,
         isCheckingTokenState,
         availableBalance,
+        availableBalanceAssets,
         isLoadingBalance,
         isCalculatingInputs,
+        canAbsorb,
         groth16Result,
+        withdrawCircuit,
         proveWithdraw,
         handleWithdraw,
         balanceEntries,
