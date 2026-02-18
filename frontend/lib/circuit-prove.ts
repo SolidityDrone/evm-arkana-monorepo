@@ -55,5 +55,5 @@ export async function proveWithSnarkjs(
 
   const snarkjs = await import('snarkjs');
   const result = (await snarkjs.groth16.fullProve(inputs, wasmUrl, zkeyUrl)) as SnarkjsProofResult;
-  return formatSnarkjsProofForContract(result);
+  return await formatSnarkjsProofForContract(result);
 }

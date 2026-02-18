@@ -30,8 +30,8 @@ export async function reconstructCommitmentPoint(
 
 /**
  * Compute commitment leaf from Pedersen commitment point.
- * Uses the contract's computeCommitmentLeaf (Poseidon) when publicClient is provided.
- * Falls back to JS (circuit-utils poseidonHash) when no publicClient or contract call fails.
+ * When publicClient is provided, always uses the contract's computeCommitmentLeaf(x, y) so the leaf matches on-chain storage.
+ * When no publicClient, uses JS poseidonHash (e.g. for tests).
  */
 export async function computeCommitmentLeaf(
     commitmentPoint: CommitmentPoint,
@@ -41,17 +41,13 @@ export async function computeCommitmentLeaf(
     const y = reduceToBn254Field(commitmentPoint.y);
 
     if (publicClient) {
-        try {
-            const contractLeaf = await publicClient.readContract({
-                address: ArkanaAddress,
-                abi: ArkanaAbi,
-                functionName: 'computeCommitmentLeaf',
-                args: [x, y],
-            }) as bigint;
-            return contractLeaf;
-        } catch (error) {
-            console.warn('Failed to call contract computeCommitmentLeaf, falling back to JS poseidonHash:', error);
-        }
+        const contractLeaf = await publicClient.readContract({
+            address: ArkanaAddress,
+            abi: ArkanaAbi,
+            functionName: 'computeCommitmentLeaf',
+            args: [x, y],
+        }) as bigint;
+        return contractLeaf;
     }
 
     return poseidonHash([x, y]);

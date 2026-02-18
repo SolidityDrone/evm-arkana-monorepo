@@ -7,10 +7,10 @@ import { pedersenCommitmentNonHiding, grumpkinAddPoints, aggregateOpeningValue, 
 import { BJJ_IDENTITY, DEFAULT_NONCE_DISCOVERY_POINT, bjjAdd, nonceDiscoveryEntryBJJ, type BJJPoint } from '@/lib/bjj-nonce-discovery';
 import { useZkAddress, useAccount as useAccountContext } from '@/context/AccountProvider';
 import { poseidonCtrDecrypt } from '@/lib/poseidon-ctr-encryption';
-import { DiscoveryMode } from '@/lib/indexeddb';
-import { getSpendingKey, poseidonHash } from '@/lib/circuit-utils';
-import { getSignerIdentityFromUserKey } from '@/lib/eddsa-circuit';
-
+import { DiscoveryMode, type IncomingNote } from '@/lib/indexeddb';
+import { getSpendingKeyCircuit, poseidonHash } from '@/lib/circuit-utils';
+import { computeSharedKeyHashForNote } from '@/lib/crypto-keys';
+import { keccak256, encodePacked } from 'viem';
 export interface BalanceEntry {
   tokenAddress: bigint;
   amount: bigint;
@@ -75,10 +75,10 @@ export function useNonceDiscovery() {
     return BigInt(hash.toString());
   };
 
-  // Discovery uses frontend Poseidon only (getSpendingKey + poseidonHash), no contract calls.
+  // Discovery uses same formula as circuits: spending_key = Poseidon(user_key, chain_id, token_address). No signer_pubkey_hash.
   const getSpendingKeyForDiscovery = useCallback(
-    async (userKey: bigint, chainId: bigint, tokenAddress: bigint, signerPubkeyHash: bigint | string): Promise<bigint> => {
-      return getSpendingKey(userKey, chainId, tokenAddress, signerPubkeyHash);
+    async (userKey: bigint, chainId: bigint, tokenAddress: bigint): Promise<bigint> => {
+      return getSpendingKeyCircuit(userKey, chainId, tokenAddress);
     },
     []
   );
@@ -122,6 +122,78 @@ export function useNonceDiscovery() {
     }
   }, [publicClient]);
 
+  /**
+   * Fetch and decrypt incoming notes for a token (receiver = our zkAddress).
+   * Uses pubkey_reference_hash = keccak256(abi.encodePacked(receiverX, receiverY)), then
+   * getIncomingNotesCount + tokenUserEncryptedNotes(index), ECDH with sender pubkey to get shared_key_hash, decrypt amount.
+   * Returns list of IncomingNote (amount, sharedKeyHash for absorb opening) and aggregated (note_stack_m, note_stack_r).
+   */
+  const fetchIncomingNotes = useCallback(
+    async (
+      tokenAddress: `0x${string}`,
+      receiverPublicKeyX: bigint,
+      receiverPublicKeyY: bigint,
+      receiverPrivateKey: bigint
+    ): Promise<{ notes: IncomingNote[]; noteStackM: bigint; noteStackR: bigint }> => {
+      if (!publicClient) throw new Error('Public client not available');
+
+      const pubkeyHash = keccak256(
+        encodePacked(
+          ['uint256', 'uint256'],
+          [receiverPublicKeyX, receiverPublicKeyY]
+        )
+      ) as `0x${string}`;
+
+      const count = await publicClient.readContract({
+        address: ArkanaAddress,
+        abi: ArkanaAbi,
+        functionName: 'getIncomingNotesCount',
+        args: [tokenAddress, pubkeyHash],
+      }) as bigint;
+
+      const notes: IncomingNote[] = [];
+      let noteStackM = BigInt(0);
+      let noteStackR = BigInt(0);
+
+      for (let i = 0; i < Number(count); i++) {
+        const raw = await publicClient.readContract({
+          address: ArkanaAddress,
+          abi: ArkanaAbi,
+          functionName: 'tokenUserEncryptedNotes',
+          args: [tokenAddress, pubkeyHash, BigInt(i)],
+        });
+        const encryptedAmount = Array.isArray(raw) ? raw[0] : (raw as any).encryptedAmountForReceiver;
+        const senderPk = Array.isArray(raw) ? raw[1] : (raw as any).senderPublicKey;
+        const senderX = typeof senderPk === 'object' && senderPk !== null && 'x' in senderPk ? senderPk.x : senderPk[0];
+        const senderY = typeof senderPk === 'object' && senderPk !== null && 'y' in senderPk ? senderPk.y : senderPk[1];
+
+        const sharedKeyHash = await computeSharedKeyHashForNote(
+          receiverPrivateKey,
+          BigInt(senderX),
+          BigInt(senderY)
+        );
+        const amount = await poseidonCtrDecrypt(
+          BigInt(encryptedAmount),
+          sharedKeyHash,
+          0
+        );
+
+        notes.push({
+          tokenAddress,
+          amount,
+          sharedKeyHash,
+          senderPublicKey: { x: BigInt(senderX), y: BigInt(senderY) },
+          index: i,
+        });
+        noteStackM += amount;
+        noteStackR += sharedKeyHash;
+      }
+
+      return { notes, noteStackM, noteStackR };
+    },
+    [publicClient]
+  );
+
   const decryptBalances = useCallback(async (highestNonce: bigint, userKey: bigint, lowestNonce: bigint = BigInt(0), tokenAddress: bigint) => {
     if (!publicClient || !account?.signature) {
       return;
@@ -136,13 +208,11 @@ export function useNonceDiscovery() {
 
       const VIEW_STRING = BigInt('0x76696577696e675f6b6579');
       const viewKeyBigInt = await poseidonHash([VIEW_STRING, userKey]);
-      const signerIdentity = await getSignerIdentityFromUserKey(userKey);
-      const signerPubkeyHashBigInt = BigInt(signerIdentity.signer_pubkey_hash);
       const entries: BalanceEntry[] = [];
       const chainId = BigInt(await publicClient.getChainId());
 
       for (let nonce = BigInt(0); nonce <= highestNonce; nonce++) {
-        const spendingKeyBigInt = await getSpendingKeyForDiscovery(userKey, chainId, tokenAddress, signerPubkeyHashBigInt);
+        const spendingKeyBigInt = await getSpendingKeyForDiscovery(userKey, chainId, tokenAddress);
         const nonceCommitmentBigInt = await getNonceCommitmentForDiscovery(spendingKeyBigInt, nonce, tokenAddress);
 
         const { padHex: padHexState } = await import('viem');
@@ -264,11 +334,9 @@ export function useNonceDiscovery() {
         let highestNonce = BigInt(-1);
 
         // Check nonce 0 and 1 (max 2 vertical)
-        const signerIdentityArchon = await getSignerIdentityFromUserKey(currentUserKey);
-        const signerPubkeyHashArchon = BigInt(signerIdentityArchon.signer_pubkey_hash);
         for (let nonce = BigInt(0); nonce <= BigInt(1); nonce++) {
           const spendingKeyBigInt =
-            await getSpendingKeyForDiscovery(currentUserKey, chainId, tokenAddressBigInt, signerPubkeyHashArchon);
+            await getSpendingKeyForDiscovery(currentUserKey, chainId, tokenAddressBigInt);
           const nonceCommitmentBigInt = await getNonceCommitmentForDiscovery(spendingKeyBigInt, nonce, tokenAddressBigInt);
           const nonceCommitmentBytes32 = padHex(`0x${nonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
 
@@ -319,9 +387,8 @@ export function useNonceDiscovery() {
       // Determine current nonce (next nonce after highest found)
       // In Archon mode, max 2 vertical (nonce 0 and 1)
       const finalUserKey = userKey + userKeyOffset;
-      const signerIdentityFinal = await getSignerIdentityFromUserKey(finalUserKey);
       const spendingKeyFinalBigInt =
-        await getSpendingKeyForDiscovery(finalUserKey, chainId, tokenAddressBigInt, signerIdentityFinal.signer_pubkey_hash);
+        await getSpendingKeyForDiscovery(finalUserKey, chainId, tokenAddressBigInt);
       const nextNonce = foundNonce! + BigInt(1);
 
       // Check if next nonce exists (can only be nonce 1 if we found nonce 0, or nonce 2 if we found both 0 and 1)
@@ -437,54 +504,20 @@ export function useNonceDiscovery() {
       cachedNonce = finalCachedNonce;
       cachedBalanceEntries = finalCachedBalanceEntries;
 
-      const signerIdentityMage = await getSignerIdentityFromUserKey(userKey);
-      const signerPubkeyHashMage = BigInt(signerIdentityMage.signer_pubkey_hash);
       const { padHex } = await import('viem');
       let chainId = BigInt(await publicClient.getChainId());
-      console.log('🔍 [MAGE DISCOVERY] chainId:', chainId.toString(), '| signer_pubkey_hash:', signerIdentityMage.signer_pubkey_hash);
+      console.log('🔍 [MAGE DISCOVERY] chainId:', chainId.toString());
       // If deposit used hardcoded 31337 (old useDeposit bug), nonce 0 won't be found with real chainId; try 31337
       const ANVIL_CHAIN_ID = BigInt(31337);
 
-      // Log reconstructed spending_key and nonce_commitment (contract = circuit logic) for comparison with npm run test:spending-key-nonce
+      // Log frontend spending_key and nonce_commitment (same formula as circuits: Poseidon2Hash3(user_key, chain_id, token_address))
       try {
-        const contractSpendingKey = await publicClient.readContract({
-          address: ArkanaAddress,
-          abi: ArkanaAbi,
-          functionName: 'computeSpendingKey',
-          args: [userKey, chainId, tokenAddressBigInt, signerPubkeyHashMage],
-        }) as bigint;
-        const contractNonce0Commitment = await publicClient.readContract({
-          address: ArkanaAddress,
-          abi: ArkanaAbi,
-          functionName: 'computeNonceCommitment',
-          args: [contractSpendingKey, BigInt(0), tokenAddressBigInt],
-        }) as bigint;
-        console.log('═══════════════════════════════════════════════════════════════');
-        console.log('  CIRCUIT (reconstructed from contract – compare with npm run test:spending-key-nonce)');
-        console.log('═══════════════════════════════════════════════════════════════');
-        console.log('');
-        console.log('Inputs (same for contract and frontend):');
-        console.log(JSON.stringify({
-          userKey: userKey.toString(),
-          chainId: chainId.toString(),
-          tokenAddress: tokenAddressBigInt.toString() + ' (0x' + tokenAddressBigInt.toString(16) + ')',
-          signerPubkeyHash: signerPubkeyHashMage.toString(),
-        }, null, 2));
-        console.log('');
-        console.log('───────────────────────────────────────────────────────────────');
-        console.log('  Circuit computeSpendingKey (Hash4(user_key, chain_id, token_address, signer_pubkey_hash))');
-        console.log('───────────────────────────────────────────────────────────────');
-        console.log('  spending_key (decimal):', contractSpendingKey.toString());
-        console.log('  spending_key (hex):    ', '0x' + contractSpendingKey.toString(16));
-        console.log('');
-        console.log('  Circuit computeNonceCommitment (Hash3(spending_key, 0, token_address))');
-        console.log('───────────────────────────────────────────────────────────────');
-        console.log('  nonce_commitment (decimal):', contractNonce0Commitment.toString());
-        console.log('  nonce_commitment (hex):    ', '0x' + contractNonce0Commitment.toString(16));
-        console.log('');
-        console.log('═══════════════════════════════════════════════════════════════');
+        const spendingKeyLog = await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt);
+        const nonce0CommitmentLog = await getNonceCommitmentForDiscovery(spendingKeyLog, BigInt(0), tokenAddressBigInt);
+        console.log('🔍 [MAGE DISCOVERY] circuit spending_key (hex):', '0x' + spendingKeyLog.toString(16));
+        console.log('🔍 [MAGE DISCOVERY] circuit nonce_commitment(0) (hex):', '0x' + nonce0CommitmentLog.toString(16));
       } catch (circuitLogErr) {
-        console.warn('🔍 [DISCOVERY] Circuit comparison log failed:', circuitLogErr);
+        console.warn('🔍 [DISCOVERY] Circuit log failed:', circuitLogErr);
       }
 
       const toBigInt = async (hash: any): Promise<bigint> => {
@@ -504,7 +537,7 @@ export function useNonceDiscovery() {
 
       if (cachedNonce !== null && cachedNonce !== undefined && cachedNonce > BigInt(0)) {
         const spendingKeyForCacheBigInt =
-          await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt, signerPubkeyHashMage);
+          await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt);
         const cachedNonceCommitmentBigInt =
           await getNonceCommitmentForDiscovery(spendingKeyForCacheBigInt, cachedNonce, tokenAddressBigInt);
         const cachedNonceCommitmentBytes32 = padHex(`0x${cachedNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
@@ -533,7 +566,7 @@ export function useNonceDiscovery() {
 
       if (!shouldSkipDebugVerification) {
         let spendingKeyDebugBigInt =
-          await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt, signerPubkeyHashMage);
+          await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt);
         let nonce0CommitmentDebugBigInt =
           await getNonceCommitmentForDiscovery(spendingKeyDebugBigInt, BigInt(0), tokenAddressBigInt);
         let nonce0CommitmentBytes32Debug = padHex(`0x${nonce0CommitmentDebugBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
@@ -553,7 +586,7 @@ export function useNonceDiscovery() {
 
         if (!nonce0Exists && chainId !== ANVIL_CHAIN_ID) {
           spendingKeyDebugBigInt =
-            await getSpendingKeyForDiscovery(userKey, ANVIL_CHAIN_ID, tokenAddressBigInt, signerPubkeyHashMage);
+            await getSpendingKeyForDiscovery(userKey, ANVIL_CHAIN_ID, tokenAddressBigInt);
           nonce0CommitmentDebugBigInt =
             await getNonceCommitmentForDiscovery(spendingKeyDebugBigInt, BigInt(0), tokenAddressBigInt);
           nonce0CommitmentBytes32Debug = padHex(`0x${nonce0CommitmentDebugBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
@@ -596,7 +629,7 @@ export function useNonceDiscovery() {
         if (lastNonceToRebuild >= BigInt(0)) {
           for (let n = BigInt(0); n <= lastNonceToRebuild; n++) {
             const spendingKeyBigInt =
-              await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt, signerPubkeyHashMage);
+              await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt);
             const nonceCommitmentBigInt = await getNonceCommitmentForDiscovery(spendingKeyBigInt, n, tokenAddressBigInt);
             const inner = nonceDiscoveryEntryBJJ(nonceCommitmentBigInt);
             ourLocalPoint = bjjAdd(ourLocalPoint, inner);
@@ -616,7 +649,7 @@ export function useNonceDiscovery() {
 
       while (nonce < maxNonce) {
         const spendingKeyBigInt =
-          await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt, signerPubkeyHashMage);
+          await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt);
         const nonceCommitmentBigInt = await getNonceCommitmentForDiscovery(spendingKeyBigInt, nonce, tokenAddressBigInt);
         const nonceCommitmentBytes32 = padHex(`0x${nonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
 
@@ -831,6 +864,7 @@ export function useNonceDiscovery() {
 
   return {
     computeCurrentNonce,
+    fetchIncomingNotes,
     isComputing,
     currentNonce,
     error,

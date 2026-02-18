@@ -56,6 +56,7 @@ export default function DepositPage() {
         tokenName,
         tokenSymbol,
         isCalculatingInputs,
+        groth16Result,
         proveDeposit,
         handleDeposit,
         handleApprove,
@@ -139,9 +140,9 @@ export default function DepositPage() {
 
     const needsApproval = allowance !== null && allowance < requiredAmount && requiredAmount > BigInt(0);
 
-    // Handle deposit via relayer
+    // Handle deposit via relayer (contract expects pA, pB, pC, publicSignals[11])
     const handleDepositViaRelayer = useCallback(async () => {
-        if (!proof || !publicInputs || publicInputs.length === 0) {
+        if (!groth16Result || !groth16Result.publicSignals?.length) {
             setRelayerError('Proof and public inputs are required');
             return;
         }
@@ -152,19 +153,18 @@ export default function DepositPage() {
             setRelayerTxHash(null);
             setShowTransactionModal(true);
 
-            // Prepare calldata exactly as handleDeposit does
-            const proofBytes = `0x${proof}`;
-            const slicedInputs = publicInputs.slice(0, 11);
-            const publicInputsBytes32 = slicedInputs.map((input: string) => {
-                const hex = input.startsWith('0x') ? input.slice(2) : input;
-                return `0x${hex.padStart(64, '0')}` as `0x${string}`;
-            });
+            const pA: [bigint, bigint] = [BigInt(groth16Result.pA[0]), BigInt(groth16Result.pA[1])];
+            const pB: [[bigint, bigint], [bigint, bigint]] = [
+                [BigInt(groth16Result.pB[0][0]), BigInt(groth16Result.pB[0][1])],
+                [BigInt(groth16Result.pB[1][0]), BigInt(groth16Result.pB[1][1])],
+            ];
+            const pC: [bigint, bigint] = [BigInt(groth16Result.pC[0]), BigInt(groth16Result.pC[1])];
+            const publicSignals = groth16Result.publicSignals.slice(0, 11).map((s: string) => BigInt(s)) as [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint];
 
-            // Encode the function call
             const calldata = encodeFunctionData({
                 abi: ArkanaAbi,
                 functionName: 'deposit',
-                args: [proofBytes as `0x${string}`, publicInputsBytes32 as readonly `0x${string}`[]],
+                args: [pA, pB, pC, publicSignals],
             });
 
             console.log('📤 Sending deposit via relayer...');
@@ -199,7 +199,7 @@ export default function DepositPage() {
         } finally {
             setIsRelayerSubmitting(false);
         }
-    }, [proof, publicInputs, toast]);
+    }, [groth16Result, toast]);
 
     return (
         <div className="min-h-screen pt-24 pb-12 px-4 sm:px-6 lg:px-8 w-full overflow-x-hidden relative">
@@ -551,7 +551,7 @@ export default function DepositPage() {
                                                                     <SpellButton
                                                                         onClick={handleDepositViaRelayer}
                                                                         disabled={Boolean(
-                                                                            isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting || needsApproval
+                                                                            !groth16Result || isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting || needsApproval
                                                                         )}
                                                                         variant="primary"
                                                                         className="w-full text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"

@@ -1,20 +1,18 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { useAccount as useWagmiAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient, useSignMessage, useChainId, useReadContract } from 'wagmi';
+import { useAccount as useWagmiAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient, useSignMessage, useChainId } from 'wagmi';
 import { useAccount as useAccountContext, useZkAddress } from '@/context/AccountProvider';
 import { useAccountState } from '@/context/AccountStateProvider';
 import { createPublicClient, http, parseAbi, Address } from 'viem';
 import { sepolia, getActiveChain, getChainById, getRpcUrlForChain } from '@/config';
-import { Noir } from '@noir-lang/noir_js';
-import { useBackendInitialization } from '@/hooks/useBackendInitialization';
-import entryCircuit from '@/lib/circuits/entry.json';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { computeZkAddress, ARKANA_MESSAGE } from '@/lib/zk-address';
 import { loadAccountDataOnSign } from '@/lib/loadAccountDataOnSign';
-import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
-import { CachedUltraHonkBackend } from '@/lib/cached-ultra-honk-backend';
-import { loadAccountData } from '@/lib/indexeddb';
+import { computePrivateKeyFromSignature, getSpendingKeyCircuit, poseidonHash } from '@/lib/circuit-utils';
+import { proveWithSnarkjs } from '@/lib/circuit-prove';
+import type { Groth16Args } from '@/lib/groth16';
+import { padHex } from 'viem';
 
 const ERC20_ABI = parseAbi([
     'function allowance(address owner, address spender) view returns (uint256)',
@@ -52,8 +50,6 @@ export function useInitialize() {
     const [proofError, setProofError] = useState<string | null>(null);
     const [provingTime, setProvingTime] = useState<number | null>(null);
     const [currentProvingTime, setCurrentProvingTime] = useState<number>(0);
-    const [isInitializing, setIsInitializing] = useState(false);
-    const [isInitialized, setIsInitialized] = useState(false);
     const [publicInputs, setPublicInputs] = useState<string[]>([]);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isSimulating, setIsSimulating] = useState(false);
@@ -65,9 +61,8 @@ export function useInitialize() {
     const [tokenBalance, setTokenBalance] = useState<bigint | null>(null);
     const [isLoadingBalance, setIsLoadingBalance] = useState(false);
 
-    // Backend and Noir references
-    const backendRef = useRef<CachedUltraHonkBackend | null>(null);
-    const noirRef = useRef<Noir | null>(null);
+    // Groth16 result for contract call (snarkjs returns pA, pB, pC, publicSignals)
+    const groth16ResultRef = useRef<Groth16Args | null>(null);
 
     // Real-time timer for proving
     useEffect(() => {
@@ -85,48 +80,6 @@ export function useInitialize() {
             if (interval) clearInterval(interval);
         };
     }, [isProving]);
-
-    // Initialize backend
-    const initializeBackend = useCallback(async () => {
-        if (isInitialized && backendRef.current && noirRef.current) {
-            return;
-        }
-
-        setIsInitializing(true);
-        try {
-            // Ensure Buffer polyfill is loaded BEFORE initializing backend
-            const { ensureBufferPolyfill } = await import('@/lib/buffer-polyfill');
-            await ensureBufferPolyfill();
-
-            const backendOptions = { threads: 1 };
-
-            // Handle both string and Uint8Array bytecode
-            let bytecode: string | Uint8Array;
-            if (typeof entryCircuit.bytecode === 'string') {
-                // If it's a base64 string, use it directly
-                bytecode = entryCircuit.bytecode;
-            } else {
-                // If it's Uint8Array, convert to base64 string
-                if (!globalThis.Buffer) {
-                    const { Buffer } = await import('buffer');
-                    globalThis.Buffer = Buffer;
-                }
-                bytecode = globalThis.Buffer.from(entryCircuit.bytecode).toString('base64');
-            }
-
-            const backend = new CachedUltraHonkBackend(bytecode, backendOptions);
-            const noir = new Noir(entryCircuit);
-            backendRef.current = backend;
-            noirRef.current = noir;
-            setIsInitialized(true);
-        } catch (error) {
-            console.error('Failed to initialize backend:', error);
-            throw error;
-        } finally {
-            setIsInitializing(false);
-        }
-    }, [isInitialized]);
-
 
     // Handle sign
     const handleSign = async () => {
@@ -371,7 +324,7 @@ export function useInitialize() {
         }
     }, [isApprovalConfirmed, approvalHashData, checkAllowance]);
 
-    // Generate proof
+    // Generate proof (snarkjs + Circom entry circuit; spending key = Hash3(user_key, chain_id, token_address))
     const proveArkanaEntry = async () => {
         if (!userKey) {
             setProofError('Please sign a message first to generate user_key');
@@ -387,177 +340,67 @@ export function useInitialize() {
             setIsProving(true);
             setProofError(null);
             setProvingTime(null);
+            groth16ResultRef.current = null;
 
             const startTime = performance.now();
-            await initializeBackend();
-
-            if (!backendRef.current || !noirRef.current) {
-                throw new Error('Failed to initialize backend');
-            }
 
             let chainIdForCircuit: number;
             try {
-                // Use the connected chain if available, otherwise fall back to configured chain
                 const activeChainId = chainId || publicClient?.chain?.id || getActiveChain().id;
                 const activeChain = publicClient?.chain || getChainById(activeChainId);
                 const rpcUrl = getRpcUrlForChain(activeChainId);
-
-                const client = publicClient || createPublicClient({
-                    chain: activeChain,
-                    transport: http(rpcUrl)
-                });
+                const client = publicClient || createPublicClient({ chain: activeChain, transport: http(rpcUrl) });
                 chainIdForCircuit = await client.getChainId();
-            } catch (error) {
+            } catch {
                 chainIdForCircuit = chainId || publicClient?.chain?.id || sepolia.id;
             }
 
-            // Determine user_key offset based on lockDuration
+            const baseUserKey = BigInt(userKey.startsWith('0x') ? userKey : `0x${userKey}`);
+            const tokenAddressBigInt = BigInt(tokenAddress.startsWith('0x') ? tokenAddress : `0x${tokenAddress}`);
+            const chainIdBigInt = BigInt(chainIdForCircuit);
             let userKeyOffset = BigInt(0);
-            const lockDurationNum = parseInt(lockDuration || '0') || 0;
+            const lockDurationNum = parseInt(lockDuration || '0', 10) || 0;
 
-            console.log('🔑 [INIT] ===== DEBUGGING USER KEY SELECTION =====');
-            console.log('🔑 [INIT] Base user_key:', userKey);
-            console.log('🔑 [INIT] Raw lockDuration state value:', lockDuration, typeof lockDuration);
-            console.log('🔑 [INIT] Parsed lockDurationNum:', lockDurationNum);
-            console.log('🔑 [INIT] Lock > 0?:', lockDurationNum > 0);
-            console.log('🔑 [INIT] publicClient available?:', !!publicClient);
-
-            // If lockDuration > 0, we need to find the next available user_key offset
-            // For liquidity provision (lock > 0), ALWAYS start from user_key+1 (offset 1)
-            // This keeps user_key (offset 0) reserved for Mage mode (regular init with lock = 0)
+            // Archon mode (lock > 0): find next free user_key offset using circuit-consistent spending key
             if (lockDurationNum > 0 && publicClient) {
-                console.log('🔑 [INIT] Entering Archon mode (lock > 0) branch...');
-                const { poseidon2Hash } = await import('@aztec/foundation/crypto');
-                const { padHex } = await import('viem');
-                const chainIdBigInt = BigInt(chainIdForCircuit);
-                const tokenAddressBigInt = BigInt(tokenAddress);
-                const baseUserKey = BigInt(userKey.startsWith('0x') ? userKey : `0x${userKey}`);
-
-                const startOffset = BigInt(1);
-
-                // Find the next available user_key offset
                 const maxOffset = BigInt(100);
                 let foundOffset = false;
-
-                for (let offset = startOffset; offset < maxOffset && !foundOffset; offset++) {
+                for (let offset = BigInt(1); offset < maxOffset && !foundOffset; offset++) {
                     const currentUserKey = baseUserKey + offset;
-                    const currentSpendingKey = await poseidon2Hash([currentUserKey, chainIdBigInt, tokenAddressBigInt]);
-                    let currentSpendingKeyBigInt: bigint;
-                    if (typeof currentSpendingKey === 'bigint') {
-                        currentSpendingKeyBigInt = currentSpendingKey;
-                    } else if ('toBigInt' in currentSpendingKey && typeof currentSpendingKey.toBigInt === 'function') {
-                        currentSpendingKeyBigInt = currentSpendingKey.toBigInt();
-                    } else if ('value' in currentSpendingKey) {
-                        currentSpendingKeyBigInt = BigInt(currentSpendingKey.value);
-                    } else {
-                        currentSpendingKeyBigInt = BigInt(currentSpendingKey.toString());
-                    }
-
-                    const currentNonceCommitment = await poseidon2Hash([currentSpendingKeyBigInt, BigInt(0), tokenAddressBigInt]);
-                    let currentNonceCommitmentBigInt: bigint;
-                    if (typeof currentNonceCommitment === 'bigint') {
-                        currentNonceCommitmentBigInt = currentNonceCommitment;
-                    } else if ('toBigInt' in currentNonceCommitment && typeof currentNonceCommitment.toBigInt === 'function') {
-                        currentNonceCommitmentBigInt = currentNonceCommitment.toBigInt();
-                    } else if ('value' in currentNonceCommitment) {
-                        currentNonceCommitmentBigInt = BigInt(currentNonceCommitment.value);
-                    } else {
-                        currentNonceCommitmentBigInt = BigInt(currentNonceCommitment.toString());
-                    }
-
-                    const currentNonceCommitmentBytes32 = padHex(`0x${currentNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
-
-                    const isUsed = await publicClient.readContract({
+                    const spendingKey = await getSpendingKeyCircuit(currentUserKey, chainIdBigInt, tokenAddressBigInt);
+                    const nonceCommitment = await poseidonHash([spendingKey, BigInt(0), tokenAddressBigInt]);
+                    const nonceCommitmentBytes32 = padHex(`0x${nonceCommitment.toString(16)}`, { size: 32 }) as `0x${string}`;
+                    const isUsed = (await publicClient.readContract({
                         address: ArkanaAddress,
                         abi: ArkanaAbi,
                         functionName: 'usedCommitments',
-                        args: [currentNonceCommitmentBytes32],
-                    }) as boolean;
-
+                        args: [nonceCommitmentBytes32],
+                    })) as boolean;
                     if (!isUsed) {
                         userKeyOffset = offset;
                         foundOffset = true;
-                        console.log('🔑 [INIT] Found available offset:', offset.toString());
-                    } else {
-                        console.log('🔑 [INIT] Offset', offset.toString(), 'is already used, checking next...');
+                        break;
                     }
                 }
-
                 if (!foundOffset) {
                     setProofError('Could not find available user_key offset for liquidity provision');
                     setIsProving(false);
                     return;
                 }
-            } else {
-                console.log('🔑 [INIT] NOT in Archon mode branch - using offset 0 (Mage mode)');
             }
 
-            // Calculate the actual user_key to use (base + offset)
-            const baseUserKeyBigInt = BigInt(userKey.startsWith('0x') ? userKey : `0x${userKey}`);
-            const actualUserKey = baseUserKeyBigInt + userKeyOffset;
-            const userKeyHex = `0x${actualUserKey.toString(16).padStart(64, '0')}`;
-
-            console.log('🔑 [INIT] ===== FINAL USER KEY FOR CIRCUIT =====');
-            console.log('🔑 [INIT] Base user_key (bigint):', baseUserKeyBigInt.toString());
-            console.log('🔑 [INIT] Offset applied:', userKeyOffset.toString());
-            console.log('🔑 [INIT] Actual user_key (bigint):', actualUserKey.toString());
-            console.log('🔑 [INIT] User key hex for circuit:', userKeyHex);
-            console.log('🔑 [INIT] =========================================');
-
-            const inputs = {
-                user_key: userKeyHex,
-                token_address: tokenAddress,
-                chain_id: chainIdForCircuit.toString()
+            const actualUserKey = baseUserKey + userKeyOffset;
+            const inputs: Record<string, string> = {
+                user_key: actualUserKey.toString(),
+                token_address: tokenAddressBigInt.toString(),
+                chain_id: chainIdForCircuit.toString(),
             };
 
-            console.log('🔑 [INIT] Circuit inputs:', inputs);
-
-            //@ts-ignore
-            const { witness } = await noirRef.current!.execute(inputs, { keccak: true });
-            //@ts-ignore
-            const proofResult = await backendRef.current!.generateProof(witness, { keccak: true });
-
-            const proofHex = Buffer.from(proofResult.proof).toString('hex');
-            const publicInputsArray = (proofResult.publicInputs || []).slice(0, 7);
-
-            let chainIdForProof: number;
-            try {
-                // Use the connected chain if available, otherwise fall back to configured chain
-                const activeChainId = chainId || publicClient?.chain?.id || getActiveChain().id;
-                const activeChain = publicClient?.chain || getChainById(activeChainId);
-                const rpcUrl = getRpcUrlForChain(activeChainId);
-
-                const client = publicClient || createPublicClient({
-                    chain: activeChain,
-                    transport: http(rpcUrl)
-                });
-                chainIdForProof = await client.getChainId();
-            } catch (error) {
-                chainIdForProof = chainId || publicClient?.chain?.id || sepolia.id;
-            }
-            const chainIdBigInt = BigInt(chainIdForProof);
-
-            if (publicInputsArray.length > 1) {
-                publicInputsArray[1] = chainIdBigInt;
-            }
-
-            const publicInputsHex = publicInputsArray.map((input: any) => {
-                if (typeof input === 'string' && input.startsWith('0x')) {
-                    return input;
-                }
-                if (typeof input === 'bigint') {
-                    return `0x${input.toString(16).padStart(64, '0')}`;
-                }
-                const hex = BigInt(input).toString(16);
-                return `0x${hex.padStart(64, '0')}`;
-            });
-
-            const endTime = performance.now();
-            const provingTimeMs = Math.round(endTime - startTime);
-            setProvingTime(provingTimeMs);
-
-            setProof(proofHex);
-            setPublicInputs(publicInputsHex);
+            const result = await proveWithSnarkjs(inputs, 'entry');
+            groth16ResultRef.current = result;
+            setProof('0x01');
+            setPublicInputs(result.publicSignals.slice(0, 7));
+            setProvingTime(Math.round(performance.now() - startTime));
         } catch (error) {
             console.error('Error generating proof:', error);
             setProofError(error instanceof Error ? error.message : 'Failed to generate proof');
@@ -566,9 +409,10 @@ export function useInitialize() {
         }
     };
 
-    // Handle initialize transaction
+    // Handle initialize transaction (contract expects pA, pB, pC, publicSignals[7], amountIn, lockDuration)
     const handleInitCommit = async () => {
-        if (!proof || !publicInputs || publicInputs.length === 0) {
+        const groth16 = groth16ResultRef.current;
+        if (!groth16 || !groth16.publicSignals?.length) {
             setTxError('Proof and public inputs are required');
             return;
         }
@@ -582,8 +426,6 @@ export function useInitialize() {
             setTxError('Public client not available. Please check your wallet connection.');
             return;
         }
-
-        console.log('Wallet status:', { address, isConnected, chainId, publicClient: !!publicClient });
 
         let amountIn: bigint = BigInt(0);
         if (amount && amount !== '') {
@@ -599,7 +441,7 @@ export function useInitialize() {
             }
         }
 
-        if (amountIn > 0) {
+        if (amountIn > BigInt(0)) {
             await checkAllowance();
             if (allowance === null || allowance < amountIn) {
                 setTxError(`Insufficient token allowance. Please approve the contract to spend ${amountIn.toString()} tokens first.`);
@@ -612,88 +454,62 @@ export function useInitialize() {
             setTxError(null);
             setTxHash(null);
 
-            const proofBytes = `0x${proof}`;
-            const slicedInputs = publicInputs.slice(0, 7);
+            console.log('[INIT] handleInitCommit: building args...');
+            // Use exact order from snarkjs exportSolidityCallData: [balance_commitment_x, balance_commitment_y, new_nonce_commitment, nonce_discovery_entry_x, nonce_discovery_entry_y, token_address, chain_id]
+            const publicSignalsForTx = [...groth16.publicSignals.slice(0, 7)];
 
             let chainIdForTx: number;
             try {
-                // Use the connected chain if available, otherwise fall back to configured chain
                 const activeChainId = chainId || publicClient?.chain?.id || getActiveChain().id;
                 const activeChain = publicClient?.chain || getChainById(activeChainId);
                 const rpcUrl = getRpcUrlForChain(activeChainId);
-
-                const client = publicClient || createPublicClient({
-                    chain: activeChain,
-                    transport: http(rpcUrl)
-                });
+                const client = publicClient || createPublicClient({ chain: activeChain, transport: http(rpcUrl) });
                 chainIdForTx = await client.getChainId();
-            } catch (error) {
+            } catch {
                 chainIdForTx = chainId || publicClient?.chain?.id || sepolia.id;
             }
 
+            // Only override the 7th public signal (index 6 = chain_id); leave the rest as from snarkjs
             const chainIdHex = `0x${BigInt(chainIdForTx).toString(16).padStart(64, '0')}`;
-            slicedInputs[1] = chainIdHex;
+            publicSignalsForTx[6] = chainIdHex;
 
-            const publicInputsBytes32 = slicedInputs.map((input: string) => {
+            const publicInputsBytes32 = publicSignalsForTx.map((input: string) => {
                 const hex = input.startsWith('0x') ? input.slice(2) : input;
                 return `0x${hex.padStart(64, '0')}` as `0x${string}`;
             });
 
             const lockDurationBigInt = lockDuration ? BigInt(lockDuration) : BigInt(0);
 
-            console.log('Calling writeContract with:', {
-                address: ArkanaAddress,
-                functionName: 'initialize',
-                proofLength: proofBytes.length,
-                publicInputsCount: publicInputsBytes32.length,
-                amountIn: amountIn.toString(),
-                lockDuration: lockDurationBigInt.toString(),
-                chainId: chainIdForTx,
-                userAddress: address,
-            });
-
-            // Verify all required data is present
-            if (!proofBytes || proofBytes === '0x') {
-                setTxError('Invalid proof bytes');
-                setIsSubmitting(false);
-                return;
-            }
-
-            if (!publicInputsBytes32 || publicInputsBytes32.length === 0) {
-                setTxError('Invalid public inputs');
-                setIsSubmitting(false);
-                return;
-            }
-
-            // Simulate transaction before sending
-            const client = publicClient || createPublicClient({
-                chain: getActiveChain(),
-                transport: http(getRpcUrl())
-            });
+            const pA: [bigint, bigint] = [BigInt(groth16.pA[0]), BigInt(groth16.pA[1])];
+            const pB: [[bigint, bigint], [bigint, bigint]] = [
+                [BigInt(groth16.pB[0][0]), BigInt(groth16.pB[0][1])],
+                [BigInt(groth16.pB[1][0]), BigInt(groth16.pB[1][1])],
+            ];
+            const pC: [bigint, bigint] = [BigInt(groth16.pC[0]), BigInt(groth16.pC[1])];
+            const publicSignalsTuple = publicInputsBytes32.map((s) => BigInt(s)) as [bigint, bigint, bigint, bigint, bigint, bigint, bigint];
 
             setIsSimulating(true);
             try {
-                console.log('🔄 Simulating initialize transaction...');
-                const simResult = await client.simulateContract({
+                console.log('[INIT] Simulating initialize transaction...', { chainIdForTx, amountIn: amountIn.toString(), lockDuration: lockDurationBigInt.toString() });
+                const activeChainId = chainId || publicClient?.chain?.id || getActiveChain().id;
+                const activeChain = publicClient?.chain || getChainById(activeChainId);
+                const client = publicClient || createPublicClient({
+                    chain: activeChain,
+                    transport: http(getRpcUrlForChain(activeChainId)),
+                });
+                const sim = await client.simulateContract({
                     account: address as `0x${string}`,
                     address: ArkanaAddress as `0x${string}`,
                     abi: ArkanaAbi,
                     functionName: 'initialize',
-                    args: [proofBytes as `0x${string}`, publicInputsBytes32, amountIn, lockDurationBigInt],
+                    args: [pA, pB, pC, publicSignalsTuple, amountIn, lockDurationBigInt],
                 });
-
-                console.log('✅ Simulation successful!');
-                console.log('📊 Simulation result:', simResult);
-            } catch (simulationError: any) {
-                let errorMessage = 'Transaction simulation failed';
-                if (simulationError?.shortMessage) {
-                    errorMessage = simulationError.shortMessage;
-                } else if (simulationError?.message) {
-                    errorMessage = simulationError.message;
-                }
-
-                console.error('❌ Simulation failed:', simulationError);
-                console.error('Error message:', errorMessage);
+                console.log('[INIT] Simulation OK', sim);
+            } catch (simulationError: unknown) {
+                const err = simulationError as { shortMessage?: string; message?: string; cause?: unknown; details?: string };
+                const errorMessage = err?.shortMessage ?? err?.message ?? (err?.cause as Error)?.message ?? 'Transaction simulation failed';
+                console.error('[INIT] Simulation failed:', simulationError);
+                console.error('[INIT] Simulation error message:', errorMessage);
                 setTxError(errorMessage);
                 setIsSubmitting(false);
                 setIsSimulating(false);
@@ -702,25 +518,15 @@ export function useInitialize() {
                 setIsSimulating(false);
             }
 
-            try {
-                writeContract({
-                    address: ArkanaAddress as `0x${string}`,
-                    abi: ArkanaAbi,
-                    functionName: 'initialize',
-                    args: [proofBytes as `0x${string}`, publicInputsBytes32, amountIn, lockDurationBigInt],
-                });
-                console.log('writeContract called successfully, waiting for wallet confirmation...');
-            } catch (writeError) {
-                console.error('Error calling writeContract:', writeError);
-                setTxError(writeError instanceof Error ? writeError.message : 'Failed to send transaction');
-                setIsSubmitting(false);
-                return;
-            }
-
-            // Check if writeContract actually triggered (isPending should become true)
-            // We'll check this in a useEffect that watches isPending
+            console.log('[INIT] Calling writeContract (wallet will prompt)...');
+            writeContract({
+                address: ArkanaAddress as `0x${string}`,
+                abi: ArkanaAbi,
+                functionName: 'initialize',
+                args: [pA, pB, pC, publicSignalsTuple, amountIn, lockDurationBigInt],
+            });
         } catch (error) {
-            console.error('Error in handleInitCommit:', error);
+            console.error('[INIT] Error in handleInitCommit:', error);
             setTxError(error instanceof Error ? error.message : 'Failed to process transaction');
             setIsSubmitting(false);
         }
@@ -733,11 +539,13 @@ export function useInitialize() {
         }
     }, [hash]);
 
-    // Update error when writeError changes
+    // Update error when writeError changes (walmi writeContract rejection or revert)
     useEffect(() => {
         if (writeError) {
-            console.error('writeContract error:', writeError);
-            setTxError(writeError.message || 'Transaction failed');
+            const msg = writeError.message || (writeError as { shortMessage?: string })?.shortMessage || 'Transaction failed';
+            console.error('[INIT] writeContract error:', writeError);
+            console.error('[INIT] writeContract error message:', msg);
+            setTxError(msg);
             setIsSubmitting(false);
         }
     }, [writeError]);
@@ -789,7 +597,7 @@ export function useInitialize() {
         proofError,
         provingTime,
         currentProvingTime,
-        isInitializing,
+        isInitializing: false,
         publicInputs,
         isSubmitting,
         isSimulating,

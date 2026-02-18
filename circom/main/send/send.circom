@@ -10,6 +10,7 @@ include "../../lib/lean-imt-verify/lean_imt_verify.circom";
 include "../../lib/dh-key-exchange/dh_key_exchange.circom";
 include "../../lib/utils/field_utils.circom";
 include "../../node_modules/circomlib/circuits/comparators.circom";
+include "../../node_modules/circomlib/circuits/bitify.circom";
 
 // VIEW_STRING = 0x76696577696e675f6b6579 = 143150966920908953357084025
 
@@ -193,9 +194,22 @@ template Send() {
     new_commitment_leaf <== new_leaf_hash.out;
     
     // === PERFORM DIFFIE-HELLMAN KEY EXCHANGE ===
+    // BabyPbk and EscalarMulAny require scalar < 2^253. user_key + nonce can be >= 2^253,
+    // so derive a 253-bit scalar from Poseidon(user_key, nonce) (take lower 253 bits).
+    component sender_priv_hash = Poseidon2Hash2();
+    sender_priv_hash.in[0] <== user_key;
+    sender_priv_hash.in[1] <== nonce;
+    signal sender_priv_hash_out;
+    sender_priv_hash_out <== sender_priv_hash.out;
+    component n2b_sender = Num2Bits(254);
+    n2b_sender.in <== sender_priv_hash_out;
+    component b2n_sender = Bits2Num(253);
+    for (var i = 0; i < 253; i++) {
+        b2n_sender.in[i] <== n2b_sender.out[i];
+    }
     signal sender_private_key;
-    sender_private_key <== user_key + nonce;
-    
+    sender_private_key <== b2n_sender.out;
+
     component dh = PerformDHKeyExchange();
     dh.sender_private_key <== sender_private_key;
     dh.receiver_public_key[0] <== receiver_public_key[0];

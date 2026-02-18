@@ -1,20 +1,19 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { useAccount as useWagmiAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient, useChainId, useReadContract } from 'wagmi';
+import { useAccount as useWagmiAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient, useChainId } from 'wagmi';
 import { useAccount as useAccountContext, useZkAddress } from '@/context/AccountProvider';
 import { useAccountState } from '@/context/AccountStateProvider';
 import { createPublicClient, http, parseAbi, Address } from 'viem';
-import { sepolia, getActiveChain, getChainById, getRpcUrlForChain } from '@/config';
-import { Noir } from '@noir-lang/noir_js';
-import { CachedUltraHonkBackend } from '@/lib/cached-ultra-honk-backend';
-import depositCircuit from '@/lib/circuits/deposit.json';
+import { getActiveChain, getChainById, getRpcUrlForChain } from '@/config';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
-import { ensureBufferPolyfill } from '@/lib/buffer-polyfill';
 import { useNonceDiscovery } from '@/hooks/useNonceDiscovery';
 import { loadAccountData, saveTokenAccountData, CommitmentState } from '@/lib/indexeddb';
 import { convertAssetsToShares } from '@/lib/shares-to-assets';
-import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
+import { computePrivateKeyFromSignature, getSpendingKeyCircuit, getViewKeyFromUserKey, poseidonHash } from '@/lib/circuit-utils';
+import { proveWithSnarkjs } from '@/lib/circuit-prove';
+import type { Groth16Args } from '@/lib/groth16';
+import { padHex } from 'viem';
 
 const ERC20_ABI = parseAbi([
     'function allowance(address owner, address spender) view returns (uint256)',
@@ -59,8 +58,6 @@ export function useDeposit() {
     const [proofError, setProofError] = useState<string | null>(null);
     const [provingTime, setProvingTime] = useState<number | null>(null);
     const [currentProvingTime, setCurrentProvingTime] = useState<number>(0);
-    const [isInitializing, setIsInitializing] = useState(false);
-    const [isInitialized, setIsInitialized] = useState(false);
     const [publicInputs, setPublicInputs] = useState<string[]>([]);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isSimulating, setIsSimulating] = useState(false);
@@ -79,9 +76,8 @@ export function useDeposit() {
     const [tokenName, setTokenName] = useState<string>('');
     const [tokenSymbol, setTokenSymbol] = useState<string>('');
 
-    // Backend and Noir references
-    const backendRef = useRef<CachedUltraHonkBackend | null>(null);
-    const noirRef = useRef<Noir | null>(null);
+    const groth16ResultRef = useRef<Groth16Args | null>(null);
+    const [groth16Result, setGroth16Result] = useState<Groth16Args | null>(null);
 
     // Get balanceEntries and currentNonce from context
     const { balanceEntries, currentNonce } = useAccountState();
@@ -102,43 +98,6 @@ export function useDeposit() {
             if (interval) clearInterval(interval);
         };
     }, [isProving]);
-
-    // Initialize backend
-    const initializeBackend = useCallback(async () => {
-        if (isInitialized && backendRef.current && noirRef.current) {
-            return;
-        }
-
-        setIsInitializing(true);
-        try {
-            await ensureBufferPolyfill();
-
-            const backendOptions = { threads: 1 };
-
-            // Handle both string and Uint8Array bytecode
-            let bytecode: string | Uint8Array;
-            if (typeof depositCircuit.bytecode === 'string') {
-                bytecode = depositCircuit.bytecode;
-            } else {
-                if (!globalThis.Buffer) {
-                    const { Buffer } = await import('buffer');
-                    globalThis.Buffer = Buffer;
-                }
-                bytecode = globalThis.Buffer.from(depositCircuit.bytecode).toString('base64');
-            }
-
-            const backend = new CachedUltraHonkBackend(bytecode, backendOptions);
-            const noir = new Noir(depositCircuit);
-            backendRef.current = backend;
-            noirRef.current = noir;
-            setIsInitialized(true);
-        } catch (error) {
-            console.error('Failed to initialize backend:', error);
-            throw error;
-        } finally {
-            setIsInitializing(false);
-        }
-    }, [isInitialized]);
 
     // Initialize user_key from existing signature when component mounts
     useEffect(() => {
@@ -507,11 +466,6 @@ export function useDeposit() {
 
         setIsCalculatingInputs(true);
         try {
-            await ensureBufferPolyfill();
-
-            const { poseidon2Hash } = await import('@aztec/foundation/crypto');
-            const { padHex } = await import('viem');
-
             // Convert inputs to bigint
             const tokenAddressBigInt = BigInt(tokenAddress.startsWith('0x') ? tokenAddress : '0x' + tokenAddress);
 
@@ -644,27 +598,21 @@ export function useDeposit() {
                 args: [tokenAddress as `0x${string}`],
             }) as bigint;
 
-            const chainId = BigInt(31337); // Anvil
+            const chainId = BigInt(await publicClient.getChainId());
 
-            // Reconstruct commitment state (similar to withdraw logic)
-            // For nonce 0, read shares from contract
+            // Fetch leaves early: for nonce 0 with a single leaf we use the contract's leaf directly (avoids reconstruction mismatch)
+            const contractLeaves = await publicClient.readContract({
+                address: ArkanaAddress,
+                abi: ArkanaAbi,
+                functionName: 'getLeaves' as any,
+                args: [tokenAddress as `0x${string}`],
+            }) as unknown as bigint[];
+
+            // Reconstruct commitment state (circuit-consistent: spending_key = Hash3(user_key, chain_id, token_address))
             let sharesFromContract: bigint | undefined = undefined;
             if (finalTokenPreviousNonce === BigInt(0)) {
-                const nonceCommitmentHash = await poseidon2Hash([
-                    await poseidon2Hash([userKeyBigInt, chainId, tokenAddressBigInt]),
-                    finalTokenPreviousNonce,
-                    tokenAddressBigInt
-                ]);
-                let nonceCommitmentBigInt: bigint;
-                if (typeof nonceCommitmentHash === 'bigint') {
-                    nonceCommitmentBigInt = nonceCommitmentHash;
-                } else if ('toBigInt' in nonceCommitmentHash && typeof (nonceCommitmentHash as any).toBigInt === 'function') {
-                    nonceCommitmentBigInt = (nonceCommitmentHash as any).toBigInt();
-                } else if ('value' in nonceCommitmentHash) {
-                    nonceCommitmentBigInt = BigInt((nonceCommitmentHash as any).value);
-                } else {
-                    nonceCommitmentBigInt = BigInt((nonceCommitmentHash as any).toString());
-                }
+                const spendingKey0 = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
+                const nonceCommitmentBigInt = await poseidonHash([spendingKey0, finalTokenPreviousNonce, tokenAddressBigInt]);
 
                 const nonceCommitmentBytes32 = padHex(`0x${nonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
                 const encryptedStateDetails = await publicClient.readContract({
@@ -687,42 +635,9 @@ export function useDeposit() {
                 previousStateForReconstruction = null;
             } else {
                 const { poseidonCtrDecrypt } = await import('@/lib/poseidon-ctr-encryption');
-                const VIEW_STRING = BigInt('0x76696577696e675f6b6579');
-                const viewKey = await poseidon2Hash([VIEW_STRING, userKeyBigInt]);
-                let viewKeyBigInt: bigint;
-                if (typeof viewKey === 'bigint') {
-                    viewKeyBigInt = viewKey;
-                } else if ('toBigInt' in viewKey && typeof (viewKey as any).toBigInt === 'function') {
-                    viewKeyBigInt = (viewKey as any).toBigInt();
-                } else if ('value' in viewKey) {
-                    viewKeyBigInt = BigInt((viewKey as any).value);
-                } else {
-                    viewKeyBigInt = BigInt((viewKey as any).toString());
-                }
-
-                const spendingKey = await poseidon2Hash([userKeyBigInt, chainId, tokenAddressBigInt]);
-                let spendingKeyBigInt: bigint;
-                if (typeof spendingKey === 'bigint') {
-                    spendingKeyBigInt = spendingKey;
-                } else if ('toBigInt' in spendingKey && typeof (spendingKey as any).toBigInt === 'function') {
-                    spendingKeyBigInt = (spendingKey as any).toBigInt();
-                } else if ('value' in spendingKey) {
-                    spendingKeyBigInt = BigInt((spendingKey as any).value);
-                } else {
-                    spendingKeyBigInt = BigInt((spendingKey as any).toString());
-                }
-
-                const finalPreviousNonceCommitment = await poseidon2Hash([spendingKeyBigInt, finalTokenPreviousNonce, tokenAddressBigInt]);
-                let finalPreviousNonceCommitmentBigInt: bigint;
-                if (typeof finalPreviousNonceCommitment === 'bigint') {
-                    finalPreviousNonceCommitmentBigInt = finalPreviousNonceCommitment;
-                } else if ('toBigInt' in finalPreviousNonceCommitment && typeof (finalPreviousNonceCommitment as any).toBigInt === 'function') {
-                    finalPreviousNonceCommitmentBigInt = (finalPreviousNonceCommitment as any).toBigInt();
-                } else if ('value' in finalPreviousNonceCommitment) {
-                    finalPreviousNonceCommitmentBigInt = BigInt((finalPreviousNonceCommitment as any).value);
-                } else {
-                    finalPreviousNonceCommitmentBigInt = BigInt((finalPreviousNonceCommitment as any).toString());
-                }
+                const viewKeyBigInt = await getViewKeyFromUserKey(userKeyBigInt);
+                const spendingKeyBigInt = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
+                const finalPreviousNonceCommitmentBigInt = await poseidonHash([spendingKeyBigInt, finalTokenPreviousNonce, tokenAddressBigInt]);
 
                 const finalPreviousNonceCommitmentBytes32 = padHex(`0x${finalPreviousNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
                 const operationInfoForFinalPrevious = await publicClient.readContract({
@@ -756,17 +671,7 @@ export function useDeposit() {
                     nullifierForReconstruction = BigInt(0);
                     unlocksAtForReconstruction = BigInt(0);
                 } else {
-                    const previousNonceCommitment = await poseidon2Hash([spendingKeyBigInt, finalTokenPreviousNonce, tokenAddressBigInt]);
-                    let previousNonceCommitmentBigInt: bigint;
-                    if (typeof previousNonceCommitment === 'bigint') {
-                        previousNonceCommitmentBigInt = previousNonceCommitment;
-                    } else if ('toBigInt' in previousNonceCommitment && typeof (previousNonceCommitment as any).toBigInt === 'function') {
-                        previousNonceCommitmentBigInt = (previousNonceCommitment as any).toBigInt();
-                    } else if ('value' in previousNonceCommitment) {
-                        previousNonceCommitmentBigInt = BigInt((previousNonceCommitment as any).value);
-                    } else {
-                        previousNonceCommitmentBigInt = BigInt((previousNonceCommitment as any).toString());
-                    }
+                    const previousNonceCommitmentBigInt = await poseidonHash([spendingKeyBigInt, finalTokenPreviousNonce, tokenAddressBigInt]);
 
                     console.log('🔍 DEPOSIT PROOF - Previous Nonce Commitment:');
                     console.log(`  Current Nonce: ${tokenCurrentNonceValue.toString()}`);
@@ -801,85 +706,71 @@ export function useDeposit() {
                 };
             }
 
-            // Calculate commitment leaf
-            const { pedersenCommitment5 } = await import('@/lib/pedersen-commitments');
-            const reconstructModule = await import('@/lib/reconstructCommitment');
-
-            const spendingKeyHashForCommit = await poseidon2Hash([userKeyBigInt, chainId, tokenAddressBigInt]);
-            let spendingKeyForCommit: bigint;
-            if (typeof spendingKeyHashForCommit === 'bigint') {
-                spendingKeyForCommit = spendingKeyHashForCommit;
-            } else if ('toBigInt' in spendingKeyHashForCommit && typeof (spendingKeyHashForCommit as any).toBigInt === 'function') {
-                spendingKeyForCommit = (spendingKeyHashForCommit as any).toBigInt();
-            } else if ('value' in spendingKeyHashForCommit) {
-                spendingKeyForCommit = BigInt((spendingKeyHashForCommit as any).value);
-            } else {
-                spendingKeyForCommit = BigInt((spendingKeyHashForCommit as any).toString());
-            }
-
-            const prevNonceCommitmentHash = await poseidon2Hash([spendingKeyForCommit, finalTokenPreviousNonce, tokenAddressBigInt]);
-            let prevNonceCommitmentBigInt: bigint;
-            if (typeof prevNonceCommitmentHash === 'bigint') {
-                prevNonceCommitmentBigInt = prevNonceCommitmentHash;
-            } else if ('toBigInt' in prevNonceCommitmentHash && typeof (prevNonceCommitmentHash as any).toBigInt === 'function') {
-                prevNonceCommitmentBigInt = (prevNonceCommitmentHash as any).toBigInt();
-            } else if ('value' in prevNonceCommitmentHash) {
-                prevNonceCommitmentBigInt = BigInt((prevNonceCommitmentHash as any).value);
-            } else {
-                prevNonceCommitmentBigInt = BigInt((prevNonceCommitmentHash as any).toString());
-            }
-
             const nullifierValue = previousStateForReconstruction?.nullifier ?? BigInt(0);
             const unlocksAtValue = previousStateForReconstruction?.unlocksAt ?? BigInt(0);
 
-            const commitmentPoint = pedersenCommitment5(
-                previousSharesForReconstruction,
-                nullifierValue,
-                spendingKeyForCommit,
-                unlocksAtValue,
-                prevNonceCommitmentBigInt
-            );
-
-            const previousCommitmentLeaf = await reconstructModule.computeCommitmentLeaf(commitmentPoint, publicClient);
-
-            // Verify leaf exists
-            const leafExists = await publicClient.readContract({
-                address: ArkanaAddress,
-                abi: ArkanaAbi,
-                functionName: 'hasLeaf',
-                args: [tokenAddress as `0x${string}`, previousCommitmentLeaf],
-            }) as boolean;
-            if (!leafExists) {
-                throw new Error(`Reconstructed commitment leaf does not exist in contract. This indicates a mismatch in state reconstruction.`);
-            }
-
-            // Get commitment_index
+            // Commitment leaf and index: use contract's leaf directly when possible (nonce 0 + single leaf), else reconstruct and use computeCommitmentLeaf via contract
+            let previousCommitmentLeaf: bigint;
             let commitmentIndex: bigint;
-            try {
-                commitmentIndex = await publicClient.readContract({
+
+            if (finalTokenPreviousNonce === BigInt(0) && contractLeaves.length === 1) {
+                // Single leaf from our initialize — use it directly so we never mismatch
+                previousCommitmentLeaf = contractLeaves[0];
+                commitmentIndex = BigInt(0);
+            } else {
+                // Reconstruct point and get leaf via contract's computeCommitmentLeaf(x, y)
+                // For nonce > 0: decrypted values are already encoded (previous deposit encrypted circuit inputs = encoded)
+                const { pedersenCommitment5 } = await import('@/lib/pedersen-commitments');
+                const reconstructModule = await import('@/lib/reconstructCommitment');
+
+                const spendingKeyForCommit = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
+                const prevNonceCommitmentBigInt = await poseidonHash([spendingKeyForCommit, finalTokenPreviousNonce, tokenAddressBigInt]);
+
+                // Use as-is: from decryption we already get encoded values (circuit encrypts its encoded inputs)
+                const sharesEncoded = previousSharesForReconstruction;
+                const nullifierEncodedForLeaf = nullifierValue;
+                const unlocksAtEncodedForLeaf = unlocksAtValue === BigInt(0) ? BigInt(1) : unlocksAtValue;
+
+                const commitmentPoint = pedersenCommitment5(
+                    sharesEncoded,
+                    nullifierEncodedForLeaf,
+                    spendingKeyForCommit,
+                    unlocksAtEncodedForLeaf,
+                    prevNonceCommitmentBigInt
+                );
+
+                previousCommitmentLeaf = await reconstructModule.computeCommitmentLeaf(commitmentPoint, publicClient);
+
+                const leafExists = await publicClient.readContract({
                     address: ArkanaAddress,
                     abi: ArkanaAbi,
-                    functionName: 'getLeafIndex',
+                    functionName: 'hasLeaf',
                     args: [tokenAddress as `0x${string}`, previousCommitmentLeaf],
-                }) as bigint;
-            } catch (error) {
-                const treeSize = await publicClient.readContract({
-                    address: ArkanaAddress,
-                    abi: ArkanaAbi,
-                    functionName: 'getSize',
-                    args: [tokenAddress as `0x${string}`],
-                }) as bigint;
-                commitmentIndex = treeSize;
+                }) as boolean;
+                if (!leafExists) {
+                    throw new Error(`Reconstructed commitment leaf does not exist in contract. This indicates a mismatch in state reconstruction.`);
+                }
+
+                try {
+                    commitmentIndex = await publicClient.readContract({
+                        address: ArkanaAddress,
+                        abi: ArkanaAbi,
+                        functionName: 'getLeafIndex',
+                        args: [tokenAddress as `0x${string}`, previousCommitmentLeaf],
+                    }) as bigint;
+                } catch (error) {
+                    const treeSize = await publicClient.readContract({
+                        address: ArkanaAddress,
+                        abi: ArkanaAbi,
+                        functionName: 'getSize',
+                        args: [tokenAddress as `0x${string}`],
+                    }) as bigint;
+                    commitmentIndex = treeSize;
+                }
             }
 
             // Generate merkle proof
             const { generateMerkleProof } = await import('@/lib/merkle-proof');
-            const contractLeaves = await publicClient.readContract({
-                address: ArkanaAddress,
-                abi: ArkanaAbi,
-                functionName: 'getLeaves' as any,
-                args: [tokenAddress as `0x${string}`],
-            }) as unknown as bigint[];
 
             if (contractLeaves.length === 0) {
                 throw new Error('No leaves found in contract - cannot generate merkle proof');
@@ -931,19 +822,29 @@ export function useDeposit() {
             };
 
             const userKeyForCircuit = contextUserKey ? '0x' + contextUserKey.toString(16) : userKey;
-            const previousShares = previousSharesForReconstruction;
-            const nullifier = nullifierValue;
-            const previousUnlocksAt = unlocksAtValue;
+            // Encoding: only add +1 for nonce 0 (from entry; raw values). For nonce > 0, decrypted values are already encoded.
+            const previousSharesEncoded =
+                finalTokenPreviousNonce === BigInt(0)
+                    ? previousSharesForReconstruction + BigInt(1)
+                    : previousSharesForReconstruction;
+            const nullifierEncoded =
+                finalTokenPreviousNonce === BigInt(0)
+                    ? nullifierValue + BigInt(1)
+                    : nullifierValue;
+            const previousUnlocksAtEncoded =
+                finalTokenPreviousNonce === BigInt(0)
+                    ? unlocksAtValue + BigInt(1)
+                    : (unlocksAtValue === BigInt(0) ? BigInt(1) : unlocksAtValue);
 
-            const circuitInputs = {
+            const circuitInputs: Record<string, string | string[]> = {
                 user_key: formatForNoir(userKeyForCircuit),
                 token_address: formatForNoir(tokenAddress),
                 amount: formatForNoir(amountBigInt),
                 chain_id: chainId.toString(),
                 previous_nonce: finalTokenPreviousNonce.toString(),
-                previous_shares: previousShares.toString(),
-                nullifier: nullifier.toString(),
-                previous_unlocks_at: previousUnlocksAt.toString(),
+                previous_shares: previousSharesEncoded.toString(),
+                nullifier: nullifierEncoded.toString(),
+                previous_unlocks_at: previousUnlocksAtEncoded.toString(),
                 previous_commitment_leaf: previousCommitmentLeaf.toString(),
                 commitment_index: commitmentIndex.toString(),
                 tree_depth: treeDepth.toString(),
@@ -955,7 +856,7 @@ export function useDeposit() {
         } finally {
             setIsCalculatingInputs(false);
         }
-    }, [tokenAddress, amount, tokenDecimals, contextUserKey, userKey, zkAddress, balanceEntries, publicClient, account?.signature, reconstructPersonalCommitmentState, tokenCurrentNonce, chainId]);
+    }, [tokenAddress, amount, tokenDecimals, contextUserKey, userKey, zkAddress, balanceEntries, publicClient, account?.signature, tokenCurrentNonce]);
 
     // Generate deposit proof
     const proveDeposit = useCallback(async () => {
@@ -995,80 +896,31 @@ export function useDeposit() {
             setIsProving(true);
             setProofError(null);
             setProvingTime(null);
+            groth16ResultRef.current = null;
 
             const startTime = performance.now();
-            await initializeBackend();
 
-            if (!backendRef.current || !noirRef.current) {
-                throw new Error('Failed to initialize backend');
-            }
-
-            // Calculate circuit inputs dynamically
             const inputs = await calculateCircuitInputs();
+            console.log('Circuit inputs (before proof):', inputs);
 
-            // Calculate new_nonce_commitment exactly as circuit does
-            const { poseidon2Hash } = await import('@aztec/foundation/crypto');
-            const userKeyBigInt = BigInt(inputs.user_key);
-            const chainIdBigInt = BigInt(inputs.chain_id);
-            const tokenAddressBigInt = BigInt(inputs.token_address);
-            const previousNonceBigInt = BigInt(inputs.previous_nonce);
-            const newNonceBigInt = previousNonceBigInt + BigInt(1);
-
-            const spendingKeyResult = await poseidon2Hash([userKeyBigInt, chainIdBigInt, tokenAddressBigInt]);
-            let spendingKeyBigInt: bigint;
-            if (typeof spendingKeyResult === 'bigint') {
-                spendingKeyBigInt = spendingKeyResult;
-            } else if ('toBigInt' in spendingKeyResult && typeof (spendingKeyResult as any).toBigInt === 'function') {
-                spendingKeyBigInt = (spendingKeyResult as any).toBigInt();
-            } else {
-                spendingKeyBigInt = BigInt((spendingKeyResult as any).toString());
-            }
-
-            const newNonceCommitmentResult = await poseidon2Hash([spendingKeyBigInt, newNonceBigInt, tokenAddressBigInt]);
-            let newNonceCommitmentBigInt: bigint;
-            if (typeof newNonceCommitmentResult === 'bigint') {
-                newNonceCommitmentBigInt = newNonceCommitmentResult;
-            } else if ('toBigInt' in newNonceCommitmentResult && typeof (newNonceCommitmentResult as any).toBigInt === 'function') {
-                newNonceCommitmentBigInt = (newNonceCommitmentResult as any).toBigInt();
-            } else {
-                newNonceCommitmentBigInt = BigInt((newNonceCommitmentResult as any).toString());
-            }
-
-            //@ts-ignore
-            const { witness } = await noirRef.current!.execute(inputs, { keccak: true });
-
-            //@ts-ignore
-            const proofResult = await backendRef.current!.generateProof(witness, { keccak: true });
-            const proofHex = Buffer.from(proofResult.proof).toString('hex');
-
-            const publicInputsArray = (proofResult.publicInputs || []).slice(0, 11);
-            const publicInputsHex = publicInputsArray.map((input: any) => {
-                if (typeof input === 'string' && input.startsWith('0x')) {
-                    return input;
-                }
-                if (typeof input === 'bigint') {
-                    return `0x${input.toString(16).padStart(64, '0')}`;
-                }
-                const hex = BigInt(input).toString(16);
-                return `0x${hex.padStart(64, '0')}`;
-            });
-
-            const endTime = performance.now();
-            const provingTimeMs = Math.round(endTime - startTime);
-            setProvingTime(provingTimeMs);
-            setProof(proofHex);
-            setPublicInputs(publicInputsHex);
+            const result = await proveWithSnarkjs(inputs, 'deposit');
+            groth16ResultRef.current = result;
+            setGroth16Result(result);
+            setProof('0x01');
+            setPublicInputs(result.publicSignals.slice(0, 11));
+            setProvingTime(Math.round(performance.now() - startTime));
         } catch (error) {
             console.error('Error generating proof:', error);
             setProofError(error instanceof Error ? error.message : 'Failed to generate proof');
         } finally {
             setIsProving(false);
         }
-    }, [zkAddress, tokenAddress, amount, tokenCurrentNonce, isTokenInitialized, initializeBackend, calculateCircuitInputs]);
+    }, [zkAddress, tokenAddress, amount, tokenCurrentNonce, isTokenInitialized, calculateCircuitInputs]);
 
-    // Handle deposit transaction
+    // Handle deposit transaction (contract expects pA, pB, pC, publicSignals[11])
     const handleDeposit = useCallback(async () => {
-        if (!proof || !publicInputs || publicInputs.length === 0) {
+        const groth16 = groth16ResultRef.current;
+        if (!groth16 || !groth16.publicSignals?.length) {
             setTxError('Proof and public inputs are required');
             return;
         }
@@ -1082,24 +934,19 @@ export function useDeposit() {
             setTxError(null);
             setTxHash(null);
 
-            // Check allowance before proceeding
             if (!tokenAddress || !amount) {
                 setTxError('Token address and amount are required');
                 setIsSubmitting(false);
                 return;
             }
 
-            // Use the connected chain if available, otherwise fall back to configured chain
             const activeChainId = chainId || publicClient?.chain?.id || getActiveChain().id;
             const activeChain = publicClient?.chain || getChainById(activeChainId);
-            const rpcUrl = getRpcUrlForChain(activeChainId);
-
             const client = publicClient || createPublicClient({
                 chain: activeChain,
-                transport: http(rpcUrl)
+                transport: http(getRpcUrlForChain(activeChainId)),
             });
 
-            // Convert user input to raw units for allowance check
             let amountIn: bigint;
             if (!amount || amount === '') {
                 amountIn = BigInt(0);
@@ -1110,20 +957,18 @@ export function useDeposit() {
                     setIsSubmitting(false);
                     return;
                 }
-
                 const parts = sanitizedAmount.split('.');
+                const dec = tokenDecimals ?? 18;
                 if (parts.length === 1) {
-                    amountIn = BigInt(sanitizedAmount) * BigInt(10 ** (tokenDecimals ?? 18));
+                    amountIn = BigInt(sanitizedAmount) * BigInt(10 ** dec);
                 } else {
                     const integerPart = parts[0] || '0';
-                    const decimalPart = parts[1] || '';
-                    const limitedDecimal = decimalPart.slice(0, tokenDecimals ?? 18);
-                    const paddedDecimal = limitedDecimal.padEnd(tokenDecimals ?? 18, '0');
-                    amountIn = BigInt(integerPart) * BigInt(10 ** (tokenDecimals ?? 18)) + BigInt(paddedDecimal);
+                    const decimalPart = (parts[1] || '').slice(0, dec).padEnd(dec, '0');
+                    amountIn = BigInt(integerPart) * BigInt(10 ** dec) + BigInt(decimalPart);
                 }
             }
 
-            if (amountIn > 0) {
+            if (amountIn > BigInt(0)) {
                 await checkAllowance();
                 if (allowance === null || allowance < amountIn) {
                     setTxError(`Insufficient token allowance. Please approve the contract to spend ${amountIn.toString()} tokens first.`);
@@ -1132,49 +977,28 @@ export function useDeposit() {
                 }
             }
 
-            // Convert proof hex string to bytes
-            const proofBytes = `0x${proof}`;
+            const slicedInputs = groth16.publicSignals.slice(0, 11);
+            const publicSignalsTuple = slicedInputs.map((s) => BigInt(s)) as [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint];
+            const pA: [bigint, bigint] = [BigInt(groth16.pA[0]), BigInt(groth16.pA[1])];
+            const pB: [[bigint, bigint], [bigint, bigint]] = [
+                [BigInt(groth16.pB[0][0]), BigInt(groth16.pB[0][1])],
+                [BigInt(groth16.pB[1][0]), BigInt(groth16.pB[1][1])],
+            ];
+            const pC: [bigint, bigint] = [BigInt(groth16.pC[0]), BigInt(groth16.pC[1])];
 
-            // Slice public inputs to 11 elements (deposit circuit has 11 public inputs)
-            const slicedInputs = publicInputs.slice(0, 11);
-            const publicInputsBytes32 = slicedInputs.map((input: string) => {
-                const hex = input.startsWith('0x') ? input.slice(2) : input;
-                return `0x${hex.padStart(64, '0')}` as `0x${string}`;
-            });
-
-            console.log('📤 DEPOSIT TRANSACTION - Parameters:');
-            console.log('  Contract Address:', ArkanaAddress);
-            console.log('  Function: deposit');
-            console.log('  Public Inputs Count:', publicInputsBytes32.length);
-            console.log('  Public Inputs (all):', publicInputsBytes32.map((pi, idx) => `[${idx}] ${pi}`));
-            console.log('  Previous Nonce (from public inputs - should match):', tokenCurrentNonce ? (tokenCurrentNonce > BigInt(0) ? tokenCurrentNonce - BigInt(1) : BigInt(0)).toString() : 'null');
-
-            // Simulate the transaction first to catch errors
             setIsSimulating(true);
             try {
-                console.log('🔄 Simulating deposit transaction...');
                 const simResult = await client.simulateContract({
                     account: address as `0x${string}`,
                     address: ArkanaAddress as `0x${string}`,
                     abi: ArkanaAbi,
                     functionName: 'deposit',
-                    args: [proofBytes as `0x${string}`, publicInputsBytes32 as readonly `0x${string}`[]],
+                    args: [pA, pB, pC, publicSignalsTuple],
                 });
-
-                console.log('✅ Simulation successful!');
-                console.log('📊 Simulation result:', simResult);
                 setSimulationResult(simResult);
-            } catch (simulationError: any) {
-                let errorMessage = 'Transaction simulation failed';
-                if (simulationError?.shortMessage) {
-                    errorMessage = simulationError.shortMessage;
-                } else if (simulationError?.message) {
-                    errorMessage = simulationError.message;
-                }
-
-                console.error('❌ Simulation failed:', simulationError);
-                console.error('Error message:', errorMessage);
-                setTxError('Simulation errored');
+            } catch (simulationError: unknown) {
+                const err = simulationError as { shortMessage?: string; message?: string };
+                setTxError(err?.shortMessage ?? err?.message ?? 'Simulation failed');
                 setIsSubmitting(false);
                 setIsSimulating(false);
                 setSimulationResult(null);
@@ -1183,19 +1007,18 @@ export function useDeposit() {
                 setIsSimulating(false);
             }
 
-            // Send transaction using wagmi
             writeContract({
                 address: ArkanaAddress as `0x${string}`,
                 abi: ArkanaAbi,
                 functionName: 'deposit',
-                args: [proofBytes as `0x${string}`, publicInputsBytes32 as readonly `0x${string}`[]],
+                args: [pA, pB, pC, publicSignalsTuple],
             });
         } catch (error) {
             console.error('Error in handleDeposit:', error);
             setTxError(error instanceof Error ? error.message : 'Failed to process transaction');
             setIsSubmitting(false);
         }
-    }, [proof, publicInputs, address, tokenAddress, amount, tokenDecimals, publicClient, checkAllowance, allowance, writeContract]);
+    }, [address, tokenAddress, amount, tokenDecimals, chainId, publicClient, checkAllowance, allowance, writeContract]);
 
     // Update txHash when hash changes
     useEffect(() => {
@@ -1235,7 +1058,7 @@ export function useDeposit() {
         proofError,
         provingTime,
         currentProvingTime,
-        isInitializing,
+        isInitializing: false,
         publicInputs,
         isSubmitting,
         isSimulating,
@@ -1259,6 +1082,7 @@ export function useDeposit() {
         tokenName,
         tokenSymbol,
         isCalculatingInputs,
+        groth16Result,
         // Actions
         proveDeposit,
         handleDeposit,

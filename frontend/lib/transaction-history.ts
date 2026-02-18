@@ -2,7 +2,7 @@ import { PublicClient, Address } from 'viem';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { poseidonCtrDecrypt } from '@/lib/poseidon-ctr-encryption';
 import { padHex } from 'viem';
-import { getSpendingKey, poseidonHash } from './circuit-utils';
+import { getSpendingKeyCircuit, poseidonHash } from './circuit-utils';
 
 // VIEW_STRING constant from circuits: 0x76696577696e675f6b6579 ("viewing_key" in hex)
 const VIEW_STRING = BigInt('0x76696577696e675f6b6579');
@@ -31,28 +31,26 @@ export async function deriveViewKey(userKey: bigint): Promise<bigint> {
 }
 
 /**
- * Compute spending_key for a token (4 args: user_key, chain_id, token_address, signer_pubkey_hash)
+ * Compute spending_key for a token (circuit formula: Poseidon(user_key, chain_id, token_address))
  */
 export async function computeSpendingKey(
   userKey: bigint,
   chainId: bigint,
-  tokenAddress: bigint,
-  signerPubkeyHash: bigint | string
+  tokenAddress: bigint
 ): Promise<bigint> {
-  return getSpendingKey(userKey, chainId, tokenAddress, signerPubkeyHash);
+  return getSpendingKeyCircuit(userKey, chainId, tokenAddress);
 }
 
 /**
- * Compute nonce commitment (spending_key = 4 args)
+ * Compute nonce commitment (same as circuits: Hash(spending_key, nonce, token_address))
  */
 export async function computeNonceCommitment(
   userKey: bigint,
   chainId: bigint,
   tokenAddress: bigint,
-  signerPubkeyHash: bigint | string,
   nonce: bigint
 ): Promise<bigint> {
-  const spendingKey = await getSpendingKey(userKey, chainId, tokenAddress, signerPubkeyHash);
+  const spendingKey = await getSpendingKeyCircuit(userKey, chainId, tokenAddress);
   return poseidonHash([spendingKey, nonce, tokenAddress]);
 }
 
@@ -75,10 +73,6 @@ export async function reconstructTokenHistory(
 ): Promise<TransactionHistoryEntry[]> {
   const viewKey = await deriveViewKey(userKey);
   const history: TransactionHistoryEntry[] = [];
-  const { getSignerIdentityFromUserKey } = await import('@/lib/eddsa-circuit');
-  const signerIdentity = await getSignerIdentityFromUserKey(userKey);
-  const signerPubkeyHash = BigInt(signerIdentity.signer_pubkey_hash);
-
   const chainId = BigInt(await publicClient.getChainId());
   const tokenAddressBigInt = BigInt(tokenAddress);
 
@@ -91,7 +85,7 @@ export async function reconstructTokenHistory(
     for (let nonce = BigInt(0); nonce <= lastUsedNonce; nonce++) {
       try {
         console.log(`[History] Checking nonce ${nonce.toString()}...`);
-        const nonceCommitment = await computeNonceCommitment(userKey, chainId, tokenAddressBigInt, signerPubkeyHash, nonce);
+        const nonceCommitment = await computeNonceCommitment(userKey, chainId, tokenAddressBigInt, nonce);
         const nonceCommitmentBytes32 = padHex(`0x${nonceCommitment.toString(16)}`, { size: 32 }) as `0x${string}`;
 
         // Check if this nonceCommitment exists in the contract

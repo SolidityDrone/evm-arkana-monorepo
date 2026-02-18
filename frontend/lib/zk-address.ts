@@ -76,6 +76,49 @@ export async function signAndComputeZkAddress(
     return await computeZkAddress(signature);
 }
 
+const HEX_ONLY = /^[0-9a-fA-F]+$/;
+
+/**
+ * Validate zkAddress and optionally return parsed x, y.
+ * Does not throw; returns { valid, x?, y?, error? }.
+ *
+ * Format: zk{pubkey_x}{pubkey_y} or 128 hex chars
+ * - pubkey_x: 64 hex characters (256 bits)
+ * - pubkey_y: 64 hex characters (256 bits)
+ */
+export function validateZkAddress(zkAddress: string): {
+    valid: boolean;
+    x?: bigint;
+    y?: bigint;
+    error?: string;
+} {
+    if (!zkAddress || !zkAddress.trim()) {
+        return { valid: false, error: 'Enter a zk address' };
+    }
+    let pubKeyHex = zkAddress.trim().startsWith('zk') ? zkAddress.trim().slice(2) : zkAddress.trim();
+    pubKeyHex = pubKeyHex.startsWith('0x') ? pubKeyHex.slice(2) : pubKeyHex;
+
+    if (pubKeyHex.length !== 128) {
+        return {
+            valid: false,
+            error: `Expected 128 hex characters (64 for x + 64 for y), got ${pubKeyHex.length}`,
+        };
+    }
+    if (!HEX_ONLY.test(pubKeyHex)) {
+        return { valid: false, error: 'zk address must contain only hex characters (0-9, a-f)' };
+    }
+
+    try {
+        const pubKeyXHex = pubKeyHex.slice(0, 64);
+        const pubKeyYHex = pubKeyHex.slice(64, 128);
+        const x = BigInt('0x' + pubKeyXHex);
+        const y = BigInt('0x' + pubKeyYHex);
+        return { valid: true, x, y };
+    } catch (e) {
+        return { valid: false, error: e instanceof Error ? e.message : 'Invalid zk address' };
+    }
+}
+
 /**
  * Parse zkAddress back to x and y coordinates
  * 
@@ -87,27 +130,11 @@ export async function signAndComputeZkAddress(
  * @returns Object with x and y coordinates as bigints
  */
 export function parseZkAddress(zkAddress: string): { x: bigint; y: bigint } {
-    // Remove "zk" prefix if present
-    let pubKeyHex = zkAddress.startsWith('zk') ? zkAddress.slice(2) : zkAddress;
-
-    // Remove "0x" prefix if present
-    pubKeyHex = pubKeyHex.startsWith('0x') ? pubKeyHex.slice(2) : pubKeyHex;
-
-    // Each coordinate is 64 hex characters (256 bits)
-    // Total should be 128 hex characters
-    if (pubKeyHex.length !== 128) {
-        throw new Error(`Invalid zkAddress format: expected 128 hex characters (64 for x + 64 for y), got ${pubKeyHex.length}`);
+    const result = validateZkAddress(zkAddress);
+    if (!result.valid || result.x === undefined || result.y === undefined) {
+        throw new Error(result.error ?? 'Invalid zkAddress format');
     }
-
-    // Extract x and y coordinates
-    const pubKeyXHex = pubKeyHex.slice(0, 64);
-    const pubKeyYHex = pubKeyHex.slice(64, 128);
-
-    // Convert to bigints
-    const x = BigInt('0x' + pubKeyXHex);
-    const y = BigInt('0x' + pubKeyYHex);
-
-    return { x, y };
+    return { x: result.x, y: result.y };
 }
 
 /**

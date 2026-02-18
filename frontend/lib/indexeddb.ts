@@ -5,6 +5,20 @@ import { BalanceEntry } from '@/hooks/useNonceDiscovery';
 // Discovery mode type
 export type DiscoveryMode = 'mage' | 'archon';
 
+/** Decrypted incoming note (received via send). Used to aggregate for absorb. */
+export interface IncomingNote {
+    /** Token address (hex) */
+    tokenAddress: string;
+    /** Decrypted amount (shares) */
+    amount: bigint;
+    /** shared_key_hash for this note (opening r for Pedersen) */
+    sharedKeyHash: bigint;
+    /** Sender public key (for display/debug) */
+    senderPublicKey: { x: bigint; y: bigint };
+    /** Index in contract array */
+    index: number;
+}
+
 // Pedersen commitment point (x, y coordinates)
 export interface CommitmentPoint {
     x: bigint;
@@ -28,6 +42,8 @@ export interface TokenAccountData {
     tokenAddress: string;
     currentNonce: bigint | null;
     balanceEntries: BalanceEntry[];
+    /** Aggregated incoming notes (for absorb): decrypted and summed for note_stack_m / note_stack_r */
+    incomingNotes?: IncomingNote[];
     lastUpdated: number;
 }
 
@@ -101,6 +117,13 @@ export async function saveAccountData(data: AccountData): Promise<void> {
                     amount: entry.amount.toString(),
                     nonce: entry.nonce.toString(),
                 })),
+                incomingNotes: (token.incomingNotes ?? []).map((n: IncomingNote) => ({
+                    tokenAddress: n.tokenAddress,
+                    amount: n.amount.toString(),
+                    sharedKeyHash: n.sharedKeyHash.toString(),
+                    senderPublicKey: { x: n.senderPublicKey.x.toString(), y: n.senderPublicKey.y.toString() },
+                    index: n.index,
+                })),
                 lastUpdated: token.lastUpdated || Date.now(),
             }));
         };
@@ -157,6 +180,13 @@ export async function loadAccountData(zkAddress: string): Promise<AccountData | 
                             amount: BigInt(entry.amount),
                             nonce: BigInt(entry.nonce),
                         })) : [],
+                        incomingNotes: token.incomingNotes?.map((n: any): IncomingNote => ({
+                            tokenAddress: n.tokenAddress,
+                            amount: BigInt(n.amount),
+                            sharedKeyHash: BigInt(n.sharedKeyHash),
+                            senderPublicKey: { x: BigInt(n.senderPublicKey.x), y: BigInt(n.senderPublicKey.y) },
+                            index: n.index,
+                        })),
                         lastUpdated: token.lastUpdated || result.lastUpdated,
                     }));
                 };

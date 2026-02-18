@@ -401,6 +401,14 @@ contract Arkana is AccessControl, ReentrancyGuard {
         return tokenLeaves[tokenAddress];
     }
 
+    /// @notice Get the number of incoming (encrypted) notes for a receiver's public key hash on a token
+    /// @param tokenAddress The token address
+    /// @param publicKeyHash keccak256(abi.encodePacked(receiverPublicKeyX, receiverPublicKeyY))
+    /// @return count Length of tokenUserEncryptedNotes[tokenAddress][publicKeyHash]
+    function getIncomingNotesCount(address tokenAddress, bytes32 publicKeyHash) external view returns (uint256 count) {
+        return tokenUserEncryptedNotes[tokenAddress][publicKeyHash].length;
+    }
+
     /// @notice Generate Merkle proof for a leaf at a given index
     /// @param tokenAddress The token address
     /// @param leafIndex The index of the leaf to generate proof for (0-based)
@@ -770,10 +778,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         operationInfo[bytes32(outputs.newNonceCommitment)] =
             OperationInfo({operationType: opType, sharesMinted: 0, tokenAddress: tokenAddress});
 
-        return _addLeaf(
-            tokenAddress,
-            poseidonHasher.hash_2(finalCommitment.x, finalCommitment.y)
-        );
+        return _addLeaf(tokenAddress, poseidonHasher.hash_2(finalCommitment.x, finalCommitment.y));
     }
 
     /// @notice Absorb+Withdraw: absorb notes then withdraw to receiver (same as withdraw with single relayer fee)

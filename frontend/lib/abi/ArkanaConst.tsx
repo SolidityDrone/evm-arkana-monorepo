@@ -1,4 +1,4 @@
-const ARKANA_ADDRESS = "0x8CDBA30696859364c24Be3b942FE83c953c9Cd9f"
+const ARKANA_ADDRESS = "0xe3f89724666d4220e816c80bafcC993337a5e1BF"
 const ARKANA_ABI = [
     {
         "type": "constructor",
@@ -311,6 +311,30 @@ const ARKANA_ABI = [
                 "name": "",
                 "type": "uint256[]",
                 "internalType": "uint256[]"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "getIncomingNotesCount",
+        "inputs": [
+            {
+                "name": "tokenAddress",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "publicKeyHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "count",
+                "type": "uint256",
+                "internalType": "uint256"
             }
         ],
         "stateMutability": "view"
