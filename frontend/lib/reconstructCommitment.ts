@@ -8,7 +8,7 @@ import { PublicClient } from 'viem';
 
 /**
  * Reconstruct a Pedersen commitment point from stored state
- * Matches the logic in circuits (spending_key = Hash3(Hash2(user_key, chain_id), token_address, signer_pubkey_hash)).
+ * Matches the logic in circuits (spending_key = Poseidon4(user_key, chain_id, token_address, signer_pubkey_hash)).
  *
  * Pedersen commitment: m1*G + m2*H + m3*D + m4*K + r*J
  * where m3 = spending_key, r = nonce_commitment.
@@ -55,7 +55,7 @@ export async function computeCommitmentLeaf(
 
 /**
  * Reconstruct commitment state from stored data.
- * spending_key = Hash3(Hash2(user_key, chain_id), token_address, signer_pubkey_hash) via getSpendingKey.
+ * spending_key = Poseidon4(user_key, chain_id, token_address, signer_pubkey_hash) via getSpendingKey.
  */
 export async function reconstructCommitmentStateFromBalanceEntry(
     userKey: bigint,

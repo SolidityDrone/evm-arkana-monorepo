@@ -11,6 +11,8 @@ import { useNonceDiscovery } from '@/hooks/useNonceDiscovery';
 import { loadAccountData, saveTokenAccountData, CommitmentState } from '@/lib/indexeddb';
 import { convertAssetsToShares } from '@/lib/shares-to-assets';
 import { computePrivateKeyFromSignature, getSpendingKeyCircuit, getViewKeyFromUserKey, poseidonHash } from '@/lib/circuit-utils';
+import { getSignerIdentityFromUserKey } from '@/lib/eddsa-circuit';
+import { loadTwoFactorData } from '@/lib/indexeddb';
 import { proveWithSnarkjs } from '@/lib/circuit-prove';
 import type { Groth16Args } from '@/lib/groth16';
 import { padHex } from 'viem';
@@ -610,10 +612,15 @@ export function useDeposit() {
                 args: [tokenAddress as `0x${string}`],
             }) as unknown as bigint[];
 
-            // Reconstruct commitment state (circuit-consistent: spending_key = Hash3(user_key, chain_id, token_address))
+            const zkAddr = zkAddress?.replace('zk', '') || '';
+            const stored2FA = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
+            const depositSignerHash = stored2FA?.is2FA
+                ? stored2FA.signerPubkeyHash
+                : (await getSignerIdentityFromUserKey(userKeyBigInt)).signer_pubkey_hash;
+
             let sharesFromContract: bigint | undefined = undefined;
             if (finalTokenPreviousNonce === BigInt(0)) {
-                const spendingKey0 = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
+                const spendingKey0 = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, depositSignerHash);
                 const nonceCommitmentBigInt = await poseidonHash([spendingKey0, finalTokenPreviousNonce, tokenAddressBigInt]);
 
                 const nonceCommitmentBytes32 = padHex(`0x${nonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
@@ -639,7 +646,7 @@ export function useDeposit() {
             } else {
                 const { poseidonCtrDecrypt } = await import('@/lib/poseidon-ctr-encryption');
                 const viewKeyBigInt = await getViewKeyFromUserKey(userKeyBigInt);
-                const spendingKeyBigInt = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
+                const spendingKeyBigInt = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, depositSignerHash);
                 const finalPreviousNonceCommitmentBigInt = await poseidonHash([spendingKeyBigInt, finalTokenPreviousNonce, tokenAddressBigInt]);
 
                 const finalPreviousNonceCommitmentBytes32 = padHex(`0x${finalPreviousNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
@@ -723,14 +730,14 @@ export function useDeposit() {
                 commitmentIndex = BigInt(0);
             } else {
                 // Reconstruct point and get leaf via contract's computeCommitmentLeaf(x, y)
-                // For nonce > 0: decrypted values are already encoded (previous deposit encrypted circuit inputs = encoded)
+                // No encoding: circuits now use 0 directly instead of 1 representing 0
                 const { pedersenCommitment5 } = await import('@/lib/pedersen-commitments');
                 const reconstructModule = await import('@/lib/reconstructCommitment');
 
-                const spendingKeyForCommit = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
+                const spendingKeyForCommit = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, depositSignerHash);
                 const prevNonceCommitmentBigInt = await poseidonHash([spendingKeyForCommit, finalTokenPreviousNonce, tokenAddressBigInt]);
 
-                // Use as-is: from decryption we already get encoded values (circuit encrypts its encoded inputs)
+                // Use values directly: no encoding needed (circuits use 0 directly)
                 const sharesEncoded = previousSharesForReconstruction;
                 // After AbsorbWithdraw(5) or AbsorbSend(4), new commitment uses OLD nullifier; use old = new - noteStackM for leaf
                 let nullifierEncodedForLeaf: bigint;
@@ -741,7 +748,7 @@ export function useDeposit() {
                 } else {
                     nullifierEncodedForLeaf = nullifierValue;
                 }
-                const unlocksAtEncodedForLeaf = unlocksAtValue === BigInt(0) ? BigInt(1) : unlocksAtValue;
+                const unlocksAtEncodedForLeaf = unlocksAtValue; // Use 0 directly, no encoding
 
                 const commitmentPoint = pedersenCommitment5(
                     sharesEncoded,
@@ -834,11 +841,8 @@ export function useDeposit() {
             };
 
             const userKeyForCircuit = contextUserKey ? '0x' + contextUserKey.toString(16) : userKey;
-            // Encoding: only add +1 for nonce 0 (from entry; raw values). For nonce > 0, decrypted values are already encoded.
-            const previousSharesEncoded =
-                finalTokenPreviousNonce === BigInt(0)
-                    ? previousSharesForReconstruction + BigInt(1)
-                    : previousSharesForReconstruction;
+            // No encoding: use 0 directly (circuits now use 0 instead of 1 representing 0)
+            const previousSharesEncoded = previousSharesForReconstruction;
             // After AbsorbWithdraw(5) or AbsorbSend(4), circuit needs OLD nullifier (new - noteStackM), not the stored new nullifier
             let nullifierForCircuit: bigint;
             if (previousOpType === 5 || previousOpType === 4) {
@@ -848,17 +852,12 @@ export function useDeposit() {
             } else {
                 nullifierForCircuit = nullifierValue;
             }
-            const nullifierEncoded =
-                finalTokenPreviousNonce === BigInt(0)
-                    ? nullifierForCircuit + BigInt(1)
-                    : nullifierForCircuit;
-            const previousUnlocksAtEncoded =
-                finalTokenPreviousNonce === BigInt(0)
-                    ? unlocksAtValue + BigInt(1)
-                    : (unlocksAtValue === BigInt(0) ? BigInt(1) : unlocksAtValue);
+            const nullifierEncoded = nullifierForCircuit; // Use 0 directly, no encoding
+            const previousUnlocksAtEncoded = unlocksAtValue; // Use 0 directly, no encoding
 
             const circuitInputs: Record<string, string | string[]> = {
                 user_key: formatForNoir(userKeyForCircuit),
+                signer_pubkey_hash: depositSignerHash,
                 token_address: formatForNoir(tokenAddress),
                 amount: formatForNoir(amountBigInt),
                 chain_id: chainId.toString(),

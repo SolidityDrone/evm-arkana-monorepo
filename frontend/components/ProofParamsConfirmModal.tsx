@@ -38,21 +38,46 @@ export function ProofParamsConfirmModal({
     confirmLabel = 'Confirm & generate proof',
     isSigning = false,
 }: ProofParamsConfirmModalProps) {
-    const handleConfirm = async () => {
+    const handleConfirm = async (e?: React.MouseEvent) => {
+        if (isSigning) {
+            console.log('ProofParamsConfirmModal: Already signing, ignoring click');
+            return;
+        }
+        
+        e?.preventDefault();
+        e?.stopPropagation();
+        
+        console.log('ProofParamsConfirmModal: handleConfirm called', { isSigning, onConfirm: typeof onConfirm });
+        
+        if (!onConfirm) {
+            console.error('ProofParamsConfirmModal: onConfirm is not defined!');
+            return;
+        }
+        
         try {
-            await onConfirm();
+            console.log('ProofParamsConfirmModal: Calling onConfirm');
+            const result = onConfirm();
+            if (result instanceof Promise) {
+                await result;
+            }
+            console.log('ProofParamsConfirmModal: onConfirm completed, closing modal');
             onOpenChange(false);
-        } catch {
-            // Keep modal open on error
+        } catch (error) {
+            console.error('ProofParamsConfirmModal: Error in handleConfirm', error);
+            // Keep modal open on error - but log it
+            throw error; // Re-throw so parent can handle
         }
     };
 
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
+        <Dialog 
+            open={open} 
+            onOpenChange={onOpenChange}
+            onPointerDownOutside={(e) => !isSigning && onOpenChange(false)}
+        >
             <DialogContent
                 className="max-w-2xl w-[90vw] sm:w-[600px] min-w-[320px] max-h-[90vh] overflow-y-auto bg-card/98 backdrop-blur-xl border-primary/40 shadow-2xl mx-auto"
                 style={{ maxWidth: '600px', width: '90vw' }}
-                onPointerDownOutside={(e) => !isSigning && onOpenChange(false)}
             >
                 <DialogHeader className="space-y-3 pb-4 border-b border-border/50">
                     <DialogTitle className="text-lg sm:text-xl font-semibold text-foreground tracking-tight">
@@ -106,19 +131,41 @@ export function ProofParamsConfirmModal({
                 </div>
 
                 {/* Actions */}
-                <div className="flex flex-col sm:flex-row gap-3 justify-end pt-6 mt-4 border-t border-border/50">
+                <div 
+                    className="flex flex-col sm:flex-row gap-3 justify-end pt-6 mt-4 border-t border-border/50"
+                    onClick={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => e.stopPropagation()}
+                >
                     <Button
                         variant="outline"
-                        onClick={() => onOpenChange(false)}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenChange(false);
+                        }}
                         disabled={isSigning}
                         className="w-full sm:w-auto"
+                        type="button"
                     >
                         Cancel
                     </Button>
                     <Button
-                        onClick={handleConfirm}
+                        onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            console.log('Button clicked', { isSigning, disabled: isSigning, onConfirm: typeof onConfirm });
+                            if (!isSigning) {
+                                handleConfirm(e);
+                            } else {
+                                console.log('Button is disabled (isSigning=true)');
+                            }
+                        }}
+                        onPointerDown={(e) => {
+                            e.stopPropagation();
+                        }}
                         disabled={isSigning}
-                        className="w-full sm:w-auto bg-primary hover:bg-primary/90"
+                        className="w-full sm:w-auto bg-primary hover:bg-primary/90 transition-all duration-200 cursor-pointer"
+                        style={{ pointerEvents: isSigning ? 'none' : 'auto' }}
+                        type="button"
                     >
                         {isSigning ? (
                             <span className="flex items-center gap-2">

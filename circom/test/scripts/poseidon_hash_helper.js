@@ -52,12 +52,20 @@ async function poseidon2Hash3(a, b, c) {
 }
 
 /**
- * Spending key = Hash3(Hash2(user_key, chain_id), token_address, signer_pubkey_hash).
- * Matches circuit and frontend getSpendingKey.
+ * Poseidon hash of four field elements.
+ */
+async function poseidon2Hash4(a, b, c, d) {
+    const { poseidon, F } = await getPoseidon();
+    const out = poseidon([toBigInt(a), toBigInt(b), toBigInt(c), toBigInt(d)]);
+    return F.toString(out);
+}
+
+/**
+ * Spending key = Poseidon4(user_key, chain_id, token_address, signer_pubkey_hash).
+ * Matches circuit spending_key_hash = Poseidon2Hash4().
  */
 async function getSpendingKeyFromHashes(userKey, chainId, tokenAddress, signerPubkeyHash) {
-    const h2 = await poseidon2Hash2(userKey, chainId);
-    return poseidon2Hash3(h2, tokenAddress, signerPubkeyHash);
+    return poseidon2Hash4(userKey, chainId, tokenAddress, signerPubkeyHash);
 }
 
 /**
@@ -82,6 +90,7 @@ module.exports = {
     poseidon2Hash1,
     poseidon2Hash2,
     poseidon2Hash3,
+    poseidon2Hash4,
     getSpendingKeyFromHashes,
     getSendMessageHash,
     getWithdrawMessageHash

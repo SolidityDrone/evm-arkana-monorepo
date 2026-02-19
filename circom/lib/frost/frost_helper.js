@@ -36,7 +36,7 @@ const circomlibjs = require('circomlibjs');
 
 // Poseidon helper (test/scripts) - required from circom root when tests run
 function getPoseidon2Hash2() {
-    const mod = require(path.join(__dirname, '../../test/scripts/poseidon2_hash_helper.js'));
+    const mod = require(path.join(__dirname, '../../test/scripts/poseidon_hash_helper.js'));
     return mod.poseidon2Hash2;
 }
 
@@ -166,14 +166,15 @@ async function getFrostSignerIdentityWithGroupIdentity() {
  */
 async function signWithdrawMessageFrost(derivedPrivKeyHex, token_address, chain_id, amount, relayer_fee_amount, current_nonce) {
     const { eddsa, F } = await getEddsa();
-    const msgField = eddsa.poseidon([
-        F.e(BigInt(token_address.toString())),
-        F.e(BigInt(chain_id.toString())),
-        F.e(BigInt(amount.toString())),
-        F.e(BigInt(relayer_fee_amount.toString())),
-        F.e(BigInt(current_nonce.toString()))
-    ]);
-    const message = F.toObject(msgField).toString();
+    const { getWithdrawMessageHash } = require(path.join(__dirname, '../../test/scripts/poseidon_hash_helper'));
+    const message = await getWithdrawMessageHash(
+        token_address.toString(),
+        chain_id.toString(),
+        amount.toString(),
+        relayer_fee_amount.toString(),
+        current_nonce.toString()
+    );
+    const msgField = F.e(BigInt(message));
     const prvKey = Buffer.from(derivedPrivKeyHex, 'hex');
     const sig = eddsa.signPoseidon(prvKey, msgField);
     return {

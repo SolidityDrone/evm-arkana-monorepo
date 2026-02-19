@@ -10,6 +10,9 @@ import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/
 import { computeZkAddress, ARKANA_MESSAGE } from '@/lib/zk-address';
 import { loadAccountDataOnSign } from '@/lib/loadAccountDataOnSign';
 import { computePrivateKeyFromSignature, getSpendingKeyCircuit, poseidonHash } from '@/lib/circuit-utils';
+import { getSignerIdentityFromUserKey } from '@/lib/eddsa-circuit';
+import type { TwoFactorSetupResult_UI } from '@/components/TwoFactorSetupModal';
+import { saveTwoFactorData, loadTwoFactorData, type TwoFactorData } from '@/lib/indexeddb';
 import { proveWithSnarkjs } from '@/lib/circuit-prove';
 import type { Groth16Args } from '@/lib/groth16';
 import { padHex } from 'viem';
@@ -63,6 +66,11 @@ export function useInitialize() {
 
     // Groth16 result for contract call (snarkjs returns pA, pB, pC, publicSignals)
     const groth16ResultRef = useRef<Groth16Args | null>(null);
+
+    // 2FA setup state
+    const [twoFactorSetupOpen, setTwoFactorSetupOpen] = useState(false);
+    const [pending2FAProve, setPending2FAProve] = useState(false);
+    const twoFactorResultRef = useRef<TwoFactorSetupResult_UI | null>(null);
 
     // Real-time timer for proving
     useEffect(() => {
@@ -324,17 +332,31 @@ export function useInitialize() {
         }
     }, [isApprovalConfirmed, approvalHashData, checkAllowance]);
 
-    // Generate proof (snarkjs + Circom entry circuit; spending key = Hash3(user_key, chain_id, token_address))
+    /**
+     * Opens the 2FA setup modal so the user picks single-key or 2FA.
+     * After the user completes the modal, onTwoFactorSetupComplete is called
+     * which runs the actual proof.
+     */
     const proveArkanaEntry = async () => {
         if (!userKey) {
             setProofError('Please sign a message first to generate user_key');
             return;
         }
-
         if (!tokenAddress) {
             setProofError('Please fill in token_address');
             return;
         }
+        setTwoFactorSetupOpen(true);
+    };
+
+    const onTwoFactorSetupComplete = async (result: TwoFactorSetupResult_UI) => {
+        setTwoFactorSetupOpen(false);
+        twoFactorResultRef.current = result;
+        await runEntryProof(result);
+    };
+
+    const runEntryProof = async (twoFAResult: TwoFactorSetupResult_UI) => {
+        if (!userKey || !tokenAddress) return;
 
         try {
             setIsProving(true);
@@ -361,13 +383,22 @@ export function useInitialize() {
             let userKeyOffset = BigInt(0);
             const lockDurationNum = parseInt(lockDuration || '0', 10) || 0;
 
-            // Archon mode (lock > 0): find next free user_key offset using circuit-consistent spending key
+            // Resolve signer_pubkey_hash based on security mode
+            const resolveSignerHash = async (uk: bigint): Promise<string> => {
+                if (twoFAResult.mode === '2fa' && twoFAResult.signerPubkeyHash) {
+                    return twoFAResult.signerPubkeyHash;
+                }
+                const id = await getSignerIdentityFromUserKey(uk);
+                return id.signer_pubkey_hash;
+            };
+
             if (lockDurationNum > 0 && publicClient) {
                 const maxOffset = BigInt(100);
                 let foundOffset = false;
                 for (let offset = BigInt(1); offset < maxOffset && !foundOffset; offset++) {
                     const currentUserKey = baseUserKey + offset;
-                    const spendingKey = await getSpendingKeyCircuit(currentUserKey, chainIdBigInt, tokenAddressBigInt);
+                    const spkHash = await resolveSignerHash(currentUserKey);
+                    const spendingKey = await getSpendingKeyCircuit(currentUserKey, chainIdBigInt, tokenAddressBigInt, spkHash);
                     const nonceCommitment = await poseidonHash([spendingKey, BigInt(0), tokenAddressBigInt]);
                     const nonceCommitmentBytes32 = padHex(`0x${nonceCommitment.toString(16)}`, { size: 32 }) as `0x${string}`;
                     const isUsed = (await publicClient.readContract({
@@ -390,8 +421,10 @@ export function useInitialize() {
             }
 
             const actualUserKey = baseUserKey + userKeyOffset;
+            const signerPubkeyHash = await resolveSignerHash(actualUserKey);
             const inputs: Record<string, string> = {
                 user_key: actualUserKey.toString(),
+                signer_pubkey_hash: signerPubkeyHash,
                 token_address: tokenAddressBigInt.toString(),
                 chain_id: chainIdForCircuit.toString(),
             };
@@ -401,6 +434,19 @@ export function useInitialize() {
             setProof('0x01');
             setPublicInputs(result.publicSignals.slice(0, 7));
             setProvingTime(Math.round(performance.now() - startTime));
+
+            // Persist 2FA data to IndexedDB after successful proof generation
+            if (twoFAResult.mode === '2fa' && twoFAResult.desktopScalarShare && twoFAResult.signerPublicKey && twoFAResult.signerPubkeyHash) {
+                const zkAddr = zkAddress?.replace('zk', '') || '';
+                if (zkAddr) {
+                    await saveTwoFactorData(zkAddr, {
+                        is2FA: true,
+                        browserShare: twoFAResult.desktopScalarShare, // Store as browserShare for compatibility
+                        signerPublicKey: twoFAResult.signerPublicKey,
+                        signerPubkeyHash: twoFAResult.signerPubkeyHash,
+                    });
+                }
+            }
         } catch (error) {
             console.error('Error generating proof:', error);
             setProofError(error instanceof Error ? error.message : 'Failed to generate proof');
@@ -621,5 +667,9 @@ export function useInitialize() {
         handleInitCommit,
         handleApprove,
         checkAllowance,
+        // 2FA setup
+        twoFactorSetupOpen,
+        setTwoFactorSetupOpen,
+        onTwoFactorSetupComplete,
     };
 }

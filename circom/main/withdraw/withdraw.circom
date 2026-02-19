@@ -10,12 +10,16 @@ include "../../lib/lean-imt-verify/lean_imt_verify.circom";
 include "../../lib/utils/field_utils.circom";
 include "../../lib/utils/unpack_utils.circom";
 include "../../node_modules/circomlib/circuits/comparators.circom";
+include "../../node_modules/circomlib/circuits/eddsaposeidon.circom";
 
 // VIEW_STRING = 0x76696577696e675f6b6579 = 143150966920908953357084025
 
 template Withdraw() {
     // Private inputs
     signal input user_key;
+    signal input signer_pubkey_hash;
+    signal input signer_public_key[2];  // [Ax, Ay] on Baby Jubjub
+    signal input signature[3];  // EdDSA signature [R8x, R8y, S]
     signal input previous_nonce;
     signal input previous_shares;
     signal input nullifier;
@@ -42,11 +46,12 @@ template Withdraw() {
     signal output nonce_discovery_entry[2];  // [x, y]
     
     // === SETUP ===
-    // Hash user_key with chain_id and token_address
-    component spending_key_hash = Poseidon2Hash3();
+    // spending_key = Poseidon(user_key, chain_id, token_address, signer_pubkey_hash)
+    component spending_key_hash = Poseidon2Hash4();
     spending_key_hash.in[0] <== user_key;
     spending_key_hash.in[1] <== chain_id;
     spending_key_hash.in[2] <== token_address;
+    spending_key_hash.in[3] <== signer_pubkey_hash;
     signal spending_key;
     spending_key <== spending_key_hash.out;
     
@@ -55,6 +60,41 @@ template Withdraw() {
     view_key_hash.in[1] <== user_key;
     signal view_key;
     view_key <== view_key_hash.out;
+    
+    // === VERIFY SIGNER IDENTITY ===
+    // Hash(Ax, Ay) must equal signer_pubkey_hash
+    component signer_hash_check = Poseidon2Hash2();
+    signer_hash_check.in[0] <== signer_public_key[0];
+    signer_hash_check.in[1] <== signer_public_key[1];
+    component signer_eq = IsEqual();
+    signer_eq.in[0] <== signer_hash_check.out;
+    signer_eq.in[1] <== signer_pubkey_hash;
+    signer_eq.out === 1;
+    
+    // === VERIFY EdDSA SIGNATURE OVER MESSAGE ===
+    // nonce for signing = previous_nonce + 1 (current operation's nonce)
+    signal current_nonce;
+    current_nonce <== previous_nonce + 1;
+    // message = Poseidon2(Poseidon3(token_address, chain_id, amount), Poseidon2(relayer_fee_amount, current_nonce))
+    component msg_left = Poseidon2Hash3();
+    msg_left.in[0] <== token_address;
+    msg_left.in[1] <== chain_id;
+    msg_left.in[2] <== amount;
+    component msg_right = Poseidon2Hash2();
+    msg_right.in[0] <== relayer_fee_amount;
+    msg_right.in[1] <== current_nonce;
+    component msg_hash = Poseidon2Hash2();
+    msg_hash.in[0] <== msg_left.out;
+    msg_hash.in[1] <== msg_right.out;
+    
+    component eddsa_verify = EdDSAPoseidonVerifier();
+    eddsa_verify.enabled <== 1;
+    eddsa_verify.Ax <== signer_public_key[0];
+    eddsa_verify.Ay <== signer_public_key[1];
+    eddsa_verify.R8x <== signature[0];
+    eddsa_verify.R8y <== signature[1];
+    eddsa_verify.S <== signature[2];
+    eddsa_verify.M <== msg_hash.out;
     
     // Calculate previous_nonce_commitment
     component previous_nonce_commitment_hash = Poseidon2Hash3();
@@ -137,35 +177,27 @@ template Withdraw() {
     time_check.b <== unlocks_at;
     time_check.out === 1;
     
-    // === CALCULATE NEW NONCE ===
-    signal nonce;
-    nonce <== previous_nonce + 1;
-    
+    // === CALCULATE NEW NONCE COMMITMENT ===
+    // current_nonce = previous_nonce + 1 was already computed for EdDSA message
     component new_nonce_commitment_hash = Poseidon2Hash3();
     new_nonce_commitment_hash.in[0] <== spending_key;
-    new_nonce_commitment_hash.in[1] <== nonce;
+    new_nonce_commitment_hash.in[1] <== current_nonce;
     new_nonce_commitment_hash.in[2] <== token_address;
     new_nonce_commitment <== new_nonce_commitment_hash.out;
     
     // === CREATE NEW PEDERSEN COMMITMENT ===
     // Ensure we have enough shares to withdraw
-    // previous_shares is encoded: actual_shares = previous_shares - 1
-    // So if previous_shares = 51, actual_shares = 50
+    // previous_shares is now the actual shares value (no encoding)
     signal total_to_withdraw;
     total_to_withdraw <== amount + relayer_fee_amount;
     
-    // Check: (previous_shares - 1) >= total_to_withdraw
-    // This is: previous_shares >= total_to_withdraw + 1
-    signal total_plus_one;
-    total_plus_one <== total_to_withdraw + 1;
+    // Check: previous_shares >= total_to_withdraw
     component shares_check = GreaterThanOrEqualField();
     shares_check.a <== previous_shares;
-    shares_check.b <== total_plus_one;
+    shares_check.b <== total_to_withdraw;
     shares_check.out === 1;
     
-    // new_shares_balance (encoded) = (actual_new_shares) + 1
-    // actual_new_shares = (previous_shares - 1) - total_to_withdraw
-    // So: new_shares_balance = previous_shares - total_to_withdraw
+    // new_shares_balance = previous_shares - total_to_withdraw (no encoding)
     signal new_shares_balance;
     new_shares_balance <== previous_shares - total_to_withdraw;
     

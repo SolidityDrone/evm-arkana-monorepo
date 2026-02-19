@@ -12,7 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { poseidon2Hash2, poseidon2Hash3, getSpendingKeyFromHashes } = require('./poseidon_hash_helper');
+const { poseidon2Hash1, poseidon2Hash2, poseidon2Hash3, getSpendingKeyFromHashes } = require('./poseidon_hash_helper');
 const { getSignerKeyPair, signSendMessage, TEST_SIGNER_PRIVKEY_HEX } = require('./eddsa_helper');
 const { simulateLeanIMTInsert, generateMerkleProof } = require('./lean_imt_helpers');
 const { simulateContractShareAddition, scalarMul } = require('./babyjub_operations');
@@ -81,10 +81,11 @@ async function testAbsorbSendFlow() {
     const userKey = hexToDecimal("0x1234567890abcdef");
     const tokenAddress = hexToDecimal("0x02");
     const chainId = hexToDecimal("0x01");
-    const { signer_pubkey_hash } = await getSignerKeyPair();
+    const { signer_pubkey_hash, signer_public_key } = await getSignerKeyPair();
     
     const entryInput = {
         user_key: userKey,
+        signer_pubkey_hash,
         token_address: tokenAddress,
         chain_id: chainId
     };
@@ -138,13 +139,14 @@ async function testAbsorbSendFlow() {
     const depositAmount = hexToDecimal("0x64"); // 100
     const depositInput = {
         user_key: userKey,
+        signer_pubkey_hash,
         token_address: tokenAddress,
         amount: depositAmount,
         chain_id: chainId,
         previous_nonce: "0",
-        previous_shares: "1", // Entry starts with 0 shares (encoded as 1)
-        nullifier: "1", // Entry uses nullifier 0 (encoded as 1)
-        previous_unlocks_at: "1", // Entry initializes to 0 (encoded as 1)
+        previous_shares: "0", // Entry starts with 0 shares (now using 0 directly)
+        nullifier: "0", // Entry uses nullifier 0
+        previous_unlocks_at: "0", // Entry initializes to 0
         previous_commitment_leaf: entryLeaf,
         commitment_index: "0",
         tree_depth: treeDepth.toString(),
@@ -194,9 +196,12 @@ async function testAbsorbSendFlow() {
     console.log('');
     
     // For send, the circuit uses nonce = previous_nonce + 1 = 1 + 1 = 2
-    // So sender_private_key = user_key + 2
+    // The circuit computes sender_private_key from Poseidon2Hash2(user_key, nonce) truncated to 253 bits
     const sendNonce = 2; // Send uses nonce 2 (previous_nonce was 1)
-    const senderPrivateKey = (BigInt(userKey) + BigInt(sendNonce)).toString();
+    const senderPrivHash = await poseidon2Hash2(userKey, sendNonce.toString());
+    // Truncate to 253 bits (same as circuit: Bits2Num(253) after Num2Bits(254))
+    const TWO_TO_253 = BigInt('2') ** BigInt('253');
+    const senderPrivateKey = (BigInt(senderPrivHash) % TWO_TO_253).toString();
     const myPublicKey = await calculatePublicKey(senderPrivateKey);
     
     console.log(`Your public key at nonce 2 (for send):`);
@@ -209,19 +214,21 @@ async function testAbsorbSendFlow() {
     
     const sendAmount = hexToDecimal("0x32"); // 50
     const relayerFeeAmountSend = "1";
-    const previousShares = (BigInt(1) + BigInt(depositAmount)).toString(); // Base 1 + shares 100 = 101
+    const previousShares = BigInt(depositAmount).toString(); // Shares after deposit = 100 (no encoding)
     const currentNonceForSend = "2"; // previous_nonce is 1, sign with current_nonce = previous + 1
     const { signature: sendSignature } = await signSendMessage(TEST_SIGNER_PRIVKEY_HEX, tokenAddress, chainId, sendAmount, relayerFeeAmountSend, myPublicKey[0], myPublicKey[1], currentNonceForSend);
-    const { signer_public_key } = await getSignerKeyPair();
     const sendInput = {
         user_key: userKey,
+        signer_pubkey_hash,
+        signer_public_key,
+        signature: sendSignature,
         token_address: tokenAddress,
         amount: sendAmount,
         chain_id: chainId,
         previous_nonce: "1", // Deposit used nonce 0, so send uses nonce 1
-        previous_shares: previousShares, // Actual shares 100 → pass 101 to circuit
-        nullifier: depositInput.nullifier, // Must match what deposit used: "1" (represents 0)
-        previous_unlocks_at: depositInput.previous_unlocks_at, // Must match what deposit used: "1" (represents 0)
+        previous_shares: previousShares, // Actual shares 100 (no encoding)
+        nullifier: depositInput.nullifier, // Must match what deposit used: "0"
+        previous_unlocks_at: depositInput.previous_unlocks_at, // Must match what deposit used: "0"
         previous_commitment_leaf: depositLeaf,
         commitment_index: "1", // Deposit is at index 1
         tree_depth: treeDepth.toString(),
@@ -265,7 +272,6 @@ async function testAbsorbSendFlow() {
     // Then send circuit does shared_key_hash = Poseidon2Hash1(shared_key), note_commit.r = shared_key_hash
     const sharedKeyPoint = await scalarMul(senderPrivateKey, myPublicKey);
     const sharedKey = sharedKeyPoint.x.toString(); // DH circuit outputs out[0] (x only)
-    const { poseidon2Hash1 } = require('./poseidon_hash_helper');
     const sharedKeyHash = await poseidon2Hash1(sharedKey);
     const note_stack_r = sharedKeyHash;
     
@@ -302,43 +308,13 @@ async function testAbsorbSendFlow() {
     console.log('STEP 7: Running Absorb-Send Circuit (nonce 2)...');
     console.log('');
     
-    // After send, the balance is: previous_shares (101) - amount (50) - fee (1) = 50
-    // The send circuit uses encoded shares. After send:
-    // final_shares = 101 - 50 - 1 = 50 (encoded)
-    // 
-    // IMPORTANT: The send circuit stores the commitment with m1 = final_shares (encoded) = 50
+    // After send, the balance is: previous_shares (100) - amount (50) - fee (1) = 49
+    // The send circuit stores the commitment with m1 = new_shares = 49 (no encoding)
     // The absorb circuit reconstructs with m1 = current_balance
-    // For the commitment to match, we need current_balance = 50 (the encoded value)
-    // But then the arithmetic in absorb needs to account for this being encoded
-    // 
-    // Actually, looking at the absorb circuit more carefully:
-    // - It uses current_balance directly in pedersen_commitment_5
-    // - It does: new_balance = current_balance + absorbed_amount - fee
-    // - Then converts to shares: new_shares = new_balance + 1
-    //
-    // So if we use current_balance = 50 (encoded), then:
-    // - Commitment matches ✓
-    // - new_balance = 50 + 50 - 5 = 95
-    // - new_shares = 95 + 1 = 96 (encoded)
-    // But this is wrong because 50 is already encoded!
-    //
-    // I think the real fix is: use the encoded value (50) for commitment reconstruction,
-    // but treat it as if it were raw for arithmetic. So:
-    // - current_balance = 50 (for commitment matching)
-    // - But for arithmetic, we need to subtract 1 first: actual_balance = 50 - 1 = 49
-    // - new_balance = 49 + 50 - 5 = 94
-    // - new_shares = 94 + 1 = 95 (encoded)
-    //
-    // But the circuit doesn't do this conversion. So I think we need to fix the circuit.
-    // For now, let's try using the encoded value and see what error we get.
-    const finalSharesAfterSend = (BigInt(previousShares) - BigInt(sendAmount) - BigInt(1)).toString(); // 101 - 50 - 1 = 50 (encoded)
-    // The send circuit stores commitment with m1 = final_shares (encoded) = 50
-    // The absorb circuit reconstructs with m1 = current_balance
-    // To match, we need current_balance = 50 (the encoded value)
-    // Note: This means current_balance is actually encoded shares, not raw balance
-    // The absorb circuit will need to handle this correctly in its arithmetic
-    const current_balance = finalSharesAfterSend; // 50 (encoded shares value)
-    const nullifier_after_send = "1"; // Nullifier stays 0 (encoded as 1) after send
+    // To match, we need current_balance = 49 (the actual shares after send)
+    const finalSharesAfterSend = (BigInt(previousShares) - BigInt(sendAmount) - BigInt(relayerFeeAmountSend)).toString(); // 100 - 50 - 1 = 49
+    const current_balance = finalSharesAfterSend; // 49 (actual shares after send, no encoding)
+    const nullifier_after_send = "0"; // Nullifier stays 0 after send
     
     // Calculate previous_nonce_commitment for absorb (debug)
     // The send used nonce 1, so previous_nonce should be 1
@@ -351,16 +327,24 @@ async function testAbsorbSendFlow() {
     // Calculate your public key at nonce 3 for the absorb-send
     // The circuit will compute nonce = previous_nonce + 1 = 2 + 1 = 3
     const nonce3 = 3;
-    const senderPrivateKey3 = (BigInt(userKey) + BigInt(nonce3)).toString();
+    const senderPrivHash3 = await poseidon2Hash2(userKey, nonce3.toString());
+    const senderPrivateKey3 = (BigInt(senderPrivHash3) % TWO_TO_253).toString();
     const myPublicKey3 = await calculatePublicKey(senderPrivateKey3);
+    
+    // Sign SEND message for absorb_send: Poseidon2(Poseidon3(ta, ch, amount), Poseidon3(fee, receiver_pubkey_hash, nonce))
+    const currentNonceForAbsorbSend = "3"; // previous_nonce is 2, current_nonce = previous + 1
+    const { signature: absorbSendSignature } = await signSendMessage(TEST_SIGNER_PRIVKEY_HEX, tokenAddress, chainId, absorbSendAmount, relayerFee, myPublicKey3[0], myPublicKey3[1], currentNonceForAbsorbSend);
     
     const absorbSendInput = {
         user_key: userKey,
+        signer_pubkey_hash,
+        signer_public_key,
+        signature: absorbSendSignature,
         amount: absorbSendAmount,
         previous_nonce: "2", // Send created new commitment with nonce 2, so this is the previous nonce
         current_balance: current_balance,
         nullifier: nullifier_after_send,
-        previous_unlocks_at: "1", // Must be 1 (represents 0)
+        previous_unlocks_at: "0", // Must be 0
         previous_commitment_leaf: send_new_commitment_leaf,
         commitment_index: "2", // Send commitment is at index 2
         tree_depth: treeDepth.toString(),
@@ -380,9 +364,9 @@ async function testAbsorbSendFlow() {
     
     console.log('Absorb-Send inputs:');
     console.log(`  previous_nonce: ${absorbSendInput.previous_nonce}`);
-    console.log(`  current_balance: ${absorbSendInput.current_balance} (should be 50 - encoded shares from send)`);
-    console.log(`  nullifier: ${absorbSendInput.nullifier} (should be 1 - encoded, represents 0)`);
-    console.log(`  previous_unlocks_at: ${absorbSendInput.previous_unlocks_at} (should be 1 - encoded, represents 0)`);
+    console.log(`  current_balance: ${absorbSendInput.current_balance} (should be 49 - actual shares after send)`);
+    console.log(`  nullifier: ${absorbSendInput.nullifier} (should be 0)`);
+    console.log(`  previous_unlocks_at: ${absorbSendInput.previous_unlocks_at} (should be 0)`);
     console.log(`  previous_commitment_leaf: ${decimalToHex(absorbSendInput.previous_commitment_leaf)}`);
     console.log(`  note_stack_m: ${decimalToHex(absorbSendInput.note_stack_m)}`);
     console.log(`  amount: ${decimalToHex(absorbSendInput.amount)}`);

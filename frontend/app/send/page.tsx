@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { QrCode } from 'lucide-react';
 import { ProofParamsConfirmModal } from '@/components/ProofParamsConfirmModal';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
+import { TwoFactorSignModal } from '@/components/TwoFactorSignModal';
 import { encodeFunctionData } from 'viem';
 
 export default function SendPage() {
@@ -56,6 +57,12 @@ export default function SendPage() {
         sendCircuit,
         proveSend,
         handleSend,
+        twoFactorSignOpen,
+        setTwoFactorSignOpen,
+        twoFactorError,
+        twoFactorSigning,
+        onTwoFactorSendSign,
+        twoFactorSigningRequest,
     } = useSend();
 
     const { handleSign, isSigning } = useAccountSigning();
@@ -418,6 +425,17 @@ export default function SendPage() {
                     </div>
                 </DialogContent>
             </Dialog>
+
+            {/* 2FA Sign Modal */}
+            <TwoFactorSignModal
+                open={twoFactorSignOpen}
+                onOpenChange={setTwoFactorSignOpen}
+                onSubmit={onTwoFactorSendSign}
+                signingRequest={twoFactorSigningRequest}
+                operationLabel="send"
+                isSigning={twoFactorSigning}
+                error={twoFactorError}
+            />
         </div>
     );
 }

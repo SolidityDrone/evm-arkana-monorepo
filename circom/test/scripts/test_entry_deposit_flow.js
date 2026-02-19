@@ -73,17 +73,18 @@ async function testEntryDepositFlow() {
     console.log('');
 
     const { signer_pubkey_hash } = await getSignerKeyPair();
-    // Entry circuit only has user_key, token_address, chain_id (no signer_pubkey_hash)
     const entryInput = {
         user_key: hexToDecimal("0x19e573f3801c7b2e4619998342e8e305e1692184cbacd220c04198a04c36b7d2"),
         token_address: hexToDecimal("0x7775e4b6f4d40be537b55b6c47e09ada0157bd"),
-        chain_id: hexToDecimal("0x01")
+        chain_id: hexToDecimal("0x01"),
+        signer_pubkey_hash
     };
 
     console.log('Entry inputs:');
     console.log(`  user_key: ${decimalToHex(entryInput.user_key)}`);
     console.log(`  token_address: ${decimalToHex(entryInput.token_address)}`);
     console.log(`  chain_id: ${decimalToHex(entryInput.chain_id)}`);
+    console.log(`  signer_pubkey_hash: ${decimalToHex(signer_pubkey_hash)}`);
     console.log('');
 
     const entryWitness = await runCircuit('entry', entryInput);
@@ -151,10 +152,11 @@ async function testEntryDepositFlow() {
         token_address: entryInput.token_address,
         amount: hexToDecimal("0x32"), // 50
         chain_id: entryInput.chain_id,
+        signer_pubkey_hash,
         previous_nonce: "0", // Entry uses nonce 0
-        previous_shares: "1", // Entry starts with 0 shares (encoded as 1)
-        nullifier: "1", // Entry uses nullifier 0 (encoded as 1)
-        previous_unlocks_at: "1", // Entry initializes to 0 (encoded as 1)
+        previous_shares: "0", // Entry starts with 0 shares (now using 0 directly)
+        nullifier: "0", // Entry uses nullifier 0
+        previous_unlocks_at: "0", // Entry initializes to 0
         previous_commitment_leaf: entryLeaf,
         commitment_index: commitmentIndex.toString(),
         tree_depth: treeDepth.toString(),
@@ -284,10 +286,12 @@ async function getDepositInputs() {
 
 // Actually, let's modify testEntryDepositFlow to return inputs
 async function getDepositInputsFromFlow() {
+    const { signer_pubkey_hash } = await getSignerKeyPair();
     const entryInput = {
         user_key: hexToDecimal("0x19e573f3801c7b2e4619998342e8e305e1692184cbacd220c04198a04c36b7d2"),
         token_address: hexToDecimal("0x7775e4b6f4d40be537b55b6c47e09ada0157bd"),
-        chain_id: hexToDecimal("0x01")
+        chain_id: hexToDecimal("0x01"),
+        signer_pubkey_hash
     };
     
     const entryWitness = await runCircuit('entry', entryInput);
@@ -315,9 +319,9 @@ async function getDepositInputsFromFlow() {
         amount: hexToDecimal("0x32"),
         chain_id: entryInput.chain_id,
         previous_nonce: "0",
-        previous_shares: "1",
-        nullifier: "1",
-        previous_unlocks_at: "1",
+        previous_shares: "0",
+        nullifier: "0",
+        previous_unlocks_at: "0",
         previous_commitment_leaf: entryLeaf,
         commitment_index: commitmentIndex.toString(),
         tree_depth: treeDepth.toString(),

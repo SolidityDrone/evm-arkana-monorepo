@@ -6,7 +6,7 @@ import { useAccountState } from '@/context/AccountStateProvider';
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { usePublicClient } from 'wagmi';
 import { Address, formatUnits, keccak256, encodePacked } from 'viem';
-import { saveTokenAccountData, loadTokenAccountData, TokenAccountData, getTokenAddresses, loadAccountData, AccountData, DiscoveryMode, saveDiscoveryMode } from '@/lib/indexeddb';
+import { saveTokenAccountData, loadTokenAccountData, TokenAccountData, getTokenAddresses, loadAccountData, AccountData, DiscoveryMode, saveDiscoveryMode, loadTwoFactorData, type TwoFactorData } from '@/lib/indexeddb';
 import { parseZkAddress } from '@/lib/zk-address';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { useAaveTokens } from '@/hooks/useAaveTokens';
@@ -15,7 +15,7 @@ import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { reconstructTokenHistory, TransactionHistoryEntry } from '@/lib/transaction-history';
 import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
-import { ChevronDown, ChevronUp, Clock } from 'lucide-react';
+import { ChevronDown, ChevronUp, Clock, Shield } from 'lucide-react';
 import { TokenIcon } from '@/lib/token-icons';
 import { convertSharesToAssets } from '@/lib/shares-to-assets';
 
@@ -66,6 +66,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
     const [incomingNotesByToken, setIncomingNotesByToken] = useState<Map<string, import('@/lib/indexeddb').IncomingNote[]>>(new Map());
     const [loadingIncomingToken, setLoadingIncomingToken] = useState<Set<string>>(new Set());
     const fetchedIncomingNotesRef = useRef<Set<string>>(new Set());
+    const [twoFactorActive, setTwoFactorActive] = useState(false);
     const tokenDataMapRef = useRef<Map<string, TokenAccountData>>(new Map());
 
     const isModalClosedRef = useRef(false);
@@ -73,6 +74,12 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
     useEffect(() => {
         tokenDataMapRef.current = tokenDataMap;
     }, [tokenDataMap]);
+
+    useEffect(() => {
+        if (!isOpen || !zkAddress) return;
+        const addr = zkAddress.replace('zk', '');
+        loadTwoFactorData(addr).then(d => setTwoFactorActive(!!d?.is2FA));
+    }, [isOpen, zkAddress]);
 
     // Helper function to format value with decimals
     const formatTokenValue = useCallback((value: bigint, decimals: number, maxDecimals: number = 6): string => {
@@ -642,7 +649,14 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
             <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto w-[95vw] sm:w-full min-w-0 p-4 sm:p-6">
                 <DialogHeader className="pb-3 sm:pb-4">
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                        <DialogTitle className="text-lg sm:text-xl">Account</DialogTitle>
+                        <DialogTitle className="text-lg sm:text-xl flex items-center gap-2">
+                            Account
+                            {twoFactorActive && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-primary/15 text-primary border border-primary/20">
+                                    <Shield className="w-3 h-3" /> 2FA
+                                </span>
+                            )}
+                        </DialogTitle>
                         <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-[10px] sm:text-xs text-muted-foreground uppercase">Mode:</span>
                             <div className="flex gap-1 border border-border rounded-lg p-0.5">

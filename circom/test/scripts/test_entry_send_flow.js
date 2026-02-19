@@ -71,11 +71,12 @@ async function testEntrySendFlow() {
     console.log('STEP 1: Running Entry Circuit...');
     console.log('');
     
-    const { signer_pubkey_hash } = await getSignerKeyPair();
+    const { signer_pubkey_hash, signer_public_key } = await getSignerKeyPair();
     const entryInput = {
         user_key: hexToDecimal("0x1234567890abcdef"),
         token_address: hexToDecimal("0x02"),
-        chain_id: hexToDecimal("0x01")
+        chain_id: hexToDecimal("0x01"),
+        signer_pubkey_hash
     };
     
     console.log('Entry inputs:');
@@ -134,14 +135,15 @@ async function testEntrySendFlow() {
         amount: depositAmount,
         chain_id: entryInput.chain_id,
         previous_nonce: "0",
-        previous_shares: "1", // Entry starts with 0 shares (encoded as 1)
-        nullifier: "1", // Entry uses nullifier 0 (encoded as 1)
-        previous_unlocks_at: "1", // Entry initializes to 0 (encoded as 1)
+        previous_shares: "0", // Entry starts with 0 shares (now using 0 directly)
+        nullifier: "0", // Entry uses nullifier 0
+        previous_unlocks_at: "0", // Entry initializes to 0
         previous_commitment_leaf: entryLeaf,
         commitment_index: "0",
         tree_depth: treeDepth.toString(),
         expected_root: rootAfterEntry,
-        merkle_proof: await generateMerkleProof(entryLeaf, 0, treeDepth, allLeaves, treeSize, hashWrapper)
+        merkle_proof: await generateMerkleProof(entryLeaf, 0, treeDepth, allLeaves, treeSize, hashWrapper),
+        signer_pubkey_hash
     };
     
     const depositWitness = await runCircuit('deposit', depositInput);
@@ -199,7 +201,7 @@ async function testEntrySendFlow() {
     
     const sendAmount = hexToDecimal("0x31"); // 49 (so total_deduct = 49 + 1 = 50)
     const relayerFeeAmount = "1";
-    const previousShares = (BigInt(1) + BigInt(depositAmount)).toString(); // Base 1 + shares 50 = 51
+    const previousShares = BigInt(depositAmount).toString(); // Shares after deposit = 50 (no encoding)
     const currentNonceForSend = "2"; // previous_nonce is 1, sign with current_nonce = previous + 1
     const { signature } = await signSendMessage(
         TEST_SIGNER_PRIVKEY_HEX,
@@ -211,23 +213,25 @@ async function testEntrySendFlow() {
         receiverPublicKey[1],
         currentNonceForSend
     );
-    const { signer_public_key } = await getSignerKeyPair();
     const sendInput = {
         user_key: entryInput.user_key,
         token_address: entryInput.token_address,
         amount: sendAmount,
         chain_id: entryInput.chain_id,
         previous_nonce: "1", // Deposit used nonce 0, so send uses nonce 1
-        previous_shares: previousShares, // Actual shares 50 → pass 51 to circuit
-        nullifier: depositInput.nullifier, // Must match what deposit used: "1" (represents 0)
-        previous_unlocks_at: depositInput.previous_unlocks_at, // Must match what deposit used: "1" (represents 0)
+        previous_shares: previousShares, // Actual shares 50 (no encoding)
+        nullifier: depositInput.nullifier, // Must match what deposit used: "0"
+        previous_unlocks_at: depositInput.previous_unlocks_at, // Must match what deposit used: "0"
         previous_commitment_leaf: depositLeaf, // Use deposit leaf, not entry leaf
         commitment_index: "1", // Deposit is at index 1
         tree_depth: treeDepth.toString(),
         expected_root: rootAfterDeposit,
         merkle_proof: await generateMerkleProof(depositLeaf, 1, treeDepth, allLeaves, treeSize, hashWrapper),
         receiver_public_key: receiverPublicKey,
-        relayer_fee_amount: relayerFeeAmount
+        relayer_fee_amount: relayerFeeAmount,
+        signer_pubkey_hash,
+        signer_public_key,
+        signature
     };
     
     // Verify we can reconstruct the deposit leaf

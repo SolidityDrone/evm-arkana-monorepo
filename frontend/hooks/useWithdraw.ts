@@ -13,6 +13,17 @@ import { parseZkAddress } from '@/lib/zk-address';
 import { convertSharesToAssets } from '@/lib/shares-to-assets';
 import { convertAssetsToShares } from '@/lib/shares-to-assets';
 import { computePrivateKeyFromSignature, getSpendingKeyCircuit, getViewKeyFromUserKey, poseidonHash, reduceToBn254Field } from '@/lib/circuit-utils';
+import { getSignerIdentityFromUserKey, signWithdrawMessage } from '@/lib/eddsa-circuit';
+import {
+  signingDesktopRound1,
+  signingDesktopRound2,
+  getWithdrawMessageForThreshold,
+  decodeFrostPayload,
+  encodeFrostPayload,
+  type SigningRound2,
+  type SigningRequestPayload,
+} from '@/lib/frost-2fa';
+import { loadTwoFactorData, type TwoFactorData } from '@/lib/indexeddb';
 import { proveWithSnarkjs } from '@/lib/circuit-prove';
 import type { Groth16Args } from '@/lib/groth16';
 import { pedersenCommitment } from '@/lib/pedersen-commitments';
@@ -68,6 +79,18 @@ export function useWithdraw() {
     const [groth16Result, setGroth16Result] = useState<Groth16Args | null>(null);
     const withdrawCircuitRef = useRef<'withdraw' | 'absorb_withdraw'>('withdraw');
     const [withdrawCircuit, setWithdrawCircuit] = useState<'withdraw' | 'absorb_withdraw'>('withdraw');
+
+    // 2FA state
+    const [twoFactorSignOpen, setTwoFactorSignOpen] = useState(false);
+    const [twoFactorError, setTwoFactorError] = useState<string | null>(null);
+    const [twoFactorSigning, setTwoFactorSigning] = useState(false);
+    const twoFactorDataRef = useRef<TwoFactorData | null>(null);
+    const signingRound1Ref = useRef<{
+        desktopNonceScalar: string;
+        round1Data: any;
+        signingRequestPayload?: SigningRequestPayload;
+        signingAmounts?: { amount: string; fee: string; nonce: string };
+    } | null>(null);
 
     const { balanceEntries } = useAccountState();
 
@@ -270,7 +293,7 @@ export function useWithdraw() {
         return () => { cancelled = true; };
     }, [publicClient, tokenAddress, availableBalance]);
 
-    const calculateCircuitInputs = useCallback(async () => {
+    const calculateCircuitInputs = useCallback(async (phonePartialSig?: SigningRound2) => {
         if (!tokenAddress || !amount || !receiverAddress || !receiverFeeAmount || !zkAddress || !publicClient) {
             throw new Error('Missing required fields or client');
         }
@@ -301,13 +324,24 @@ export function useWithdraw() {
             return BigInt(intPart) * BigInt(10 ** dec_) + BigInt(decPart);
         };
         const dec = tokenDecimals ?? 18;
-        const amountInRaw = parseAmount(amount, dec);
-        const feeInRaw = parseAmount(receiverFeeAmount, dec);
         const tokenAddr = tokenAddress.startsWith('0x') ? (tokenAddress as Address) : (`0x${tokenAddress}` as Address);
-        const amountShares = await convertAssetsToShares(publicClient, tokenAddr, amountInRaw);
-        const feeShares = await convertAssetsToShares(publicClient, tokenAddr, feeInRaw);
-        const amountBigInt = amountShares ?? amountInRaw;
-        const receiverFeeAmountBigInt = feeShares ?? feeInRaw;
+        let amountBigInt: bigint;
+        let receiverFeeAmountBigInt: bigint;
+        // If 2FA signing already happened, reuse the EXACT amounts from signing to guarantee
+        // the circuit's message hash matches the signed message hash.
+        const storedSigningAmounts = signingRound1Ref.current?.signingAmounts;
+        if (phonePartialSig && storedSigningAmounts) {
+            amountBigInt = BigInt(storedSigningAmounts.amount);
+            receiverFeeAmountBigInt = BigInt(storedSigningAmounts.fee);
+            console.log('[FROST calculateCircuitInputs] Using stored signing amounts:', storedSigningAmounts);
+        } else {
+            const amountInRaw = parseAmount(amount, dec);
+            const feeInRaw = parseAmount(receiverFeeAmount, dec);
+            const amountShares = await convertAssetsToShares(publicClient, tokenAddr, amountInRaw);
+            const feeShares = await convertAssetsToShares(publicClient, tokenAddr, feeInRaw);
+            amountBigInt = amountShares ?? amountInRaw;
+            receiverFeeAmountBigInt = feeShares ?? feeInRaw;
+        }
         const receiverAddressBigInt = BigInt(receiverAddress.startsWith('0x') ? receiverAddress : '0x' + receiverAddress);
         // Use chain block timestamp (+ 1 min buffer) so proof is valid regardless of system clock (contract: 30 min tolerance)
         const block = await publicClient.getBlock({ blockTag: 'latest' });
@@ -321,9 +355,24 @@ export function useWithdraw() {
         let unlocksAtValue: bigint;
         let previousOpType: number = 0;
 
+        // Resolve signer identity: use stored 2FA data or derive from user_key
+        const zkAddr = zkAddress?.replace('zk', '') || '';
+        const storedTwoFactor = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
+        twoFactorDataRef.current = storedTwoFactor ?? null;
+        let wdSignerHash: string;
+        let wdSignerPk: [string, string];
+        if (storedTwoFactor?.is2FA) {
+            wdSignerHash = storedTwoFactor.signerPubkeyHash;
+            wdSignerPk = storedTwoFactor.signerPublicKey;
+        } else {
+            const signerIdentity = await getSignerIdentityFromUserKey(userKeyBigInt);
+            wdSignerHash = signerIdentity.signer_pubkey_hash;
+            wdSignerPk = signerIdentity.signer_public_key;
+        }
+
         let sharesFromContract: bigint | undefined;
         if (tokenPreviousNonce === BigInt(0)) {
-            const spendingKey0 = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
+            const spendingKey0 = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, wdSignerHash);
             const nonceCommitmentBigInt = await poseidonHash([spendingKey0, tokenPreviousNonce, tokenAddressBigInt]);
             const nonceCommitmentBytes32 = padHex(`0x${nonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
             const encryptedStateDetails = await publicClient.readContract({
@@ -342,7 +391,7 @@ export function useWithdraw() {
         } else {
             const { poseidonCtrDecrypt } = await import('@/lib/poseidon-ctr-encryption');
             const viewKeyBigInt = await getViewKeyFromUserKey(userKeyBigInt);
-            const spendingKeyBigInt = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
+                const spendingKeyBigInt = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, wdSignerHash);
             const finalPreviousNonceCommitmentBigInt = await poseidonHash([spendingKeyBigInt, tokenPreviousNonce, tokenAddressBigInt]);
             const finalPreviousNonceCommitmentBytes32 = padHex(`0x${finalPreviousNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
             const operationInfo = await publicClient.readContract({
@@ -400,15 +449,13 @@ export function useWithdraw() {
         } else {
             const { pedersenCommitment5 } = await import('@/lib/pedersen-commitments');
             const reconstructModule = await import('@/lib/reconstructCommitment');
-            const spendingKeyForCommit = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
+            const spendingKeyForCommit = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, wdSignerHash);
             const prevNonceCommitmentBigInt = await poseidonHash([spendingKeyForCommit, tokenPreviousNonce, tokenAddressBigInt]);
-            const sharesEncodedForLeaf = tokenPreviousNonce === BigInt(0)
-                ? previousSharesForReconstruction + BigInt(1)
-                : previousSharesForReconstruction;
+            const sharesEncodedForLeaf = previousSharesForReconstruction; // No encoding, use 0 directly
             // After AbsorbWithdraw(5) or AbsorbSend(4), the new commitment reuses base3 with OLD nullifier but we store NEW nullifier; use old = new - noteStackM for leaf
             let nullifierEncodedForLeaf: bigint;
             if (tokenPreviousNonce === BigInt(0)) {
-                nullifierEncodedForLeaf = nullifierValue + BigInt(1);
+                nullifierEncodedForLeaf = nullifierValue; // Use 0 directly, no encoding
             } else if (previousOpType === 5 || previousOpType === 4) {
                 const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
                 const { noteStackM } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
@@ -416,9 +463,7 @@ export function useWithdraw() {
             } else {
                 nullifierEncodedForLeaf = nullifierValue;
             }
-            const unlocksAtEncodedForLeaf = tokenPreviousNonce === BigInt(0)
-                ? unlocksAtValue + BigInt(1)
-                : (unlocksAtValue === BigInt(0) ? BigInt(1) : unlocksAtValue);
+            const unlocksAtEncodedForLeaf = unlocksAtValue; // Use 0 directly, no encoding
             const commitmentPoint = pedersenCommitment5(
                 sharesEncodedForLeaf,
                 nullifierEncodedForLeaf,
@@ -475,15 +520,13 @@ export function useWithdraw() {
         const formatForNoir = (value: bigint | string): string =>
             typeof value === 'bigint' ? value.toString() : BigInt(value.startsWith('0x') ? value : '0x' + value).toString();
 
-        const previousSharesEncoded = tokenPreviousNonce === BigInt(0)
-            ? previousSharesForReconstruction + BigInt(1)
-            : previousSharesForReconstruction;
+        const previousSharesEncoded = previousSharesForReconstruction; // No encoding, use 0 directly
         // After AbsorbWithdraw(5) or AbsorbSend(4), the leaf was built with the OLD nullifier (circuit reused base3),
         // but the contract stored the NEW nullifier. The withdraw circuit recomputes the leaf from inputs, so it must
         // receive the OLD nullifier to satisfy leaf_eq at circom withdraw.circom line 113.
         let nullifierEncoded: bigint;
         if (tokenPreviousNonce === BigInt(0)) {
-            nullifierEncoded = nullifierValue + BigInt(1);
+            nullifierEncoded = nullifierValue; // Use 0 directly, no encoding
         } else if (previousOpType === 5 || previousOpType === 4) {
             const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
             const { noteStackM } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
@@ -491,17 +534,15 @@ export function useWithdraw() {
         } else {
             nullifierEncoded = nullifierValue;
         }
-        const previousUnlocksAtEncoded = tokenPreviousNonce === BigInt(0)
-            ? unlocksAtValue + BigInt(1)
-            : (unlocksAtValue === BigInt(0) ? BigInt(1) : unlocksAtValue);
+        const previousUnlocksAtEncoded = unlocksAtValue; // Use 0 directly, no encoding
 
         const leafFromContract = contractLeaves[Number(commitmentIndex)];
         const previousCommitmentLeafPassed = leafFromContract ?? previousCommitmentLeaf;
 
-        // Withdraw circuit asserts: previous_shares >= amount + relayer_fee_amount + 1 (encoded: actual = previous_shares - 1)
+        // Withdraw circuit asserts: previous_shares >= amount + relayer_fee_amount (no encoding)
         const previousSharesNum = BigInt(previousSharesEncoded);
-        const totalRequired = amountBigInt + receiverFeeAmountBigInt + BigInt(1);
-        const actualBalance = previousSharesNum > BigInt(0) ? previousSharesNum - BigInt(1) : BigInt(0);
+        const totalRequired = amountBigInt + receiverFeeAmountBigInt; // No encoding
+        const actualBalance = previousSharesNum; // No encoding
 
         if (previousSharesNum < totalRequired) {
             // Try absorb_withdraw: need absorbable notes to cover the shortfall
@@ -563,8 +604,32 @@ export function useWithdraw() {
             for (let i = 0; i < 32; i++) {
                 noteStackMerkleFormatted.push(i < noteStackProof.length ? noteStackProof[i].toString() : '0');
             }
+            const currentNonceForAbsorbSig = (tokenPreviousNonce + BigInt(1)).toString();
+            let absorbWdSig: { signature: [string, string, string]; message: string };
+            if (twoFactorDataRef.current?.is2FA && phonePartialSig) {
+                // Threshold signing: combine partial signatures
+                const message = await getWithdrawMessageForThreshold(
+                    tokenAddressBigInt.toString(), chainId.toString(),
+                    amountBigInt.toString(), receiverFeeAmountBigInt.toString(), currentNonceForAbsorbSig,
+                );
+                const round1 = signingRound1Ref.current!;
+                absorbWdSig = await signingDesktopRound2(
+                    twoFactorDataRef.current.browserShare,
+                    round1.desktopNonceScalar,
+                    phonePartialSig,
+                    round1.round1Data,
+                );
+            } else {
+                absorbWdSig = await signWithdrawMessage(
+                    userKeyBigInt, tokenAddressBigInt.toString(), chainId.toString(),
+                    amountBigInt.toString(), receiverFeeAmountBigInt.toString(), currentNonceForAbsorbSig,
+                );
+            }
             const absorbInputs: Record<string, string | string[]> = {
                 user_key: formatForNoir(userKeyToUse),
+                signer_pubkey_hash: wdSignerHash,
+                signer_public_key: [wdSignerPk[0], wdSignerPk[1]],
+                signature: absorbWdSig.signature,
                 previous_nonce: tokenPreviousNonce.toString(),
                 current_balance: previousSharesEncoded.toString(),
                 nullifier: nullifierEncoded.toString(),
@@ -591,10 +656,47 @@ export function useWithdraw() {
             return { circuit: 'absorb_withdraw' as const, inputs: absorbInputs };
         }
 
+        const currentNonceForSig = (tokenPreviousNonce + BigInt(1)).toString();
+        console.log('[FROST calculateCircuitInputs] Circuit message inputs:', {
+            tokenAddress_decimal: tokenAddressBigInt.toString(),
+            chainId: chainId.toString(),
+            amount: amountBigInt.toString(),
+            fee: receiverFeeAmountBigInt.toString(),
+            previousNonce: tokenPreviousNonce.toString(),
+            currentNonceForSig,
+            signerPubkeyHash: wdSignerHash,
+            signerPublicKey: wdSignerPk,
+        });
+        let wdSig: { signature: [string, string, string]; message: string };
+        if (twoFactorDataRef.current?.is2FA && phonePartialSig) {
+            // Threshold signing: combine partial signatures
+            const message = await getWithdrawMessageForThreshold(
+                tokenAddressBigInt.toString(), chainId.toString(),
+                amountBigInt.toString(), receiverFeeAmountBigInt.toString(), currentNonceForSig,
+            );
+            console.log('[FROST calculateCircuitInputs] Recomputed message hash:', message);
+            console.log('[FROST calculateCircuitInputs] Original signing message from round1:', signingRound1Ref.current?.round1Data?.message);
+            console.log('[FROST calculateCircuitInputs] Messages match:', message === signingRound1Ref.current?.round1Data?.message);
+            const round1 = signingRound1Ref.current!;
+            wdSig = await signingDesktopRound2(
+                twoFactorDataRef.current.browserShare,
+                round1.desktopNonceScalar,
+                phonePartialSig,
+                round1.round1Data,
+            );
+        } else {
+            wdSig = await signWithdrawMessage(
+                userKeyBigInt, tokenAddressBigInt.toString(), chainId.toString(),
+                amountBigInt.toString(), receiverFeeAmountBigInt.toString(), currentNonceForSig,
+            );
+        }
         return {
             circuit: 'withdraw' as const,
             inputs: {
                 user_key: formatForNoir(userKeyToUse),
+                signer_pubkey_hash: wdSignerHash,
+                signer_public_key: [wdSignerPk[0], wdSignerPk[1]],
+                signature: wdSig.signature,
                 token_address: formatForNoir(tokenAddressBigInt),
                 amount: formatForNoir(amountBigInt),
                 chain_id: chainId.toString(),
@@ -622,30 +724,14 @@ export function useWithdraw() {
         fetchIncomingNotes,
     ]);
 
-    const proveWithdraw = useCallback(async () => {
-        if (!zkAddress) {
-            setProofError('Please sign a message first to access the Arkana network');
-            return;
-        }
-        if (!tokenAddress || !amount || !receiverAddress || !receiverFeeAmount) {
-            setProofError('Please fill in token, amount, receiver address and relayer fee');
-            return;
-        }
-        if (tokenCurrentNonce === null) {
-            setProofError('Token nonce not discovered. Wait for token discovery.');
-            return;
-        }
-        if (isTokenInitialized === false) {
-            setProofError('Token not initialized. Use Initialize page first.');
-            return;
-        }
+    const runWithdrawProof = useCallback(async (phonePartialSig?: SigningRound2) => {
         try {
             setIsProving(true);
             setProofError(null);
             setProvingTime(null);
             groth16ResultRef.current = null;
             const startTime = performance.now();
-            const { circuit, inputs } = await calculateCircuitInputs();
+            const { circuit, inputs } = await calculateCircuitInputs(phonePartialSig);
             withdrawCircuitRef.current = circuit;
             console.log('Circuit (before proof):', circuit, 'inputs:', inputs);
             const result = await proveWithSnarkjs(inputs, circuit);
@@ -668,7 +754,133 @@ export function useWithdraw() {
         } finally {
             setIsProving(false);
         }
-    }, [zkAddress, tokenAddress, amount, receiverAddress, receiverFeeAmount, tokenCurrentNonce, isTokenInitialized, calculateCircuitInputs]);
+    }, [calculateCircuitInputs]);
+
+    const proveWithdraw = useCallback(async () => {
+        if (!zkAddress) {
+            setProofError('Please sign a message first to access the Arkana network');
+            return;
+        }
+        if (!tokenAddress || !amount || !receiverAddress || !receiverFeeAmount) {
+            setProofError('Please fill in token, amount, receiver address and relayer fee');
+            return;
+        }
+        if (tokenCurrentNonce === null) {
+            setProofError('Token nonce not discovered. Wait for token discovery.');
+            return;
+        }
+        if (isTokenInitialized === false) {
+            setProofError('Token not initialized. Use Initialize page first.');
+            return;
+        }
+        // Check if 2FA is active
+        const zkAddr = zkAddress?.replace('zk', '') || '';
+        const stored2FA = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
+        if (stored2FA?.is2FA) {
+            twoFactorDataRef.current = stored2FA;
+            setTwoFactorError(null);
+            
+            if (!publicClient) {
+                setProofError('Public client not available');
+                return;
+            }
+            
+            // Get chainId
+            const chainIdForSig = await publicClient.getChainId();
+            
+            // Convert decimal amounts to BigInt and then to shares (must match calculateCircuitInputs)
+            if (tokenDecimals === null) {
+                setProofError('Token decimals not loaded');
+                return;
+            }
+            const parseAmount = (value: string, decimals: number): bigint => {
+                if (!value || value === '') return BigInt(0);
+                const sanitized = (value || '').trim().replace(',', '.');
+                if (!/^\d+\.?\d*$/.test(sanitized)) return BigInt(0);
+                const parts = sanitized.split('.');
+                if (parts.length === 1) return BigInt(sanitized) * BigInt(10 ** decimals);
+                const intPart = parts[0] || '0';
+                const decPart = (parts[1] || '').slice(0, decimals).padEnd(decimals, '0');
+                return BigInt(intPart) * BigInt(10 ** decimals) + BigInt(decPart);
+            };
+            const tokenAddr = (tokenAddress.startsWith('0x') ? tokenAddress : `0x${tokenAddress}`) as `0x${string}`;
+            const amountInRaw = parseAmount(amount, tokenDecimals);
+            const feeInRaw = parseAmount(receiverFeeAmount, tokenDecimals);
+            const amountShares = await convertAssetsToShares(publicClient, tokenAddr, amountInRaw);
+            const feeShares = await convertAssetsToShares(publicClient, tokenAddr, feeInRaw);
+            const amountBigInt = amountShares ?? amountInRaw;
+            const receiverFeeAmountBigInt = feeShares ?? feeInRaw;
+            
+            // Signing nonce = tokenPreviousNonce + 1 = tokenCurrentNonce
+            // (calculateCircuitInputs sets previous_nonce = tokenCurrentNonce - 1,
+            //  and the circuit computes current_nonce = previous_nonce + 1 = tokenCurrentNonce)
+            const currentNonce = tokenCurrentNonce!.toString();
+            console.log('[FROST proveWithdraw] Signing message inputs:', {
+                tokenAddress,
+                tokenAddress_asBigInt: BigInt(tokenAddress.startsWith('0x') ? tokenAddress : '0x' + tokenAddress).toString(),
+                chainId: chainIdForSig.toString(),
+                amount: amountBigInt.toString(),
+                fee: receiverFeeAmountBigInt.toString(),
+                currentNonce,
+                tokenCurrentNonce: tokenCurrentNonce!.toString(),
+                groupPublicKey: stored2FA.signerPublicKey,
+                browserShare_prefix: stored2FA.browserShare.slice(0, 16) + '...',
+            });
+            const message = await getWithdrawMessageForThreshold(
+                tokenAddress, chainIdForSig.toString(),
+                amountBigInt.toString(), receiverFeeAmountBigInt.toString(), currentNonce,
+            );
+            console.log('[FROST proveWithdraw] Message hash:', message);
+            const round1 = await signingDesktopRound1(message, stored2FA.signerPublicKey);
+            
+            // Convert SigningRound1 to SigningRequestPayload for the modal
+            const signingRequestPayload: SigningRequestPayload = {
+                type: 'signing-request',
+                message: round1.round1Data.message,
+                desktopNonce: round1.round1Data.desktopNonce,
+                groupPublicKey: round1.round1Data.groupPublicKey,
+            };
+            
+            signingRound1Ref.current = {
+                ...round1,
+                signingRequestPayload,
+                signingAmounts: {
+                    amount: amountBigInt.toString(),
+                    fee: receiverFeeAmountBigInt.toString(),
+                    nonce: currentNonce,
+                },
+            };
+            
+            setTwoFactorSignOpen(true);
+            return;
+        }
+        await runWithdrawProof();
+    }, [zkAddress, tokenAddress, amount, receiverAddress, receiverFeeAmount, tokenCurrentNonce, isTokenInitialized, tokenDecimals, publicClient, runWithdrawProof]);
+
+    const onTwoFactorWithdrawSign = useCallback(async (phoneResponse: string) => {
+        setTwoFactorSigning(true);
+        setTwoFactorError(null);
+        try {
+            const decoded = decodeFrostPayload(phoneResponse.trim());
+            if (!decoded || decoded.type !== 'signing-response') {
+                setTwoFactorError('Invalid response from phone. Expected partial signature.');
+                setTwoFactorSigning(false);
+                return;
+            }
+            const phonePartialSig: SigningRound2 = {
+                phoneNonce: decoded.phoneNonce,
+                phonePartialSig: decoded.phonePartialSig,
+            };
+            
+            setTwoFactorSignOpen(false);
+            await runWithdrawProof(phonePartialSig);
+        } catch (err: any) {
+            setTwoFactorError(err?.message || 'Signing failed. Check the phone response.');
+            setTwoFactorSignOpen(true);
+        } finally {
+            setTwoFactorSigning(false);
+        }
+    }, [runWithdrawProof]);
 
     const callDataBytes = (): `0x${string}` => {
         if (!arbitraryCalldata || arbitraryCalldata.trim() === '') return '0x';
@@ -799,5 +1011,12 @@ export function useWithdraw() {
         proveWithdraw,
         handleWithdraw,
         balanceEntries,
+        // 2FA
+        twoFactorSignOpen,
+        setTwoFactorSignOpen,
+        twoFactorError,
+        twoFactorSigning,
+        onTwoFactorWithdrawSign,
+        twoFactorSigningRequest: signingRound1Ref.current?.signingRequestPayload || null,
     };
 }

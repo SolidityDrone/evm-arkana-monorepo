@@ -11,6 +11,7 @@ import { SpellButton } from '@/components/spell-button';
 import TransactionModal from '@/components/TransactionModal';
 import { useToast } from '@/components/Toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { TwoFactorSetupModal } from '@/components/TwoFactorSetupModal';
 
 export default function BasicSpellsPage() {
     const { toast } = useToast();
@@ -51,6 +52,9 @@ export default function BasicSpellsPage() {
         proveArkanaEntry,
         handleInitCommit,
         handleApprove,
+        twoFactorSetupOpen,
+        setTwoFactorSetupOpen,
+        onTwoFactorSetupComplete,
     } = useInitialize();
 
     const { tokens: aaveTokens, isLoading: isLoadingTokens } = useAaveTokens();
@@ -548,7 +552,13 @@ export default function BasicSpellsPage() {
                     </div>
                 </DialogContent>
             </Dialog>
+
+            {/* 2FA Setup Modal */}
+            <TwoFactorSetupModal
+                open={twoFactorSetupOpen}
+                onOpenChange={setTwoFactorSetupOpen}
+                onComplete={onTwoFactorSetupComplete}
+            />
         </div>
     );
 }
-

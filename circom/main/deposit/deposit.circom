@@ -14,6 +14,7 @@ include "../../node_modules/circomlib/circuits/comparators.circom";
 template Deposit() {
     // Private inputs
     signal input user_key;
+    signal input signer_pubkey_hash;
     signal input previous_nonce;
     signal input previous_shares;
     signal input nullifier;
@@ -36,11 +37,12 @@ template Deposit() {
     signal output new_nonce_commitment;
     
     // === SETUP ===
-    // Hash user_key with chain_id and token_address to prevent cross-chain/token overlap
-    component spending_key_hash = Poseidon2Hash3();
+    // spending_key = Poseidon(user_key, chain_id, token_address, signer_pubkey_hash)
+    component spending_key_hash = Poseidon2Hash4();
     spending_key_hash.in[0] <== user_key;
     spending_key_hash.in[1] <== chain_id;
     spending_key_hash.in[2] <== token_address;
+    spending_key_hash.in[3] <== signer_pubkey_hash;
     signal spending_key;
     spending_key <== spending_key_hash.out;
     
@@ -114,11 +116,10 @@ template Deposit() {
     
     // === CHECK UNLOCKS_AT ===
     // Deposit is disabled if previous_unlocks_at is not zero
-    // In our encoding, 1 represents 0, so we check if previous_unlocks_at == 1
-    component unlocks_is_one = IsEqual();
-    unlocks_is_one.in[0] <== previous_unlocks_at;
-    unlocks_is_one.in[1] <== 1;
-    unlocks_is_one.out === 1;
+    component unlocks_is_zero = IsEqual();
+    unlocks_is_zero.in[0] <== previous_unlocks_at;
+    unlocks_is_zero.in[1] <== 0;
+    unlocks_is_zero.out === 1;
     
     // === CALCULATE NEW NONCE ===
     signal nonce;

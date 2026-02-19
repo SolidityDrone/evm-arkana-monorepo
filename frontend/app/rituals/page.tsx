@@ -17,6 +17,7 @@ import { useToast } from '@/components/Toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { TokenIcon } from '@/lib/token-icons';
 import { ARKANA_ADDRESS, ARKANA_ABI } from '@/lib/abi/ArkanaConst';
+import { TwoFactorSetupModal } from '@/components/TwoFactorSetupModal';
 
 type RitualMode = 'mage' | 'archon';
 
@@ -834,6 +835,13 @@ export default function RitualsPage() {
                     </div>
                 </DialogContent>
             </Dialog>
+
+            {/* 2FA Setup Modal */}
+            <TwoFactorSetupModal
+                open={initializeHook.twoFactorSetupOpen}
+                onOpenChange={initializeHook.setTwoFactorSetupOpen}
+                onComplete={initializeHook.onTwoFactorSetupComplete}
+            />
         </div>
     );
 }

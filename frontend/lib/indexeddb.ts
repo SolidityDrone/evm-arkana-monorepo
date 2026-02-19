@@ -47,6 +47,13 @@ export interface TokenAccountData {
     lastUpdated: number;
 }
 
+export interface TwoFactorData {
+    is2FA: true;
+    browserShare: string;
+    signerPublicKey: [string, string];
+    signerPubkeyHash: string;
+}
+
 export interface AccountData {
     zkAddress: string;
     userKey: bigint | null;
@@ -57,6 +64,7 @@ export interface AccountData {
     discoveryMode?: DiscoveryMode;
     mageTokenData?: TokenAccountData[];
     archonTokenData?: TokenAccountData[];
+    twoFactor?: TwoFactorData;
 }
 
 const DB_NAME = 'arkana_account_db';
@@ -144,6 +152,7 @@ export async function saveAccountData(data: AccountData): Promise<void> {
             discoveryMode: data.discoveryMode || 'mage',
             mageTokenData: serializeTokenData(data.mageTokenData),
             archonTokenData: serializeTokenData(data.archonTokenData),
+            twoFactor: data.twoFactor ?? undefined,
         };
 
         await new Promise<void>((resolve, reject) => {
@@ -209,6 +218,7 @@ export async function loadAccountData(zkAddress: string): Promise<AccountData | 
                     discoveryMode: result.discoveryMode || 'mage',
                     mageTokenData: deserializeTokenData(result.mageTokenData),
                     archonTokenData: deserializeTokenData(result.archonTokenData),
+                    twoFactor: result.twoFactor ?? undefined,
                 };
 
                 resolve(data);
@@ -269,11 +279,12 @@ export async function saveTokenAccountData(
         const updatedData: AccountData = {
             zkAddress,
             userKey: existingData?.userKey || null,
-            tokenData: mageTokenData, // Keep legacy tokenData in sync with mage
+            tokenData: mageTokenData,
             mageTokenData,
             archonTokenData,
             lastUpdated: Date.now(),
             discoveryMode: existingData?.discoveryMode || 'mage',
+            twoFactor: existingData?.twoFactor,
         };
 
         await saveAccountData(updatedData);
@@ -346,6 +357,35 @@ export async function loadDiscoveryMode(zkAddress: string): Promise<DiscoveryMod
     } catch (error) {
         console.error('Error loading discovery mode from IndexedDB:', error);
         return 'mage';
+    }
+}
+
+export async function saveTwoFactorData(zkAddress: string, twoFactor: TwoFactorData): Promise<void> {
+    try {
+        const existingData = await loadAccountData(zkAddress);
+        const updatedData: AccountData = {
+            zkAddress,
+            userKey: existingData?.userKey || null,
+            tokenData: existingData?.tokenData || [],
+            lastUpdated: Date.now(),
+            discoveryMode: existingData?.discoveryMode || 'mage',
+            mageTokenData: existingData?.mageTokenData,
+            archonTokenData: existingData?.archonTokenData,
+            twoFactor,
+        };
+        await saveAccountData(updatedData);
+    } catch (error) {
+        console.error('Error saving 2FA data to IndexedDB:', error);
+    }
+}
+
+export async function loadTwoFactorData(zkAddress: string): Promise<TwoFactorData | undefined> {
+    try {
+        const accountData = await loadAccountData(zkAddress);
+        return accountData?.twoFactor;
+    } catch (error) {
+        console.error('Error loading 2FA data from IndexedDB:', error);
+        return undefined;
     }
 }
 

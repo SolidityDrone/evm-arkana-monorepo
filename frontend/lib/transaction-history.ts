@@ -3,6 +3,7 @@ import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/
 import { poseidonCtrDecrypt } from '@/lib/poseidon-ctr-encryption';
 import { padHex } from 'viem';
 import { getSpendingKeyCircuit, poseidonHash } from './circuit-utils';
+import { getSignerIdentityFromUserKey } from './eddsa-circuit';
 
 // VIEW_STRING constant from circuits: 0x76696577696e675f6b6579 ("viewing_key" in hex)
 const VIEW_STRING = BigInt('0x76696577696e675f6b6579');
@@ -31,26 +32,29 @@ export async function deriveViewKey(userKey: bigint): Promise<bigint> {
 }
 
 /**
- * Compute spending_key for a token (circuit formula: Poseidon(user_key, chain_id, token_address))
+ * Compute spending_key for a token: Poseidon4(user_key, chain_id, token_address, signer_pubkey_hash)
  */
 export async function computeSpendingKey(
   userKey: bigint,
   chainId: bigint,
-  tokenAddress: bigint
+  tokenAddress: bigint,
+  signerPubkeyHashOverride?: string,
 ): Promise<bigint> {
-  return getSpendingKeyCircuit(userKey, chainId, tokenAddress);
+  const hash = signerPubkeyHashOverride
+    ?? (await getSignerIdentityFromUserKey(userKey)).signer_pubkey_hash;
+  return getSpendingKeyCircuit(userKey, chainId, tokenAddress, hash);
 }
 
-/**
- * Compute nonce commitment (same as circuits: Hash(spending_key, nonce, token_address))
- */
 export async function computeNonceCommitment(
   userKey: bigint,
   chainId: bigint,
   tokenAddress: bigint,
-  nonce: bigint
+  nonce: bigint,
+  signerPubkeyHashOverride?: string,
 ): Promise<bigint> {
-  const spendingKey = await getSpendingKeyCircuit(userKey, chainId, tokenAddress);
+  const hash = signerPubkeyHashOverride
+    ?? (await getSignerIdentityFromUserKey(userKey)).signer_pubkey_hash;
+  const spendingKey = await getSpendingKeyCircuit(userKey, chainId, tokenAddress, hash);
   return poseidonHash([spendingKey, nonce, tokenAddress]);
 }
 

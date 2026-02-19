@@ -9,9 +9,10 @@ interface DialogProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   children: React.ReactNode;
+  onPointerDownOutside?: (event: React.PointerEvent) => void;
 }
 
-const Dialog = ({ open, onOpenChange, children }: DialogProps) => {
+const Dialog = ({ open, onOpenChange, children, onPointerDownOutside }: DialogProps) => {
   const [mounted, setMounted] = React.useState(false);
 
   React.useEffect(() => {
@@ -31,10 +32,22 @@ const Dialog = ({ open, onOpenChange, children }: DialogProps) => {
 
   if (!open || !mounted) return null;
 
+  const handleBackdropClick = (e: React.MouseEvent | React.PointerEvent) => {
+    // Only close if clicking directly on the backdrop (not on dialog content)
+    if (e.target === e.currentTarget) {
+      if (onPointerDownOutside) {
+        onPointerDownOutside(e as React.PointerEvent);
+      } else {
+        onOpenChange?.(false);
+      }
+    }
+  };
+
   return createPortal(
     <div
       className="fixed inset-0 z-[9999] flex items-center justify-center overflow-x-hidden"
-      onClick={() => onOpenChange?.(false)}
+      onClick={handleBackdropClick}
+      onPointerDown={handleBackdropClick}
       style={{ 
         position: 'fixed', 
         top: 0, 
@@ -45,16 +58,22 @@ const Dialog = ({ open, onOpenChange, children }: DialogProps) => {
         padding: '1rem',
         maxWidth: '100vw',
         overflowX: 'hidden',
-        width: '100vw'
+        width: '100vw',
+        pointerEvents: 'auto',
       }}
     >
       {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" />
+      <div 
+        className="fixed inset-0 bg-black/80 backdrop-blur-sm"
+        style={{ zIndex: 9999 }}
+      />
       
       {/* Dialog content wrapper - centered using flexbox */}
       <div
-        className="relative z-[10000] min-w-0"
+        className="relative min-w-0"
+        style={{ zIndex: 10000, pointerEvents: 'auto' }}
         onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
       >
         {children}
       </div>
@@ -65,10 +84,14 @@ const Dialog = ({ open, onOpenChange, children }: DialogProps) => {
 
 interface DialogContentProps extends React.HTMLAttributes<HTMLDivElement> {
   children: React.ReactNode;
+  onPointerDownOutside?: (event: React.PointerEvent) => void;
 }
 
 const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
-  ({ className, children, ...props }, ref) => {
+  ({ className, children, onPointerDownOutside, ...props }, ref) => {
+    // Filter out onPointerDownOutside from props to prevent it from being spread onto the div
+    // This prop is handled by the Dialog component's backdrop click handler
+    // We destructure it here so it doesn't get passed to the div element
     return (
       <div
         ref={ref}

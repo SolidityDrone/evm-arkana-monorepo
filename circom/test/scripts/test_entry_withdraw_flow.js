@@ -70,9 +70,10 @@ async function testEntryDepositWithdrawFlow() {
     console.log('STEP 1: Running Entry Circuit...');
     console.log('');
     
-    const { signer_pubkey_hash } = await getSignerKeyPair();
+    const { signer_pubkey_hash, signer_public_key } = await getSignerKeyPair();
     const entryInput = {
         user_key: hexToDecimal("0x19e573f3801c7b2e4619998342e8e305e1692184cbacd220c04198a04c36b7d2"),
+        signer_pubkey_hash,
         token_address: hexToDecimal("0x7775e4b6f4d40be537b55b6c47e09ada0157bd"),
         chain_id: hexToDecimal("0x01")
     };
@@ -129,13 +130,14 @@ async function testEntryDepositWithdrawFlow() {
     const depositAmount = hexToDecimal("0x32"); // 50
     const depositInput = {
         user_key: entryInput.user_key,
+        signer_pubkey_hash,
         token_address: entryInput.token_address,
         amount: depositAmount,
         chain_id: entryInput.chain_id,
         previous_nonce: "0",
-        previous_shares: "1", // Entry starts with 0 shares (encoded as 1)
-        nullifier: "1", // Entry uses nullifier 0 (encoded as 1)
-        previous_unlocks_at: "1", // Entry initializes to 0 (encoded as 1)
+        previous_shares: "0", // Entry starts with 0 shares (now using 0 directly)
+        nullifier: "0", // Entry uses nullifier 0
+        previous_unlocks_at: "0", // Entry initializes to 0
         previous_commitment_leaf: entryLeaf,
         commitment_index: "0",
         tree_depth: treeDepth.toString(),
@@ -176,6 +178,9 @@ async function testEntryDepositWithdrawFlow() {
     
     const contractResult = await simulateContractShareAddition(circuitCommitmentPoint, shares, poseidon2Hash2);
     const depositLeaf = contractResult.leaf;
+    
+    // Store for reconstruction test comparison
+    global.depositContractResult = contractResult;
     
     console.log(`  Final commitment point: [${decimalToHex(contractResult.finalPoint.x)}, ${decimalToHex(contractResult.finalPoint.y)}]`);
     console.log(`  Deposit leaf (after contract addition): ${decimalToHex(depositLeaf)}`);
@@ -223,7 +228,7 @@ async function testEntryDepositWithdrawFlow() {
     // but note that this is a simplification.
     
     // IMPORTANT: We can only withdraw up to the actual shares we have
-    // previous_shares = 51 (encoded) represents 50 real shares
+    // previous_shares = 50 (actual shares after deposit)
     // So we can withdraw at most 50 total (amount + relayer_fee_amount)
     // Let's withdraw 49 + 1 = 50 total
     const withdrawAmount = hexToDecimal("0x31"); // 49 (so total_withdraw = 49 + 1 = 50)
@@ -253,9 +258,9 @@ async function testEntryDepositWithdrawFlow() {
     //
     // So we use previous_shares = actual shares after deposit (50)
     
-    // For withdraw, entry used m1=1 (base value), contract added shares*G
-    // So final commitment has m1 = 1 + shares = 1 + 50 = 51
-    const previousShares = (BigInt(1) + BigInt(depositAmount)).toString(); // Base 1 + shares 50 = 51
+    // For withdraw, entry used m1=0 (now using 0 directly), contract added shares*G
+    // So final commitment has m1 = 0 + shares = 0 + 50 = 50
+    const previousShares = BigInt(depositAmount).toString(); // Shares after deposit = 50 (no encoding)
     const relayerFeeAmount = "1";
     const currentNonceForWithdraw = "2"; // previous_nonce is 1, sign with current_nonce = previous + 1
     const { signature } = await signWithdrawMessage(
@@ -266,16 +271,18 @@ async function testEntryDepositWithdrawFlow() {
         relayerFeeAmount,
         currentNonceForWithdraw
     );
-    const { signer_public_key } = await getSignerKeyPair();
     const withdrawInput = {
         user_key: entryInput.user_key,
+        signer_pubkey_hash,
+        signer_public_key,
+        signature,
         token_address: entryInput.token_address,
         amount: withdrawAmount,
         chain_id: entryInput.chain_id,
         previous_nonce: "1", // Deposit created commitment with nonce_commitment using nonce 1
-        previous_shares: previousShares, // Actual shares 50 → pass 51 to circuit
-        nullifier: depositInput.nullifier, // Must match what deposit used: "1" (represents 0)
-        previous_unlocks_at: depositInput.previous_unlocks_at, // Must match what deposit used: "1" (represents 0)
+        previous_shares: previousShares, // Actual shares 50 (no encoding)
+        nullifier: depositInput.nullifier, // Must match what deposit used: "0"
+        previous_unlocks_at: depositInput.previous_unlocks_at, // Must match what deposit used: "0"
         declared_time_reference: "1000000", // Current time reference
         previous_commitment_leaf: depositLeaf,
         commitment_index: "1",

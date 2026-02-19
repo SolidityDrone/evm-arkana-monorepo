@@ -87,6 +87,7 @@ async function testFrostUserKeyIndependent() {
     console.log('STEP 5: Run Entry circuit with independently-derived user_key...');
     const entryInput = {
         user_key: user_key_independent,
+        signer_pubkey_hash,
         token_address: hexToDecimal('0x7775e4b6f4d40be537b55b6c47e09ada0157bd'),
         chain_id: hexToDecimal('0x01')
     };

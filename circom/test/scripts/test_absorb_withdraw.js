@@ -12,7 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { poseidon2Hash2, poseidon2Hash3 } = require('./poseidon_hash_helper');
+const { poseidon2Hash1, poseidon2Hash2, poseidon2Hash3 } = require('./poseidon_hash_helper');
 const { getSignerKeyPair, signSendMessage, signWithdrawMessage, TEST_SIGNER_PRIVKEY_HEX } = require('./eddsa_helper');
 const { simulateLeanIMTInsert, generateMerkleProof } = require('./lean_imt_helpers');
 const { simulateContractShareAddition, scalarMul } = require('./babyjub_operations');
@@ -81,10 +81,11 @@ async function testAbsorbWithdrawFlow() {
     const userKey = hexToDecimal("0x1234567890abcdef");
     const tokenAddress = hexToDecimal("0x02");
     const chainId = hexToDecimal("0x01");
-    const { signer_pubkey_hash } = await getSignerKeyPair();
+    const { signer_pubkey_hash, signer_public_key } = await getSignerKeyPair();
     
     const entryInput = {
         user_key: userKey,
+        signer_pubkey_hash,
         token_address: tokenAddress,
         chain_id: chainId
     };
@@ -138,13 +139,14 @@ async function testAbsorbWithdrawFlow() {
     const depositAmount = hexToDecimal("0x64"); // 100
     const depositInput = {
         user_key: userKey,
+        signer_pubkey_hash,
         token_address: tokenAddress,
         amount: depositAmount,
         chain_id: chainId,
         previous_nonce: "0",
-        previous_shares: "1", // Entry starts with 0 shares (encoded as 1)
-        nullifier: "1", // Entry uses nullifier 0 (encoded as 1)
-        previous_unlocks_at: "1", // Entry initializes to 0 (encoded as 1)
+        previous_shares: "0", // Entry starts with 0 shares (now using 0 directly)
+        nullifier: "0", // Entry uses nullifier 0
+        previous_unlocks_at: "0", // Entry initializes to 0
         previous_commitment_leaf: entryLeaf,
         commitment_index: "0",
         tree_depth: treeDepth.toString(),
@@ -194,9 +196,12 @@ async function testAbsorbWithdrawFlow() {
     console.log('');
     
     // For send, the circuit uses nonce = previous_nonce + 1 = 1 + 1 = 2
-    // So sender_private_key = user_key + 2
+    // The circuit computes sender_private_key from Poseidon2Hash2(user_key, nonce) truncated to 253 bits
     const sendNonce = 2; // Send uses nonce 2 (previous_nonce was 1)
-    const senderPrivateKey = (BigInt(userKey) + BigInt(sendNonce)).toString();
+    const senderPrivHash = await poseidon2Hash2(userKey, sendNonce.toString());
+    // Truncate to 253 bits (same as circuit: Bits2Num(253) after Num2Bits(254))
+    const TWO_TO_253 = BigInt('2') ** BigInt('253');
+    const senderPrivateKey = (BigInt(senderPrivHash) % TWO_TO_253).toString();
     const myPublicKey = await calculatePublicKey(senderPrivateKey);
     
     console.log(`Your public key at nonce 2 (for send):`);
@@ -209,19 +214,21 @@ async function testAbsorbWithdrawFlow() {
     
     const sendAmount = hexToDecimal("0x32"); // 50
     const relayerFeeSend = "1";
-    const previousShares = (BigInt(1) + BigInt(depositAmount)).toString(); // Base 1 + shares 100 = 101
+    const previousShares = BigInt(depositAmount).toString(); // Shares after deposit = 100 (no encoding)
     const currentNonceForSend = "2"; // previous_nonce is 1, sign with current_nonce = previous + 1
     const { signature: sendSignature } = await signSendMessage(TEST_SIGNER_PRIVKEY_HEX, tokenAddress, chainId, sendAmount, relayerFeeSend, myPublicKey[0], myPublicKey[1], currentNonceForSend);
-    const { signer_public_key } = await getSignerKeyPair();
     const sendInput = {
         user_key: userKey,
+        signer_pubkey_hash,
+        signer_public_key,
+        signature: sendSignature,
         token_address: tokenAddress,
         amount: sendAmount,
         chain_id: chainId,
         previous_nonce: "1", // Deposit used nonce 0, so send uses nonce 1
-        previous_shares: previousShares, // Actual shares 100 → pass 101 to circuit
-        nullifier: depositInput.nullifier, // Must match what deposit used: "1" (represents 0)
-        previous_unlocks_at: depositInput.previous_unlocks_at, // Must match what deposit used: "1" (represents 0)
+        previous_shares: previousShares, // Actual shares 100 (no encoding)
+        nullifier: depositInput.nullifier, // Must match what deposit used: "0"
+        previous_unlocks_at: depositInput.previous_unlocks_at, // Must match what deposit used: "0"
         previous_commitment_leaf: depositLeaf,
         commitment_index: "1", // Deposit is at index 1
         tree_depth: treeDepth.toString(),
@@ -260,7 +267,6 @@ async function testAbsorbWithdrawFlow() {
     // Send circuit: shared_key_hash = Poseidon2Hash1(shared_key), note_commit.r = shared_key_hash
     const sharedKeyPoint = await scalarMul(senderPrivateKey, myPublicKey);
     const sharedKey = sharedKeyPoint.x.toString();
-    const { poseidon2Hash1 } = require('./poseidon_hash_helper');
     const sharedKeyHash = await poseidon2Hash1(sharedKey);
     const note_stack_r = sharedKeyHash;
     
@@ -297,23 +303,22 @@ async function testAbsorbWithdrawFlow() {
     console.log('STEP 7: Running Absorb-Withdraw Circuit (nonce 2)...');
     console.log('');
     
-    // After send, the balance is: previous_shares (101) - amount (50) - fee (1) = 50
-    // In raw balance format (not encoded), this is: 50 - 1 = 49
-    // The send circuit uses encoded shares. After send:
-    // final_shares = 101 - 50 - 1 = 50 (encoded)
-    // Raw balance = 50 - 1 = 49
-    
-    const finalSharesAfterSend = (BigInt(previousShares) - BigInt(sendAmount) - BigInt(1)).toString(); // 101 - 50 - 1 = 50 (encoded)
-    // The send circuit stores commitment with m1 = final_shares (encoded) = 50
+    // After send, the balance is: previous_shares (100) - amount (50) - fee (1) = 49
+    // The send circuit stores the commitment with m1 = new_shares = 49 (no encoding)
     // The absorb circuit reconstructs with m1 = current_balance
-    // To match, we need current_balance = 50 (the encoded value)
-    const current_balance = finalSharesAfterSend; // 50 (encoded shares value)
-    const nullifier_after_send = "1"; // Nullifier stays 0 (encoded as 1) after send
+    // To match, we need current_balance = 49 (the actual shares after send)
+    const finalSharesAfterSend = (BigInt(previousShares) - BigInt(sendAmount) - BigInt(relayerFeeSend)).toString(); // 100 - 50 - 1 = 49
+    const current_balance = finalSharesAfterSend; // 49 (actual shares after send, no encoding)
+    const nullifier_after_send = "0"; // Nullifier stays 0 after send
     
     const absorbWithdrawAmount = hexToDecimal("0x1e"); // 30
     const relayerFee = "1"; // Single fee for absorb+withdraw
     
-    // For withdraw, we need previous_unlocks_at (must be unlocked, so use 1 which represents 0)
+    // Sign WITHDRAW message for absorb_withdraw: Poseidon2(Poseidon3(ta, ch, amount), Poseidon2(fee, current_nonce))
+    const currentNonceForAbsorbWithdraw = "3"; // previous_nonce is 2, current_nonce = previous + 1
+    const { signature: absorbWithdrawSignature } = await signWithdrawMessage(TEST_SIGNER_PRIVKEY_HEX, tokenAddress, chainId, absorbWithdrawAmount, relayerFee, currentNonceForAbsorbWithdraw);
+    
+    // For withdraw, we need previous_unlocks_at (must be unlocked, so use 0)
     // declared_time_reference must be >= unlocks_at
     const declaredTimeReference = hexToDecimal("0x0f4240"); // 1000000 (large timestamp)
     const arbitraryCalldataHash = hexToDecimal("0x1234567890abcdef");
@@ -321,10 +326,13 @@ async function testAbsorbWithdrawFlow() {
     
     const absorbWithdrawInput = {
         user_key: userKey,
+        signer_pubkey_hash,
+        signer_public_key,
+        signature: absorbWithdrawSignature,
         previous_nonce: "2", // Send created new commitment with nonce 2, so this is the previous nonce
         current_balance: current_balance,
         nullifier: nullifier_after_send,
-        previous_unlocks_at: "1", // Must be 1 (represents 0, unlocked)
+        previous_unlocks_at: "0", // Must be 0 (unlocked)
         previous_commitment_leaf: send_new_commitment_leaf,
         commitment_index: "2", // Send commitment is at index 2
         tree_depth: treeDepth.toString(),

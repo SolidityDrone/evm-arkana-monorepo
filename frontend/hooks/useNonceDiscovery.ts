@@ -9,6 +9,8 @@ import { useZkAddress, useAccount as useAccountContext } from '@/context/Account
 import { poseidonCtrDecrypt } from '@/lib/poseidon-ctr-encryption';
 import { DiscoveryMode, type IncomingNote } from '@/lib/indexeddb';
 import { getSpendingKeyCircuit, poseidonHash } from '@/lib/circuit-utils';
+import { getSignerIdentityFromUserKey } from '@/lib/eddsa-circuit';
+import { loadTwoFactorData } from '@/lib/indexeddb';
 import { computeSharedKeyHashForNote } from '@/lib/crypto-keys';
 import { keccak256, encodePacked } from 'viem';
 export interface BalanceEntry {
@@ -77,12 +79,17 @@ export function useNonceDiscovery() {
     return BigInt(hash.toString());
   };
 
-  // Discovery uses same formula as circuits: spending_key = Poseidon(user_key, chain_id, token_address). No signer_pubkey_hash.
+  // spending_key = Poseidon4(user_key, chain_id, token_address, signer_pubkey_hash)
   const getSpendingKeyForDiscovery = useCallback(
     async (userKey: bigint, chainId: bigint, tokenAddress: bigint): Promise<bigint> => {
-      return getSpendingKeyCircuit(userKey, chainId, tokenAddress);
+      const zkAddr = zkAddress?.replace('zk', '') || '';
+      const stored2FA = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
+      const signerHash = stored2FA?.is2FA
+        ? stored2FA.signerPubkeyHash
+        : (await getSignerIdentityFromUserKey(userKey)).signer_pubkey_hash;
+      return getSpendingKeyCircuit(userKey, chainId, tokenAddress, signerHash);
     },
-    []
+    [zkAddress]
   );
 
   const getNonceCommitmentForDiscovery = useCallback(

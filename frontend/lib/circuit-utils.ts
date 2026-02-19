@@ -85,7 +85,8 @@ export async function getViewKeyFromUserKey(userKey: bigint): Promise<bigint> {
 }
 
 /**
- * Spending key = Hash3(Hash2(user_key, chain_id), token_address, signer_pubkey_hash).
+ * Spending key = Poseidon4(user_key, chain_id, token_address, signer_pubkey_hash).
+ * Matches circom Poseidon2Hash4 used in all circuits.
  */
 export async function getSpendingKey(
   userKey: bigint,
@@ -94,20 +95,21 @@ export async function getSpendingKey(
   signerPubkeyHash: bigint | string
 ): Promise<bigint> {
   const h = typeof signerPubkeyHash === 'string' ? BigInt(signerPubkeyHash) : signerPubkeyHash;
-  const h2 = await poseidonHash([userKey, chainId]);
-  return poseidonHash([h2, tokenAddress, h]);
+  return poseidonHash([userKey, chainId, tokenAddress, h]);
 }
 
 /**
- * Circuit spending key = Hash3(user_key, chain_id, token_address).
- * Matches circom Poseidon2Hash3(user_key, chain_id, token_address) used in entry/deposit.
+ * Circuit spending key = Poseidon4(user_key, chain_id, token_address, signer_pubkey_hash).
+ * Matches circom Poseidon2Hash4(user_key, chain_id, token_address, signer_pubkey_hash).
  */
 export async function getSpendingKeyCircuit(
   userKey: bigint,
   chainId: bigint,
-  tokenAddress: bigint
+  tokenAddress: bigint,
+  signerPubkeyHash: bigint | string
 ): Promise<bigint> {
-  return poseidonHash([userKey, chainId, tokenAddress]);
+  const h = typeof signerPubkeyHash === 'string' ? BigInt(signerPubkeyHash) : signerPubkeyHash;
+  return poseidonHash([userKey, chainId, tokenAddress, h]);
 }
 
 /**
@@ -136,7 +138,16 @@ export async function getWithdrawMessageHash(
   relayerFeeAmount: bigint,
   currentNonce: bigint
 ): Promise<bigint> {
+  console.log('[getWithdrawMessageHash] Inputs:', {
+    tokenAddress: tokenAddress.toString(),
+    chainId: chainId.toString(),
+    amount: amount.toString(),
+    relayerFeeAmount: relayerFeeAmount.toString(),
+    currentNonce: currentNonce.toString(),
+  });
   const left = await poseidonHash([tokenAddress, chainId, amount]);
   const right = await poseidonHash([relayerFeeAmount, currentNonce]);
-  return poseidonHash([left, right]);
+  const result = await poseidonHash([left, right]);
+  console.log('[getWithdrawMessageHash] Result:', { left: left.toString(), right: right.toString(), hash: result.toString() });
+  return result;
 }

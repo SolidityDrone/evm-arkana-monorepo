@@ -11,12 +11,16 @@ include "../../lib/lean-imt-verify/lean_imt_verify.circom";
 include "../../lib/utils/field_utils.circom";
 include "../../lib/utils/unpack_utils.circom";
 include "../../node_modules/circomlib/circuits/comparators.circom";
+include "../../node_modules/circomlib/circuits/eddsaposeidon.circom";
 
 // VIEW_STRING = 0x76696577696e675f6b6579 = 143150966920908953357084025
 
 template AbsorbWithdraw() {
     // Private inputs
     signal input user_key;
+    signal input signer_pubkey_hash;
+    signal input signer_public_key[2];  // [Ax, Ay] on Baby Jubjub
+    signal input signature[3];  // EdDSA signature [R8x, R8y, S]
     signal input previous_nonce;
     signal input current_balance;  // Raw balance (not encoded)
     signal input nullifier;
@@ -52,11 +56,12 @@ template AbsorbWithdraw() {
     signal output nonce_discovery_entry[2];  // [x, y]
     
     // === SETUP ===
-    // Hash user_key with chain_id and token_address
-    component spending_key_hash = Poseidon2Hash3();
+    // spending_key = Poseidon(user_key, chain_id, token_address, signer_pubkey_hash)
+    component spending_key_hash = Poseidon2Hash4();
     spending_key_hash.in[0] <== user_key;
     spending_key_hash.in[1] <== chain_id;
     spending_key_hash.in[2] <== token_address;
+    spending_key_hash.in[3] <== signer_pubkey_hash;
     signal spending_key;
     spending_key <== spending_key_hash.out;
     
@@ -65,6 +70,39 @@ template AbsorbWithdraw() {
     view_key_hash.in[1] <== user_key;
     signal view_key;
     view_key <== view_key_hash.out;
+    
+    // === VERIFY SIGNER IDENTITY ===
+    component signer_hash_check = Poseidon2Hash2();
+    signer_hash_check.in[0] <== signer_public_key[0];
+    signer_hash_check.in[1] <== signer_public_key[1];
+    component signer_eq = IsEqual();
+    signer_eq.in[0] <== signer_hash_check.out;
+    signer_eq.in[1] <== signer_pubkey_hash;
+    signer_eq.out === 1;
+    
+    // === VERIFY EdDSA SIGNATURE OVER MESSAGE ===
+    signal current_nonce;
+    current_nonce <== previous_nonce + 1;
+    // message = Poseidon2(Poseidon3(token_address, chain_id, amount), Poseidon2(relayer_fee_amount, current_nonce))
+    component msg_left = Poseidon2Hash3();
+    msg_left.in[0] <== token_address;
+    msg_left.in[1] <== chain_id;
+    msg_left.in[2] <== amount;
+    component msg_right = Poseidon2Hash2();
+    msg_right.in[0] <== relayer_fee_amount;
+    msg_right.in[1] <== current_nonce;
+    component msg_hash = Poseidon2Hash2();
+    msg_hash.in[0] <== msg_left.out;
+    msg_hash.in[1] <== msg_right.out;
+    
+    component eddsa_verify = EdDSAPoseidonVerifier();
+    eddsa_verify.enabled <== 1;
+    eddsa_verify.Ax <== signer_public_key[0];
+    eddsa_verify.Ay <== signer_public_key[1];
+    eddsa_verify.R8x <== signature[0];
+    eddsa_verify.R8y <== signature[1];
+    eddsa_verify.S <== signature[2];
+    eddsa_verify.M <== msg_hash.out;
     
     // Calculate previous_nonce_commitment
     component previous_nonce_commitment_hash = Poseidon2Hash3();
@@ -171,9 +209,9 @@ template AbsorbWithdraw() {
     signal final_shares;
     final_shares <== current_balance + absorbed_amount - relayer_fee_amount - amount;
     
-    // Combined balance check: current_balance + absorbed_amount >= relayer_fee_amount + amount + 1
+    // Combined balance check: current_balance + absorbed_amount >= relayer_fee_amount + amount
     signal total_required;
-    total_required <== relayer_fee_amount + amount + 1;
+    total_required <== relayer_fee_amount + amount;
     signal total_available;
     total_available <== current_balance + absorbed_amount;
     component combined_balance_check = GreaterThanOrEqualField();
@@ -198,13 +236,11 @@ template AbsorbWithdraw() {
     time_check.b <== unlocks_at;
     time_check.out === 1;
     
-    // === CALCULATE NEW NONCE ===
-    signal nonce;
-    nonce <== previous_nonce + 1;
-    
+    // === CALCULATE NEW NONCE COMMITMENT ===
+    // current_nonce = previous_nonce + 1 was already computed for EdDSA message
     component new_nonce_commitment_hash = Poseidon2Hash3();
     new_nonce_commitment_hash.in[0] <== spending_key;
-    new_nonce_commitment_hash.in[1] <== nonce;
+    new_nonce_commitment_hash.in[1] <== current_nonce;
     new_nonce_commitment_hash.in[2] <== token_address;
     new_nonce_commitment <== new_nonce_commitment_hash.out;
     

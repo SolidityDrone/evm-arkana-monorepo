@@ -15,8 +15,9 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
           "inline-flex items-center justify-center rounded-lg text-sm font-medium transition-all duration-200",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
           "disabled:pointer-events-none disabled:opacity-50 disabled:cursor-not-allowed",
+          "cursor-pointer active:scale-[0.98]",
           {
-            "bg-primary text-primary-foreground hover:bg-primary/90 shadow-md hover:shadow-lg": variant === "default",
+            "bg-primary text-primary-foreground hover:bg-primary/90 shadow-md hover:shadow-lg active:shadow-md": variant === "default",
             "border border-border/50 bg-transparent text-foreground hover:bg-secondary/50 hover:border-primary/50": variant === "outline",
             "text-muted-foreground hover:text-foreground hover:bg-secondary/50": variant === "ghost",
             "bg-destructive text-destructive-foreground hover:bg-destructive/90 shadow-md": variant === "destructive",
@@ -28,6 +29,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
           className
         )}
         ref={ref}
+        style={{ pointerEvents: 'auto', ...props.style }}
         {...props}
       />
     )

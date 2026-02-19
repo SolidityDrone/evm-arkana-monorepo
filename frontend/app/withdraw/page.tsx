@@ -16,6 +16,7 @@ import { encodeFunctionData } from 'viem';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ARKANA_MESSAGE } from '@/lib/zk-address';
 import { ProofParamsConfirmModal } from '@/components/ProofParamsConfirmModal';
+import { TwoFactorSignModal } from '@/components/TwoFactorSignModal';
 
 export default function WithdrawPage() {
     const { toast } = useToast();
@@ -60,6 +61,12 @@ export default function WithdrawPage() {
         withdrawCircuit,
         proveWithdraw,
         handleWithdraw,
+        twoFactorSignOpen,
+        setTwoFactorSignOpen,
+        twoFactorError,
+        twoFactorSigning,
+        onTwoFactorWithdrawSign,
+        twoFactorSigningRequest,
     } = useWithdraw();
 
     const { handleSign, isSigning } = useAccountSigning();
@@ -409,6 +416,17 @@ export default function WithdrawPage() {
                 txHash={txHash || relayerTxHash}
                 error={txError || proofError || relayerError || null}
                 transactionType="WITHDRAW"
+            />
+
+            {/* 2FA Sign Modal */}
+            <TwoFactorSignModal
+                open={twoFactorSignOpen}
+                onOpenChange={setTwoFactorSignOpen}
+                onSubmit={onTwoFactorWithdrawSign}
+                signingRequest={twoFactorSigningRequest}
+                operationLabel="withdrawal"
+                isSigning={twoFactorSigning}
+                error={twoFactorError}
             />
         </div>
     );

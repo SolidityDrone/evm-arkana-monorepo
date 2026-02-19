@@ -11,6 +11,15 @@ import { loadAccountData, saveTokenAccountData } from '@/lib/indexeddb';
 import { convertSharesToAssets } from '@/lib/shares-to-assets';
 import { convertAssetsToShares } from '@/lib/shares-to-assets';
 import { computePrivateKeyFromSignature, getSpendingKeyCircuit, getViewKeyFromUserKey, poseidonHash, reduceToBn254Field } from '@/lib/circuit-utils';
+import { getSignerIdentityFromUserKey, signSendMessage } from '@/lib/eddsa-circuit';
+import {
+  signingDesktopRound1,
+  signingDesktopRound2,
+  getSendMessageForThreshold,
+  decodeFrostPayload,
+  type SigningRound2,
+} from '@/lib/frost-2fa';
+import { loadTwoFactorData, type TwoFactorData } from '@/lib/indexeddb';
 import { proveWithSnarkjs } from '@/lib/circuit-prove';
 import type { Groth16Args } from '@/lib/groth16';
 import { parseZkAddress } from '@/lib/zk-address';
@@ -64,6 +73,13 @@ export function useSend() {
     const [groth16Result, setGroth16Result] = useState<Groth16Args | null>(null);
     const sendCircuitRef = useRef<'send' | 'absorb_send'>('send');
     const [sendCircuit, setSendCircuit] = useState<'send' | 'absorb_send'>('send');
+
+    // 2FA state
+    const [twoFactorSignOpen, setTwoFactorSignOpen] = useState(false);
+    const [twoFactorError, setTwoFactorError] = useState<string | null>(null);
+    const [twoFactorSigning, setTwoFactorSigning] = useState(false);
+    const twoFactorDataRef = useRef<TwoFactorData | null>(null);
+    const signingRound1Ref = useRef<{ desktopNonceScalar: string; round1Data: any } | null>(null);
     const { balanceEntries } = useAccountState();
 
     useEffect(() => {
@@ -263,7 +279,7 @@ export function useSend() {
         return () => { cancelled = true; };
     }, [publicClient, tokenAddress, availableBalance]);
 
-    const calculateCircuitInputs = useCallback(async () => {
+    const calculateCircuitInputs = useCallback(async (phonePartialSig?: SigningRound2) => {
         if (!tokenAddress || !amount || !receiverZkAddress.trim() || !relayerFeeAmount || !zkAddress || !publicClient)
             throw new Error('Missing required fields or client');
         if (tokenCurrentNonce == null) throw new Error('Token nonce not discovered');
@@ -299,11 +315,26 @@ export function useSend() {
         const userKeyBigInt = BigInt(userKeyToUse.startsWith('0x') ? userKeyToUse : '0x' + userKeyToUse);
         const chainId = BigInt(await publicClient.getChainId());
 
+        // Resolve signer identity: use stored 2FA data or derive from user_key
+        const zkAddr = zkAddress?.replace('zk', '') || '';
+        const storedTwoFactor = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
+        twoFactorDataRef.current = storedTwoFactor ?? null;
+        let sendSignerHash: string;
+        let sendSignerPk: [string, string];
+        if (storedTwoFactor?.is2FA) {
+            sendSignerHash = storedTwoFactor.signerPubkeyHash;
+            sendSignerPk = storedTwoFactor.signerPublicKey;
+        } else {
+            const sendSignerIdentity = await getSignerIdentityFromUserKey(userKeyBigInt);
+            sendSignerHash = sendSignerIdentity.signer_pubkey_hash;
+            sendSignerPk = sendSignerIdentity.signer_public_key;
+        }
+
         let previousShares: bigint, nullifierValue: bigint, unlocksAtValue: bigint;
         let previousOpType = 0;
         let sharesFromContract: bigint | undefined;
         if (tokenPreviousNonce === 0n) {
-            const sk0 = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
+            const sk0 = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, sendSignerHash);
             const nc = await poseidonHash([sk0, tokenPreviousNonce, tokenAddressBigInt]);
             const nc32 = padHex('0x' + nc.toString(16), { size: 32 }) as `0x${string}`;
             const enc = await publicClient.readContract({
@@ -322,7 +353,7 @@ export function useSend() {
         } else {
             const { poseidonCtrDecrypt } = await import('@/lib/poseidon-ctr-encryption');
             const viewKey = await getViewKeyFromUserKey(userKeyBigInt);
-            const sk = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
+            const sk = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, sendSignerHash);
             const fnc = await poseidonHash([sk, tokenPreviousNonce, tokenAddressBigInt]);
             const fnc32 = padHex('0x' + fnc.toString(16), { size: 32 }) as `0x${string}`;
             const op = await publicClient.readContract({
@@ -375,18 +406,18 @@ export function useSend() {
         } else {
             const { pedersenCommitment5 } = await import('@/lib/pedersen-commitments');
             const { computeCommitmentLeaf } = await import('@/lib/reconstructCommitment');
-            const skCommit = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
+            const skCommit = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, sendSignerHash);
             const pncCommit = await poseidonHash([skCommit, tokenPreviousNonce, tokenAddressBigInt]);
-            const sharesEnc = tokenPreviousNonce === 0n ? previousShares + 1n : previousShares;
+            const sharesEnc = previousShares; // No encoding, use 0 directly
             // After AbsorbWithdraw(5) or AbsorbSend(4), new commitment uses OLD nullifier; use old = new - noteStackM for leaf
             let nullEnc: bigint;
-            if (tokenPreviousNonce === 0n) nullEnc = nullifierValue + 1n;
+            if (tokenPreviousNonce === 0n) nullEnc = nullifierValue; // Use 0 directly, no encoding
             else if (previousOpType === 5 || previousOpType === 4) {
                 const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
                 const { noteStackM } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
                 nullEnc = nullifierValue > noteStackM ? nullifierValue - noteStackM : 0n;
             } else nullEnc = nullifierValue;
-            const unlocksEnc = tokenPreviousNonce === 0n ? unlocksAtValue + 1n : (unlocksAtValue === 0n ? 1n : unlocksAtValue);
+            const unlocksEnc = unlocksAtValue; // Use 0 directly, no encoding
             const pt = pedersenCommitment5(sharesEnc, nullEnc, skCommit, unlocksEnc, pncCommit);
             previousCommitmentLeaf = await computeCommitmentLeaf(pt, publicClient);
             const exists = await publicClient.readContract({
@@ -430,13 +461,13 @@ export function useSend() {
         const merkleProofFormatted = Array.from({ length: 32 }, (_, i) => (i < proofArr.length ? proofArr[i].toString() : '0'));
 
         const fmt = (v: bigint | string) => (typeof v === 'bigint' ? v : BigInt((v as string).startsWith('0x') ? v : '0x' + v)).toString();
-        const previousSharesEnc = tokenPreviousNonce === 0n ? previousShares + 1n : previousShares;
+        const previousSharesEnc = previousShares; // No encoding, use 0 directly
         // After AbsorbWithdraw(5) or AbsorbSend(4), the leaf was built with the OLD nullifier (circuit reused base3),
         // but the contract stored the NEW nullifier. The send circuit recomputes the leaf from inputs, so it must
         // receive the OLD nullifier to satisfy leaf_eq assertion.
         let nullifierEnc: bigint;
         if (tokenPreviousNonce === 0n) {
-            nullifierEnc = nullifierValue + 1n;
+            nullifierEnc = nullifierValue; // Use 0 directly, no encoding
         } else if (previousOpType === 5 || previousOpType === 4) {
             const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
             const { noteStackM } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
@@ -444,11 +475,11 @@ export function useSend() {
         } else {
             nullifierEnc = nullifierValue;
         }
-        const previousUnlocksEnc = tokenPreviousNonce === 0n ? unlocksAtValue + 1n : (unlocksAtValue === 0n ? 1n : unlocksAtValue);
+        const previousUnlocksEnc = unlocksAtValue; // Use 0 directly, no encoding
         const leafPassed = contractLeaves[Number(commitmentIndex)] ?? previousCommitmentLeaf;
 
-        const totalRequired = amountBigInt + relayerFeeBigInt + 1n;
-        const actualBalance = previousSharesEnc > 0n ? previousSharesEnc - 1n : 0n;
+        const totalRequired = amountBigInt + relayerFeeBigInt; // No encoding
+        const actualBalance = previousSharesEnc; // No encoding
 
         if (previousSharesEnc < totalRequired) {
             const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
@@ -500,8 +531,33 @@ export function useSend() {
                 noteStackProof = res.siblings.map(s => BigInt(s));
             }
             const noteStackMerkleFormatted = Array.from({ length: 32 }, (_, i) => (i < noteStackProof.length ? noteStackProof[i].toString() : '0'));
+            const currentNonceForAbsorbSendSig = (tokenPreviousNonce + 1n).toString();
+            let absorbSendSig: { signature: [string, string, string]; message: string };
+            if (twoFactorDataRef.current?.is2FA && phonePartialSig) {
+                const message = await getSendMessageForThreshold(
+                    tokenAddressBigInt.toString(), chainId.toString(),
+                    amountBigInt.toString(), relayerFeeBigInt.toString(),
+                    receiverX.toString(), receiverY.toString(), currentNonceForAbsorbSendSig,
+                );
+                const round1 = signingRound1Ref.current!;
+                absorbSendSig = await signingDesktopRound2(
+                    twoFactorDataRef.current.browserShare,
+                    round1.desktopNonceScalar,
+                    phonePartialSig,
+                    round1.round1Data,
+                );
+            } else {
+                absorbSendSig = await signSendMessage(
+                    userKeyBigInt, tokenAddressBigInt.toString(), chainId.toString(),
+                    amountBigInt.toString(), relayerFeeBigInt.toString(),
+                    receiverX.toString(), receiverY.toString(), currentNonceForAbsorbSendSig,
+                );
+            }
             const absorbInputs: Record<string, string | string[]> = {
                 user_key: fmt(userKeyToUse),
+                signer_pubkey_hash: sendSignerHash,
+                signer_public_key: [sendSignerPk[0], sendSignerPk[1]],
+                signature: absorbSendSig.signature,
                 amount: fmt(amountBigInt),
                 previous_nonce: tokenPreviousNonce.toString(),
                 current_balance: previousSharesEnc.toString(),
@@ -526,10 +582,35 @@ export function useSend() {
             return { circuit: 'absorb_send' as const, inputs: absorbInputs };
         }
 
+        const currentNonceForSendSig = (tokenPreviousNonce + 1n).toString();
+        let sendSig: { signature: [string, string, string]; message: string };
+        if (twoFactorDataRef.current?.is2FA && phonePartialSig) {
+            const message = await getSendMessageForThreshold(
+                tokenAddressBigInt.toString(), chainId.toString(),
+                amountBigInt.toString(), relayerFeeBigInt.toString(),
+                receiverX.toString(), receiverY.toString(), currentNonceForSendSig,
+            );
+            const round1 = signingRound1Ref.current!;
+            sendSig = await signingDesktopRound2(
+                twoFactorDataRef.current.browserShare,
+                round1.desktopNonceScalar,
+                phonePartialSig,
+                round1.round1Data,
+            );
+        } else {
+            sendSig = await signSendMessage(
+                userKeyBigInt, tokenAddressBigInt.toString(), chainId.toString(),
+                amountBigInt.toString(), relayerFeeBigInt.toString(),
+                receiverX.toString(), receiverY.toString(), currentNonceForSendSig,
+            );
+        }
         return {
             circuit: 'send' as const,
             inputs: {
                 user_key: fmt(userKeyToUse),
+                signer_pubkey_hash: sendSignerHash,
+                signer_public_key: [sendSignerPk[0], sendSignerPk[1]],
+                signature: sendSig.signature,
                 amount: fmt(amountBigInt),
                 previous_nonce: tokenPreviousNonce.toString(),
                 previous_shares: previousSharesEnc.toString(),
@@ -547,6 +628,34 @@ export function useSend() {
             },
         };
     }, [tokenAddress, amount, receiverZkAddress, relayerFeeAmount, tokenDecimals, zkAddress, publicClient, account?.signature, contextUserKey, userKey, tokenCurrentNonce, balanceEntries, fetchIncomingNotes]);
+
+    const runSendProof = useCallback(async (phonePartialSig?: SigningRound2) => {
+        try {
+            setIsProving(true);
+            setProofError(null);
+            setProvingTime(null);
+            groth16ResultRef.current = null;
+            setIsCalculatingInputs(true);
+            const start = performance.now();
+            const { circuit, inputs } = await calculateCircuitInputs(phonePartialSig);
+            setIsCalculatingInputs(false);
+            sendCircuitRef.current = circuit;
+            console.log('Send circuit (before proof):', circuit, 'inputs:', inputs);
+            const result = await proveWithSnarkjs(inputs, circuit);
+            groth16ResultRef.current = result;
+            setGroth16Result(result);
+            setSendCircuit(circuit);
+            setProof('0x01');
+            setPublicInputs(result.publicSignals ?? []);
+            setProvingTime(Math.round(performance.now() - start));
+        } catch (e) {
+            console.error('Send proof error:', e);
+            setProofError(e instanceof Error ? e.message : 'Failed to generate proof');
+        } finally {
+            setIsProving(false);
+            setIsCalculatingInputs(false);
+        }
+    }, [calculateCircuitInputs]);
 
     const proveSend = useCallback(async () => {
         if (!zkAddress) {
@@ -568,36 +677,68 @@ export function useSend() {
         try {
             const raw = receiverZkAddress.trim();
             parseZkAddress(raw);
-        } catch (e) {
+        } catch {
             setProofError('Invalid receiver zkAddress. Expected zk + 128 hex chars (x,y).');
             return;
         }
-        try {
-            setIsProving(true);
-            setProofError(null);
-            setProvingTime(null);
-            groth16ResultRef.current = null;
-            setIsCalculatingInputs(true);
-            const start = performance.now();
-            const { circuit, inputs } = await calculateCircuitInputs();
-            setIsCalculatingInputs(false);
-            sendCircuitRef.current = circuit;
-            console.log('Send circuit (before proof):', circuit, 'inputs:', inputs);
-            const result = await proveWithSnarkjs(inputs, circuit);
-            groth16ResultRef.current = result;
-            setGroth16Result(result);
-            setSendCircuit(circuit);
-            setProof('0x01');
-            setPublicInputs(result.publicSignals ?? []);
-            setProvingTime(Math.round(performance.now() - start));
-        } catch (e) {
-            console.error('Send proof error:', e);
-            setProofError(e instanceof Error ? e.message : 'Failed to generate proof');
-        } finally {
-            setIsProving(false);
-            setIsCalculatingInputs(false);
+        // Check if 2FA is active
+        const zkAddr = zkAddress?.replace('zk', '') || '';
+        const stored2FA = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
+        if (stored2FA?.is2FA) {
+            twoFactorDataRef.current = stored2FA;
+            setTwoFactorError(null);
+            
+            if (!publicClient) {
+                setProofError('Public client not available');
+                return;
+            }
+            
+            // Parse receiver zkAddress to get public key
+            const parsed = parseZkAddress(receiverZkAddress.trim());
+            const receiverX = parsed.x.toString();
+            const receiverY = parsed.y.toString();
+            
+            // Get chainId
+            const chainIdForSig = await publicClient.getChainId();
+            
+            // Generate signing round 1 (nonce + message)
+            const currentNonce = (tokenCurrentNonce + 1n).toString();
+            const message = await getSendMessageForThreshold(
+                tokenAddress, chainIdForSig.toString(),
+                amount, relayerFeeAmount, receiverX, receiverY, currentNonce,
+            );
+            const round1 = await signingDesktopRound1(message, stored2FA.signerPublicKey);
+            signingRound1Ref.current = round1;
+            
+            setTwoFactorSignOpen(true);
+            return;
         }
-    }, [zkAddress, tokenAddress, amount, receiverZkAddress, relayerFeeAmount, tokenCurrentNonce, isTokenInitialized, calculateCircuitInputs]);
+        await runSendProof();
+    }, [zkAddress, tokenAddress, amount, receiverZkAddress, relayerFeeAmount, tokenCurrentNonce, isTokenInitialized, publicClient, runSendProof]);
+
+    const onTwoFactorSendSign = useCallback(async (phoneResponse: string) => {
+        setTwoFactorSigning(true);
+        setTwoFactorError(null);
+        try {
+            const decoded = decodeFrostPayload(phoneResponse.trim());
+            if (!decoded || decoded.type !== 'signing-response') {
+                setTwoFactorError('Invalid response from phone. Expected partial signature.');
+                setTwoFactorSigning(false);
+                return;
+            }
+            const phonePartialSig: SigningRound2 = {
+                phoneNonce: decoded.phoneNonce,
+                phonePartialSig: decoded.phonePartialSig,
+            };
+            setTwoFactorSignOpen(false);
+            await runSendProof(phonePartialSig);
+        } catch (err: any) {
+            setTwoFactorError(err?.message || 'Signing failed. Check the phone response.');
+            setTwoFactorSignOpen(true);
+        } finally {
+            setTwoFactorSigning(false);
+        }
+    }, [runSendProof]);
 
     const handleSend = useCallback(async () => {
         const groth16 = groth16ResultRef.current;
@@ -712,5 +853,12 @@ export function useSend() {
         proveSend,
         handleSend,
         balanceEntries,
+        // 2FA
+        twoFactorSignOpen,
+        setTwoFactorSignOpen,
+        twoFactorError,
+        twoFactorSigning,
+        onTwoFactorSendSign,
+        twoFactorSigningRequest: signingRound1Ref.current?.round1Data || null,
     };
 }

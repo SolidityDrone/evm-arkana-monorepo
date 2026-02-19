@@ -78,6 +78,7 @@ async function testFrostEntryDepositWithdrawFlow() {
 
     const entryInput = {
         user_key: frostUserKey,
+        signer_pubkey_hash,
         token_address: hexToDecimal('0x7775e4b6f4d40be537b55b6c47e09ada0157bd'),
         chain_id: hexToDecimal('0x01')
     };
@@ -125,13 +126,14 @@ async function testFrostEntryDepositWithdrawFlow() {
     const depositAmount = hexToDecimal('0x32'); // 50
     const depositInput = {
         user_key: entryInput.user_key,
+        signer_pubkey_hash,
         token_address: entryInput.token_address,
         amount: depositAmount,
         chain_id: entryInput.chain_id,
         previous_nonce: '0',
-        previous_shares: '1',
-        nullifier: '1',
-        previous_unlocks_at: '1',
+        previous_shares: '0',
+        nullifier: '0',
+        previous_unlocks_at: '0',
         previous_commitment_leaf: entryLeaf,
         commitment_index: '0',
         tree_depth: treeDepth.toString(),
@@ -167,7 +169,7 @@ async function testFrostEntryDepositWithdrawFlow() {
     // === STEP 6: Run Withdraw Circuit (signed with FROST-derived key) ===
     console.log('STEP 6: Running Withdraw Circuit (signature from FROST-derived Baby Jubjub key)...');
     const withdrawAmount = hexToDecimal('0x31'); // 49
-    const previousShares = (BigInt(1) + BigInt(depositAmount)).toString();
+    const previousShares = BigInt(depositAmount).toString(); // Shares after deposit (no encoding)
     const relayerFeeAmount = '1';
 
     const currentNonceForWithdraw = '2'; // previous_nonce is 1, sign with current_nonce = previous + 1
@@ -183,6 +185,9 @@ async function testFrostEntryDepositWithdrawFlow() {
 
     const withdrawInput = {
         user_key: entryInput.user_key,
+        signer_pubkey_hash,
+        signer_public_key,
+        signature,
         token_address: entryInput.token_address,
         amount: withdrawAmount,
         chain_id: entryInput.chain_id,

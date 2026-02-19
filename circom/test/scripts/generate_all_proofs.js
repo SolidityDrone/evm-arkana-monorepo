@@ -286,9 +286,9 @@ async function getInputsFromFlow(circuitName, sharedState = {}) {
             amount: depositAmount,
             chain_id: chainId,
             previous_nonce: "0",
-            previous_shares: "1",
-            nullifier: "1",
-            previous_unlocks_at: "1",
+            previous_shares: "0",
+            nullifier: "0",
+            previous_unlocks_at: "0",
             previous_commitment_leaf: entry.leaf,
             commitment_index: "0",
             tree_depth: entry.treeDepth.toString(),
@@ -331,7 +331,7 @@ async function getInputsFromFlow(circuitName, sharedState = {}) {
     const depositMerkleProof = await generateMerkleProof(deposit.leaf, 1, deposit.treeDepth, deposit.allLeaves, deposit.treeSize, hashWrapper);
     // Calculate previousShares based on actual deposit amount used
     const depositAmountUsed = deposit.input.amount;
-    const previousShares = (BigInt(1) + BigInt(depositAmountUsed)).toString();
+            const previousShares = BigInt(depositAmountUsed).toString(); // Shares after deposit (no encoding)
 
     if (circuitName === 'withdraw') {
         return {

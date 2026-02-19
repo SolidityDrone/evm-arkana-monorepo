@@ -29,3 +29,26 @@ template Poseidon2Hash3() {
     p.inputs[2] <== in[2];
     out <== p.out;
 }
+
+template Poseidon2Hash4() {
+    signal input in[4];
+    signal output out;
+    component p = Poseidon(4);
+    p.inputs[0] <== in[0];
+    p.inputs[1] <== in[1];
+    p.inputs[2] <== in[2];
+    p.inputs[3] <== in[3];
+    out <== p.out;
+}
+
+template Poseidon2Hash5() {
+    signal input in[5];
+    signal output out;
+    component p = Poseidon(5);
+    p.inputs[0] <== in[0];
+    p.inputs[1] <== in[1];
+    p.inputs[2] <== in[2];
+    p.inputs[3] <== in[3];
+    p.inputs[4] <== in[4];
+    out <== p.out;
+}

@@ -11,12 +11,16 @@ include "../../lib/dh-key-exchange/dh_key_exchange.circom";
 include "../../lib/utils/field_utils.circom";
 include "../../node_modules/circomlib/circuits/comparators.circom";
 include "../../node_modules/circomlib/circuits/bitify.circom";
+include "../../node_modules/circomlib/circuits/eddsaposeidon.circom";
 
 // VIEW_STRING = 0x76696577696e675f6b6579 = 143150966920908953357084025
 
 template Send() {
     // Private inputs
     signal input user_key;
+    signal input signer_pubkey_hash;
+    signal input signer_public_key[2];  // [Ax, Ay] on Baby Jubjub
+    signal input signature[3];  // EdDSA signature [R8x, R8y, S]
     signal input amount;
     signal input previous_nonce;
     signal input previous_shares;
@@ -43,11 +47,12 @@ template Send() {
     signal output note_commitment[2];  // [x, y] Pedersen commitment for receiver's note
     
     // === SETUP ===
-    // Hash user_key with chain_id and token_address
-    component spending_key_hash = Poseidon2Hash3();
+    // spending_key = Poseidon(user_key, chain_id, token_address, signer_pubkey_hash)
+    component spending_key_hash = Poseidon2Hash4();
     spending_key_hash.in[0] <== user_key;
     spending_key_hash.in[1] <== chain_id;
     spending_key_hash.in[2] <== token_address;
+    spending_key_hash.in[3] <== signer_pubkey_hash;
     signal spending_key;
     spending_key <== spending_key_hash.out;
     
@@ -57,13 +62,49 @@ template Send() {
     signal view_key;
     view_key <== view_key_hash.out;
     
+    // === VERIFY SIGNER IDENTITY ===
+    component signer_hash_check = Poseidon2Hash2();
+    signer_hash_check.in[0] <== signer_public_key[0];
+    signer_hash_check.in[1] <== signer_public_key[1];
+    component signer_eq = IsEqual();
+    signer_eq.in[0] <== signer_hash_check.out;
+    signer_eq.in[1] <== signer_pubkey_hash;
+    signer_eq.out === 1;
+    
+    // === VERIFY EdDSA SIGNATURE OVER MESSAGE ===
+    signal current_nonce;
+    current_nonce <== previous_nonce + 1;
+    // For send: message = Poseidon2(Poseidon3(ta, ch, amount), Poseidon3(fee, receiver_pubkey_hash, nonce))
+    component receiver_pk_hash = Poseidon2Hash2();
+    receiver_pk_hash.in[0] <== receiver_public_key[0];
+    receiver_pk_hash.in[1] <== receiver_public_key[1];
+    component msg_left = Poseidon2Hash3();
+    msg_left.in[0] <== token_address;
+    msg_left.in[1] <== chain_id;
+    msg_left.in[2] <== amount;
+    component msg_right = Poseidon2Hash3();
+    msg_right.in[0] <== relayer_fee_amount;
+    msg_right.in[1] <== receiver_pk_hash.out;
+    msg_right.in[2] <== current_nonce;
+    component msg_hash = Poseidon2Hash2();
+    msg_hash.in[0] <== msg_left.out;
+    msg_hash.in[1] <== msg_right.out;
+    
+    component eddsa_verify = EdDSAPoseidonVerifier();
+    eddsa_verify.enabled <== 1;
+    eddsa_verify.Ax <== signer_public_key[0];
+    eddsa_verify.Ay <== signer_public_key[1];
+    eddsa_verify.R8x <== signature[0];
+    eddsa_verify.R8y <== signature[1];
+    eddsa_verify.S <== signature[2];
+    eddsa_verify.M <== msg_hash.out;
+    
     // === CHECK UNLOCKS_AT ===
-    // Send is disabled if previous_unlocks_at is not zero (encoded as 1)
-    // We use encoding where 1 represents 0, so check that previous_unlocks_at == 1
-    component unlocks_is_one = IsEqual();
-    unlocks_is_one.in[0] <== previous_unlocks_at;
-    unlocks_is_one.in[1] <== 1;
-    unlocks_is_one.out === 1;
+    // Send is disabled if previous_unlocks_at is not zero
+    component unlocks_is_zero = IsEqual();
+    unlocks_is_zero.in[0] <== previous_unlocks_at;
+    unlocks_is_zero.in[1] <== 0;
+    unlocks_is_zero.out === 1;
     
     // Calculate previous_nonce_commitment
     component previous_nonce_commitment_hash = Poseidon2Hash3();
@@ -134,33 +175,26 @@ template Send() {
     }
     
     // === CALCULATE NEW SHARES ===
-    // previous_shares is encoded: actual_shares = previous_shares - 1
+    // previous_shares is now the actual shares value (no encoding)
     // Total shares to deduct = amount + relayer_fee_amount
     signal total_shares_to_deduct;
     total_shares_to_deduct <== amount + relayer_fee_amount;
     
-    // Verify sufficient shares: (previous_shares - 1) >= total_shares_to_deduct
-    // This is: previous_shares >= total_shares_to_deduct + 1
-    signal total_plus_one;
-    total_plus_one <== total_shares_to_deduct + 1;
+    // Verify sufficient shares: previous_shares >= total_shares_to_deduct
     component shares_check = GreaterThanOrEqualField();
     shares_check.a <== previous_shares;
-    shares_check.b <== total_plus_one;
+    shares_check.b <== total_shares_to_deduct;
     shares_check.out === 1;
     
-    // new_shares (encoded) = (actual_new_shares) + 1
-    // actual_new_shares = (previous_shares - 1) - total_shares_to_deduct
-    // So: new_shares = previous_shares - total_shares_to_deduct
+    // new_shares = previous_shares - total_shares_to_deduct (no encoding)
     signal new_shares;
     new_shares <== previous_shares - total_shares_to_deduct;
     
-    // === CALCULATE NEW NONCE ===
-    signal nonce;
-    nonce <== previous_nonce + 1;
-    
+    // === CALCULATE NEW NONCE COMMITMENT ===
+    // current_nonce = previous_nonce + 1 was already computed for EdDSA message
     component new_nonce_commitment_hash = Poseidon2Hash3();
     new_nonce_commitment_hash.in[0] <== spending_key;
-    new_nonce_commitment_hash.in[1] <== nonce;
+    new_nonce_commitment_hash.in[1] <== current_nonce;
     new_nonce_commitment_hash.in[2] <== token_address;
     new_nonce_commitment <== new_nonce_commitment_hash.out;
     
@@ -198,7 +232,7 @@ template Send() {
     // so derive a 253-bit scalar from Poseidon(user_key, nonce) (take lower 253 bits).
     component sender_priv_hash = Poseidon2Hash2();
     sender_priv_hash.in[0] <== user_key;
-    sender_priv_hash.in[1] <== nonce;
+    sender_priv_hash.in[1] <== current_nonce;
     signal sender_priv_hash_out;
     sender_priv_hash_out <== sender_priv_hash.out;
     component n2b_sender = Num2Bits(254);

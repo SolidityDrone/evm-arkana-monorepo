@@ -31,10 +31,13 @@ export function EdDSASignModal({
     };
 
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
+        <Dialog 
+            open={open} 
+            onOpenChange={onOpenChange}
+            onPointerDownOutside={(e) => !isSigning && onOpenChange(false)}
+        >
             <DialogContent
                 className="max-w-sm w-[33vw] min-w-[320px] bg-card/95 backdrop-blur-sm border-primary/30 mx-auto"
-                onPointerDownOutside={(e) => !isSigning && onOpenChange(false)}
             >
                 <DialogHeader className="pb-3">
                     <DialogTitle
