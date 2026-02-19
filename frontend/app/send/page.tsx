@@ -14,6 +14,9 @@ import { TokenIcon } from '@/lib/token-icons';
 import { parseZkAddress, validateZkAddress } from '@/lib/zk-address';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { QrCode } from 'lucide-react';
+import { ProofParamsConfirmModal } from '@/components/ProofParamsConfirmModal';
+import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
+import { encodeFunctionData } from 'viem';
 
 export default function SendPage() {
     const { toast } = useToast();
@@ -50,6 +53,7 @@ export default function SendPage() {
         isCalculatingInputs,
         canAbsorb,
         groth16Result,
+        sendCircuit,
         proveSend,
         handleSend,
     } = useSend();
@@ -61,6 +65,10 @@ export default function SendPage() {
     const [showQrPasteModal, setShowQrPasteModal] = useState(false);
     const [qrPasteValue, setQrPasteValue] = useState('');
     const [qrPasteError, setQrPasteError] = useState<string | null>(null);
+    const [showProofConfirmModal, setShowProofConfirmModal] = useState(false);
+    const [isRelayerSubmitting, setIsRelayerSubmitting] = useState(false);
+    const [relayerTxHash, setRelayerTxHash] = useState<string | null>(null);
+    const [relayerError, setRelayerError] = useState<string | null>(null);
 
     React.useEffect(() => {
         if (isProving || isPending || isConfirming || isConfirmed) setShowTransactionModal(true);
@@ -71,6 +79,49 @@ export default function SendPage() {
     React.useEffect(() => {
         if (txError) setShowTransactionModal(true);
     }, [txError]);
+    React.useEffect(() => {
+        if (isRelayerSubmitting || relayerTxHash) setShowTransactionModal(true);
+    }, [isRelayerSubmitting, relayerTxHash]);
+
+    const handleSendViaRelayer = React.useCallback(async () => {
+        if (!groth16Result?.publicSignals || groth16Result.publicSignals.length < 17) {
+            setRelayerError('Proof and public inputs required');
+            return;
+        }
+        try {
+            setIsRelayerSubmitting(true);
+            setRelayerError(null);
+            setRelayerTxHash(null);
+            setShowTransactionModal(true);
+            const pA: [bigint, bigint] = [BigInt(groth16Result.pA[0]), BigInt(groth16Result.pA[1])];
+            const pB: [[bigint, bigint], [bigint, bigint]] = [
+                [BigInt(groth16Result.pB[0][0]), BigInt(groth16Result.pB[0][1])],
+                [BigInt(groth16Result.pB[1][0]), BigInt(groth16Result.pB[1][1])],
+            ];
+            const pC: [bigint, bigint] = [BigInt(groth16Result.pC[0]), BigInt(groth16Result.pC[1])];
+            const publicSignals = groth16Result.publicSignals.slice(0, 17).map((s: string) => BigInt(s)) as [
+                bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint
+            ];
+            const calldata = encodeFunctionData({
+                abi: ArkanaAbi,
+                functionName: sendCircuit === 'absorb_send' ? 'absorbSend' : 'send',
+                args: [pA, pB, pC, publicSignals],
+            });
+            const response = await fetch('/api/relayer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ to: ArkanaAddress, data: calldata, gasLimit: '3000000' }),
+            });
+            const result = await response.json();
+            if (!response.ok || !result.success) throw new Error(result.error || 'Relayer request failed');
+            setRelayerTxHash(result.hash);
+            toast('SEND TRANSACTION CONFIRMED (VIA RELAYER)', 'success');
+        } catch (e) {
+            setRelayerError(e instanceof Error ? e.message : 'Failed to send via relayer');
+        } finally {
+            setIsRelayerSubmitting(false);
+        }
+    }, [groth16Result, sendCircuit, toast]);
 
     const formatBalance = (balance: bigint | null, decimals: number | null): string => {
         if (balance === null || decimals === null) return '0';
@@ -260,13 +311,37 @@ export default function SendPage() {
                                                     )}
 
                                                     {!proof ? (
-                                                        <SpellButton onClick={proveSend} disabled={isProving || isCalculatingInputs || !tokenAddress || !amount || !receiverZkAddress.trim() || !relayerFeeAmount || !receiverZkValidation.valid || tokenCurrentNonce === null || isTokenInitialized === false} variant="primary" className="w-full text-xs sm:text-sm">
-                                                            {isCalculatingInputs ? 'CALCULATING INPUTS...' : isProving ? `GENERATING PROOF... (${currentProvingTime}MS)` : isTokenInitialized === false ? 'TOKEN NOT INITIALIZED' : 'GENERATE SEND PROOF'}
-                                                        </SpellButton>
+                                                        <>
+                                                            <SpellButton onClick={() => setShowProofConfirmModal(true)} disabled={isProving || isCalculatingInputs || !tokenAddress || !amount || !receiverZkAddress.trim() || !relayerFeeAmount || !receiverZkValidation.valid || tokenCurrentNonce === null || isTokenInitialized === false} variant="primary" className="w-full text-xs sm:text-sm">
+                                                                {isCalculatingInputs ? 'CALCULATING INPUTS...' : isProving ? `GENERATING PROOF... (${currentProvingTime}MS)` : isTokenInitialized === false ? 'TOKEN NOT INITIALIZED' : 'GENERATE SEND PROOF'}
+                                                            </SpellButton>
+                                                            <ProofParamsConfirmModal
+                                                                open={showProofConfirmModal}
+                                                                onOpenChange={setShowProofConfirmModal}
+                                                                onConfirm={proveSend}
+                                                                title="Confirm EdDSA signing (send)"
+                                                                description="You are about to generate a proof that commits to the following parameters. This step uses your EdDSA identity. Verify everything before confirming."
+                                                                params={[
+                                                                    { label: 'Token', value: tokenSymbol ? `${tokenSymbol} (${tokenAddress.slice(0, 10)}…)` : tokenAddress, mono: false },
+                                                                    { label: 'Amount', value: amount || '—', mono: false },
+                                                                    { label: 'Receiver (zk)', value: receiverZkAddress.trim() ? `${receiverZkAddress.trim().slice(0, 14)}…${receiverZkAddress.trim().slice(-10)}` : '—', mono: true },
+                                                                    { label: 'Relayer fee', value: relayerFeeAmount || '—', mono: false },
+                                                                    { label: 'Next nonce', value: tokenCurrentNonce != null ? tokenCurrentNonce.toString() : '—', mono: true },
+                                                                ]}
+                                                                disclaimer="Verify that these parameters are correct before confirming. By confirming you authorize generating a zero-knowledge proof that commits to these values (EdDSA signing)."
+                                                                confirmLabel="Confirm & generate proof"
+                                                                isSigning={isProving}
+                                                            />
+                                                        </>
                                                     ) : (
-                                                        <SpellButton onClick={handleSend} disabled={isPending || isConfirming || isSubmitting || isSimulating} variant="primary" className="w-full text-xs sm:text-sm">
-                                                            {isSimulating ? 'SIMULATING...' : isPending || isSubmitting ? 'PREPARING...' : isConfirming ? 'CONFIRMING...' : 'SEND TRANSACTION'}
-                                                        </SpellButton>
+                                                        <div className="space-y-2">
+                                                            <SpellButton onClick={handleSendViaRelayer} disabled={!groth16Result || isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting} variant="primary" className="w-full text-xs sm:text-sm">
+                                                                {isRelayerSubmitting ? 'SENDING VIA RELAYER...' : relayerTxHash ? '✓ SENT VIA RELAYER' : 'SEND TO RELAYER'}
+                                                            </SpellButton>
+                                                            <SpellButton onClick={handleSend} disabled={isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting} variant="secondary" className="w-full text-xs sm:text-sm">
+                                                                {isSimulating ? 'SIMULATING...' : isPending || isSubmitting ? 'PREPARING...' : isConfirming ? 'CONFIRMING...' : 'SEND YOURSELF (TEST)'}
+                                                            </SpellButton>
+                                                        </div>
                                                     )}
                                                 </div>
                                             </CardContent>
@@ -313,11 +388,11 @@ export default function SendPage() {
                 isOpen={showTransactionModal}
                 onClose={() => setShowTransactionModal(false)}
                 isProving={isProving}
-                isPending={isPending || isSubmitting}
+                isPending={isPending || isSubmitting || isRelayerSubmitting}
                 isConfirming={isConfirming}
-                isConfirmed={isConfirmed}
-                txHash={txHash}
-                error={txError || proofError || null}
+                isConfirmed={isConfirmed || !!relayerTxHash}
+                txHash={txHash || relayerTxHash}
+                error={txError || proofError || relayerError || null}
                 transactionType="SEND"
             />
 

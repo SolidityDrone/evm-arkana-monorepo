@@ -202,12 +202,12 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
             if (savedData) {
                 const savedMode = savedData.discoveryMode || 'mage';
                 setDiscoveryMode(savedMode);
-                
+
                 const tokenMap = new Map<string, TokenAccountData>();
 
                 // Load mode-specific token data
-                const modeTokenData = savedMode === 'mage' 
-                    ? savedData.mageTokenData 
+                const modeTokenData = savedMode === 'mage'
+                    ? savedData.mageTokenData
                     : savedData.archonTokenData;
 
                 if (modeTokenData && modeTokenData.length > 0) {
@@ -601,7 +601,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                             tokenData.balanceEntries,
                             mode,
                             notes
-                        ).catch(() => {});
+                        ).catch(() => { });
                     }
                 }
             }
@@ -700,7 +700,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                             const tokenInfo = aaveTokens.find(t => t.address.toLowerCase() === tokenAddress.toLowerCase());
                                             const tokenName = tokenInfo?.name || 'Unknown Token';
                                             const tokenSymbol = tokenInfo?.symbol || tokenAddress.slice(0, 6) + '...' + tokenAddress.slice(-4);
-                                            
+
                                             // Find the current balance (highest nonce entry)
                                             const currentNonce = tokenData.currentNonce || BigInt(0);
                                             const previousNonce = currentNonce > BigInt(0) ? currentNonce - BigInt(1) : BigInt(0);
@@ -708,295 +708,431 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                                 const entryNonce = typeof entry.nonce === 'string' ? BigInt(entry.nonce) : entry.nonce;
                                                 return entryNonce === previousNonce;
                                             });
-                                            
+
+
                                             return (
-                                                <div key={tokenAddress} className="border border-border/40 rounded-xl p-3 sm:p-4">
-                                                    <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3">
-                                                        <div className="flex-1 min-w-0">
-                                                            <div className="flex items-center gap-2 mb-1">
+                                                <div
+                                                    key={tokenAddress}
+                                                    className="rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-sm overflow-hidden"
+                                                >
+                                                    {/* ── Card Header ─────────────────────────────────────────────────── */}
+                                                    <div className="flex items-center justify-between px-4 pt-4 pb-3">
+                                                        {/* Left: icon + name + address */}
+                                                        <div className="flex items-center gap-3 min-w-0">
+                                                            <div className="shrink-0 w-8 h-8 rounded-full bg-white/[0.08] flex items-center justify-center">
                                                                 <TokenIcon symbol={tokenSymbol} size={20} />
-                                                                <p className="text-sm font-semibold text-foreground">
-                                                                    {tokenSymbol}
-                                                                </p>
                                                             </div>
-                                                            <p className="text-xs text-muted-foreground truncate">
-                                                                {tokenName}
-                                                            </p>
-                                                            <p className="text-[9px] sm:text-[10px] font-mono text-muted-foreground/50 mt-1 truncate">
-                                                                {tokenAddress.slice(0, 10)}...{tokenAddress.slice(-8)}
-                                                            </p>
-                                                            <p className="text-[10px] sm:text-xs text-muted-foreground mt-2">
-                                                                Nonce: {tokenData.currentNonce?.toString() || 'N/A'}
-                                                                {incomingNotesCountMap.has(tokenAddress) && (
-                                                                    <span className="ml-2 text-primary">
-                                                                        · Incoming: {incomingNotesCountMap.get(tokenAddress)}
+                                                            <div className="min-w-0">
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="text-sm font-semibold text-white tracking-tight">
+                                                                        {tokenSymbol}
                                                                     </span>
+                                                                    <span className="text-[10px] font-mono text-white/30 truncate">
+                                                                        {tokenAddress.slice(0, 8)}…{tokenAddress.slice(-6)}
+                                                                    </span>
+                                                                </div>
+                                                                <div className="flex items-center gap-2 mt-0.5">
+                                                                    <span className="text-[11px] text-white/40">{tokenName}</span>
+                                                                    <span className="text-white/20 text-[10px]">·</span>
+                                                                    <span className="text-[11px] text-white/40">
+                                                                        Nonce&nbsp;
+                                                                        <span className="text-white/60 font-mono">
+                                                                            {tokenData.currentNonce?.toString() ?? "—"}
+                                                                        </span>
+                                                                    </span>
+                                                                    {incomingNotesCountMap.has(tokenAddress) && (
+                                                                        <>
+                                                                            <span className="text-white/20 text-[10px]">·</span>
+                                                                            <span className="text-[11px] text-violet-400/80">
+                                                                                {incomingNotesCountMap.get(tokenAddress)} incoming
+                                                                            </span>
+                                                                        </>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Right: action buttons */}
+                                                        <div className="flex items-center gap-1.5 shrink-0 ml-3">
+                                                            <button
+                                                                onClick={() => handleDiscoverToken(tokenAddress)}
+                                                                disabled={isDiscoveringTokens.has(tokenAddress)}
+                                                                className="
+              h-7 px-3 rounded-lg text-[11px] font-medium
+              border border-white/10 bg-white/[0.04] text-white/60
+              hover:bg-white/[0.08] hover:text-white/90 hover:border-white/20
+              disabled:opacity-40 disabled:cursor-not-allowed
+              transition-all duration-150
+            "
+                                                            >
+                                                                {isDiscoveringTokens.has(tokenAddress) ? (
+                                                                    <span className="opacity-60">…</span>
+                                                                ) : (
+                                                                    "Refresh"
                                                                 )}
-                                                            </p>
-                                                            {/* Available balance (current state) */}
-                                                            {currentBalanceEntry && (() => {
-                                                                const assetKey = `${tokenAddress.toLowerCase()}-${previousNonce.toString()}`;
-                                                                const convertedValue = convertedAssets.get(assetKey);
-                                                                const isConverting = isConvertingAssets.has(assetKey);
-                                                                const decimals = tokenInfo?.decimals || 18;
-                                                                return (
-                                                                    <div className="text-[10px] sm:text-xs text-foreground font-semibold mt-1">
-                                                                        <p className="text-muted-foreground text-[9px] uppercase tracking-wider">available</p>
-                                                                        <p className="break-words">{currentBalanceEntry.amount.toString()} shares</p>
+                                                            </button>
+                                                            <button
+                                                                onClick={() => toggleHistory(tokenAddress)}
+                                                                disabled={loadingHistoryToken === tokenAddress}
+                                                                className="
+              h-7 px-3 rounded-lg text-[11px] font-medium
+              border border-white/10 bg-white/[0.04] text-white/60
+              hover:bg-white/[0.08] hover:text-white/90 hover:border-white/20
+              disabled:opacity-40 disabled:cursor-not-allowed
+              transition-all duration-150
+              flex items-center gap-1
+            "
+                                                            >
+                                                                <Clock size={11} className="opacity-60" />
+                                                                {loadingHistoryToken === tokenAddress
+                                                                    ? "…"
+                                                                    : expandedHistoryToken === tokenAddress.toLowerCase()
+                                                                        ? "Hide"
+                                                                        : "History"}
+                                                            </button>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* ── Balance Body ────────────────────────────────────────────────── */}
+                                                    <div className="px-4 pb-4 space-y-2">
+
+                                                        {/* Available balance pill */}
+                                                        {currentBalanceEntry && (() => {
+                                                            const assetKey = `${tokenAddress.toLowerCase()}-${previousNonce.toString()}`;
+                                                            const convertedValue = convertedAssets.get(assetKey);
+                                                            const isConverting = isConvertingAssets.has(assetKey);
+                                                            const decimals = tokenInfo?.decimals || 18;
+                                                            return (
+                                                                <div className="rounded-lg bg-white/[0.04] border border-white/[0.06] px-3 py-2.5 flex items-center justify-between gap-4">
+                                                                    <div>
+                                                                        <p className="text-[9px] font-semibold uppercase tracking-widest text-white/30 mb-0.5">
+                                                                            Available
+                                                                        </p>
+                                                                        <p className="text-[11px] font-mono text-white/50">
+                                                                            {currentBalanceEntry.amount.toString()}{" "}
+                                                                            <span className="text-white/25">shares</span>
+                                                                        </p>
+                                                                    </div>
+                                                                    <div className="text-right">
                                                                         {convertedValue !== undefined ? (
-                                                                            <p className="text-primary mt-0.5 text-sm sm:text-base font-bold">
-                                                                                ≈ {formatTokenValue(convertedValue, decimals)} {tokenSymbol}
+                                                                            <p className="text-base font-semibold text-violet-300 tracking-tight">
+                                                                                ≈&thinsp;{formatTokenValue(convertedValue, decimals)}{" "}
+                                                                                <span className="text-sm">{tokenSymbol}</span>
                                                                             </p>
                                                                         ) : isConverting ? (
-                                                                            <p className="text-muted-foreground mt-0.5">Converting...</p>
+                                                                            <p className="text-xs text-white/30 italic">converting…</p>
                                                                         ) : null}
                                                                     </div>
-                                                                );
-                                                            })()}
-                                                            {/* To be absorbed: sum of incoming note shares minus nullifier (already absorbed) = absorbable */}
-                                                            {incomingNotesByToken.get(tokenAddress) && incomingNotesByToken.get(tokenAddress)!.length > 0 && (() => {
+                                                                </div>
+                                                            );
+                                                        })()}
+
+                                                        {/* Incoming / To-be-absorbed block */}
+                                                        {incomingNotesByToken.get(tokenAddress) &&
+                                                            incomingNotesByToken.get(tokenAddress)!.length > 0 &&
+                                                            (() => {
                                                                 const notes = incomingNotesByToken.get(tokenAddress)!;
                                                                 const sumShares = notes.reduce((acc, n) => acc + n.amount, BigInt(0));
-                                                                const nullifier = (currentBalanceEntry as { nullifier?: bigint } | undefined)?.nullifier ?? BigInt(0);
-                                                                const absorbableShares = sumShares > nullifier ? sumShares - nullifier : BigInt(0);
+                                                                const nullifier =
+                                                                    (currentBalanceEntry as { nullifier?: bigint } | undefined)
+                                                                        ?.nullifier ?? BigInt(0);
+                                                                const absorbableShares =
+                                                                    sumShares > nullifier ? sumShares - nullifier : BigInt(0);
                                                                 const absorbableKey = `${tokenAddress.toLowerCase()}-absorbable`;
                                                                 const absorbableConverted = convertedAssets.get(absorbableKey);
                                                                 const absorbableConverting = isConvertingAssets.has(absorbableKey);
                                                                 const decimals = tokenInfo?.decimals || 18;
+
                                                                 return (
-                                                                    <div className="text-[10px] sm:text-xs mt-2 pt-2 border-t border-border/40">
-                                                                        <p className="text-muted-foreground text-[9px] uppercase tracking-wider">to be absorbed</p>
-                                                                        <p className="break-words">sum of {notes.length} note{notes.length !== 1 ? 's' : ''}: {sumShares.toString()} shares</p>
-                                                                        {nullifier > BigInt(0) && (
-                                                                            <p className="text-muted-foreground text-[9px]">minus nullifier (already absorbed): {nullifier.toString()} → absorbable: {absorbableShares.toString()} shares</p>
-                                                                        )}
-                                                                        <p className="break-words font-medium text-foreground mt-0.5">absorbable: {absorbableShares.toString()} shares</p>
-                                                                        {absorbableConverted !== undefined ? (
-                                                                            <p className="text-primary mt-0.5 font-semibold">≈ {formatTokenValue(absorbableConverted, decimals)} {tokenSymbol}</p>
-                                                                        ) : absorbableConverting ? (
-                                                                            <p className="text-muted-foreground mt-0.5">…</p>
-                                                                        ) : null}
+                                                                    <div className="rounded-lg bg-amber-500/[0.05] border border-amber-500/[0.15] px-3 py-2.5">
+                                                                        <div className="flex items-center justify-between gap-4">
+                                                                            <div className="min-w-0">
+                                                                                <p className="text-[9px] font-semibold uppercase tracking-widest text-amber-400/60 mb-0.5">
+                                                                                    To Be Absorbed
+                                                                                </p>
+                                                                                <p className="text-[11px] font-mono text-white/50">
+                                                                                    {notes.length} note{notes.length !== 1 ? "s" : ""}
+                                                                                    <span className="text-white/25 mx-1.5">·</span>
+                                                                                    {sumShares.toString()}{" "}
+                                                                                    <span className="text-white/25">shares</span>
+                                                                                </p>
+                                                                                {nullifier > BigInt(0) && (
+                                                                                    <p className="text-[10px] font-mono text-white/30 mt-0.5">
+                                                                                        Nullifier&nbsp;
+                                                                                        <span className="text-white/20">{nullifier.toString()}</span>
+                                                                                        <span className="text-white/20 mx-1">→</span>
+                                                                                        Absorbable&nbsp;
+                                                                                        <span className="text-white/40">
+                                                                                            {absorbableShares.toString()} shares
+                                                                                        </span>
+                                                                                    </p>
+                                                                                )}
+                                                                            </div>
+                                                                            <div className="text-right shrink-0">
+                                                                                {absorbableConverted !== undefined ? (
+                                                                                    <p className="text-base font-semibold text-amber-300 tracking-tight">
+                                                                                        ≈&thinsp;{formatTokenValue(absorbableConverted, decimals)}{" "}
+                                                                                        <span className="text-sm">{tokenSymbol}</span>
+                                                                                    </p>
+                                                                                ) : absorbableConverting ? (
+                                                                                    <p className="text-xs text-white/30 italic">…</p>
+                                                                                ) : null}
+                                                                            </div>
+                                                                        </div>
                                                                     </div>
                                                                 );
                                                             })()}
-                                                            <details className="mt-2">
-                                                                {(() => {
-                                                                    // Remove duplicates by keeping the last entry for each nonce (fixes wrong count when duplicates exist)
-                                                                    const uniqueEntries = new Map<string | bigint, typeof tokenData.balanceEntries[0]>();
-                                                                    for (const entry of tokenData.balanceEntries) {
-                                                                        uniqueEntries.set(entry.nonce, entry);
-                                                                    }
-                                                                    const sortedEntries = Array.from(uniqueEntries.values()).sort((a, b) => {
-                                                                        const nonceA = typeof a.nonce === 'string' ? BigInt(a.nonce) : a.nonce;
-                                                                        const nonceB = typeof b.nonce === 'string' ? BigInt(b.nonce) : b.nonce;
-                                                                        if (nonceA < nonceB) return -1;
-                                                                        if (nonceA > nonceB) return 1;
-                                                                        return 0;
-                                                                    });
-                                                                    const decimals = tokenInfo?.decimals || 18;
-                                                                    return (
-                                                                        <>
-                                                                        <summary className="text-[10px] sm:text-xs text-muted-foreground cursor-pointer hover:text-foreground">
-                                                                            {sortedEntries.length} balance entries
-                                                                        </summary>
-                                                                        {sortedEntries.length > 0 && (
-                                                                        <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
-                                                                            {sortedEntries.map((entry) => {
-                                                                                const entryNonce = typeof entry.nonce === 'string' ? BigInt(entry.nonce) : entry.nonce;
-                                                                                const isCurrent = entryNonce === previousNonce;
-                                                                                const assetKey = `${tokenAddress.toLowerCase()}-${entryNonce.toString()}`;
-                                                                                const convertedValue = convertedAssets.get(assetKey);
-                                                                                const isConverting = isConvertingAssets.has(assetKey);
-                                                                                
-                                                                                return (
-                                                                                    <div 
-                                                                                        key={`${tokenAddress}-nonce-${entry.nonce.toString()}`} 
-                                                                                        className={`text-[10px] sm:text-xs font-mono ${isCurrent ? 'font-semibold text-foreground bg-primary/10 px-2 py-1 rounded-lg border border-primary/20' : 'text-muted-foreground px-2'}`}
-                                                                                    >
-                                                                                        <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-baseline gap-0.5 sm:gap-x-2">
-                                                                                            <span className="font-medium">#{entry.nonce.toString()}</span>
-                                                                                            <span className={isCurrent ? 'text-primary' : ''}>
-                                                                                                {entry.amount.toString()}
-                                                                                            </span>
-                                                                                            {convertedValue !== undefined && (
-                                                                                                <span className={`${isCurrent ? 'text-primary/80' : 'text-muted-foreground/80'}`}>
-                                                                                                    ≈ {formatTokenValue(convertedValue, decimals)}
-                                                                                                </span>
-                                                                                            )}
-                                                                                            {isConverting && (
-                                                                                                <span className="text-muted-foreground/60">...</span>
-                                                                                            )}
-                                                                                            {isCurrent && <span className="text-accent text-[9px]">current</span>}
-                                                                                            {(entry as { nullifier?: bigint }).nullifier != null && (
-                                                                                                <span className="text-muted-foreground/70 text-[9px] font-mono ml-1" title={(entry as { nullifier?: bigint }).nullifier!.toString()}>
-                                                                                                    nullifier: 0x…{(entry as { nullifier?: bigint }).nullifier!.toString(16).slice(-8)}
-                                                                                                </span>
-                                                                                            )}
-                                                                                        </div>
-                                                                                    </div>
-                                                                                );
-                                                                            })}
-                                                                        </div>
-                                                                        )}
-                                                                        </>
-                                                                    );
-                                                                })()}
-                                                            </details>
-                                                            {/* Incoming notes (decrypted) */}
-                                                            {incomingNotesCountMap.get(tokenAddress) != null && (incomingNotesCountMap.get(tokenAddress) ?? 0) > 0 && (
-                                                                <details className="mt-2">
-                                                                    <summary className="text-[10px] sm:text-xs text-muted-foreground cursor-pointer hover:text-foreground">
-                                                                        {loadingIncomingToken.has(tokenAddress)
-                                                                            ? `Incoming notes: loading...`
-                                                                            : `${incomingNotesCountMap.get(tokenAddress)} incoming note${(incomingNotesCountMap.get(tokenAddress) ?? 0) !== 1 ? 's' : ''}`}
-                                                                    </summary>
-                                                                    {!loadingIncomingToken.has(tokenAddress) && incomingNotesByToken.get(tokenAddress) && (() => {
-                                                                        const notes = incomingNotesByToken.get(tokenAddress)!;
-                                                                        const decimals = tokenInfo?.decimals || 18;
-                                                                        return (
-                                                                            <div className="mt-2 space-y-1 max-h-28 overflow-y-auto">
-                                                                                {notes.map((note, idx) => {
-                                                                                    const assetKey = `${tokenAddress.toLowerCase()}-incoming-${idx}`;
-                                                                                    const convertedValue = convertedAssets.get(assetKey);
-                                                                                    const isConverting = isConvertingAssets.has(assetKey);
-                                                                                    return (
-                                                                                        <div key={`incoming-${tokenAddress}-${idx}`} className="text-[10px] sm:text-xs font-mono text-muted-foreground px-2 py-1 rounded border border-border/40">
-                                                                                            <span className="font-medium text-foreground">Note #{idx}</span>
-                                                                                            {' '}
-                                                                                            <span>{note.amount.toString()} shares</span>
-                                                                                            {convertedValue !== undefined && (
-                                                                                                <span className="ml-1 text-primary">≈ {formatTokenValue(convertedValue, decimals)} {tokenSymbol}</span>
-                                                                                            )}
-                                                                                            {isConverting && <span className="ml-1 text-muted-foreground">…</span>}
-                                                                                        </div>
-                                                                                    );
-                                                                                })}
-                                                                            </div>
-                                                                        );
-                                                                    })()}
-                                                                </details>
-                                                            )}
-                                                        </div>
-                                                        <div className="flex gap-2 flex-shrink-0">
-                                                            <Button
-                                                                size="sm"
-                                                                variant="outline"
-                                                                onClick={() => handleDiscoverToken(tokenAddress)}
-                                                                disabled={isDiscoveringTokens.has(tokenAddress)}
-                                                                className="text-[10px] sm:text-xs px-2 sm:px-3 h-8"
-                                                            >
-                                                                {isDiscoveringTokens.has(tokenAddress) ? '...' : 'Refresh'}
-                                                            </Button>
-                                                            <Button
-                                                                size="sm"
-                                                                variant="outline"
-                                                                onClick={() => toggleHistory(tokenAddress)}
-                                                                disabled={loadingHistoryToken === tokenAddress}
-                                                                className="text-[10px] sm:text-xs px-2 sm:px-3 h-8"
-                                                            >
-                                                                {loadingHistoryToken === tokenAddress ? (
-                                                                    '...'
-                                                                ) : expandedHistoryToken === tokenAddress.toLowerCase() ? (
-                                                                    <>
-                                                                        <ChevronUp className="w-3 h-3 sm:mr-1" />
-                                                                        <span className="hidden sm:inline">Hide</span>
-                                                                    </>
-                                                                ) : (
-                                                                    <>
-                                                                        <Clock className="w-3 h-3 sm:mr-1" />
-                                                                        <span className="hidden sm:inline">History</span>
-                                                                    </>
-                                                                )}
-                                                            </Button>
-                                                        </div>
+
+                                                        {/* Footer meta row */}
+                                                        {(() => {
+                                                            const uniqueEntries = new Map();
+                                                            for (const entry of tokenData.balanceEntries) {
+                                                                uniqueEntries.set(entry.nonce, entry);
+                                                            }
+                                                            const sortedEntries = Array.from(uniqueEntries.values()).sort((a, b) => {
+                                                                const nonceA = typeof a.nonce === "string" ? BigInt(a.nonce) : a.nonce;
+                                                                const nonceB = typeof b.nonce === "string" ? BigInt(b.nonce) : b.nonce;
+                                                                if (nonceA < nonceB) return -1;
+                                                                if (nonceA > nonceB) return 1;
+                                                                return 0;
+                                                            });
+                                                            const decimals = tokenInfo?.decimals || 18;
+
+                                                            return (
+                                                                <>
+                                                                    {/* Compact meta chips */}
+                                                                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                                                        {/* Balance entries toggle */}
+                                                                        <details className="group">
+                                                                            <summary className="
+                    inline-flex items-center gap-1 cursor-pointer select-none
+                    text-[10px] text-white/35 hover:text-white/60
+                    border border-white/[0.06] rounded-md px-2 py-1
+                    hover:border-white/10 transition-colors
+                    list-none [&::-webkit-details-marker]:hidden
+                  ">
+                                                                                <ChevronDown size={10} className="group-open:hidden opacity-50" />
+                                                                                <ChevronUp size={10} className="hidden group-open:block opacity-50" />
+                                                                                {sortedEntries.length} balance entr{sortedEntries.length === 1 ? "y" : "ies"}
+                                                                            </summary>
+                                                                            {sortedEntries.length > 0 && (
+                                                                                <div className="mt-1.5 rounded-lg border border-white/[0.06] bg-black/20 divide-y divide-white/[0.04] overflow-hidden">
+                                                                                    {sortedEntries.map((entry) => {
+                                                                                        const entryNonce =
+                                                                                            typeof entry.nonce === "string"
+                                                                                                ? BigInt(entry.nonce)
+                                                                                                : entry.nonce;
+                                                                                        const isCurrent = entryNonce === previousNonce;
+                                                                                        const assetKey = `${tokenAddress.toLowerCase()}-${entryNonce.toString()}`;
+                                                                                        const convertedValue = convertedAssets.get(assetKey);
+                                                                                        const isConverting = isConvertingAssets.has(assetKey);
+
+                                                                                        return (
+                                                                                            <div
+                                                                                                key={entry.nonce.toString()}
+                                                                                                className={`px-3 py-2 flex items-center justify-between gap-3 ${isCurrent ? "bg-violet-500/[0.05]" : ""
+                                                                                                    }`}
+                                                                                            >
+                                                                                                <div className="flex items-center gap-2 min-w-0">
+                                                                                                    <span className="text-[10px] font-mono text-white/30">
+                                                                                                        #{entry.nonce.toString()}
+                                                                                                    </span>
+                                                                                                    <span className="text-[10px] font-mono text-white/50 truncate">
+                                                                                                        {entry.amount.toString()}{" "}
+                                                                                                        <span className="text-white/25">shares</span>
+                                                                                                    </span>
+                                                                                                    {(entry as { nullifier?: bigint }).nullifier != null && (
+                                                                                                        <span className="text-[9px] font-mono text-white/20 truncate">
+                                                                                                            nul: …
+                                                                                                            {(entry as { nullifier?: bigint })
+                                                                                                                .nullifier!.toString(16)
+                                                                                                                .slice(-6)}
+                                                                                                        </span>
+                                                                                                    )}
+                                                                                                </div>
+                                                                                                <div className="flex items-center gap-1.5 shrink-0">
+                                                                                                    {convertedValue !== undefined && (
+                                                                                                        <span className="text-[10px] text-violet-300/70 font-mono">
+                                                                                                            ≈&thinsp;{formatTokenValue(convertedValue, decimals)}
+                                                                                                        </span>
+                                                                                                    )}
+                                                                                                    {isConverting && (
+                                                                                                        <span className="text-[9px] text-white/20 italic">…</span>
+                                                                                                    )}
+                                                                                                    {isCurrent && (
+                                                                                                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300/70 font-medium">
+                                                                                                            current
+                                                                                                        </span>
+                                                                                                    )}
+                                                                                                </div>
+                                                                                            </div>
+                                                                                        );
+                                                                                    })}
+                                                                                </div>
+                                                                            )}
+                                                                        </details>
+
+                                                                        {/* Incoming notes chip */}
+                                                                        {incomingNotesCountMap.get(tokenAddress) != null &&
+                                                                            (incomingNotesCountMap.get(tokenAddress) ?? 0) > 0 && (
+                                                                                <details className="group">
+                                                                                    <summary className="
+                        inline-flex items-center gap-1 cursor-pointer select-none
+                        text-[10px] text-amber-400/50 hover:text-amber-400/80
+                        border border-amber-500/20 rounded-md px-2 py-1
+                        hover:border-amber-500/30 transition-colors
+                        list-none [&::-webkit-details-marker]:hidden
+                      ">
+                                                                                        <ChevronDown size={10} className="group-open:hidden opacity-50" />
+                                                                                        <ChevronUp size={10} className="hidden group-open:block opacity-50" />
+                                                                                        {loadingIncomingToken.has(tokenAddress)
+                                                                                            ? "Loading incoming…"
+                                                                                            : `${incomingNotesCountMap.get(tokenAddress)} incoming note${(incomingNotesCountMap.get(tokenAddress) ?? 0) !== 1
+                                                                                                ? "s"
+                                                                                                : ""
+                                                                                            }`}
+                                                                                    </summary>
+                                                                                    {!loadingIncomingToken.has(tokenAddress) &&
+                                                                                        incomingNotesByToken.get(tokenAddress) && (
+                                                                                            <div className="mt-1.5 rounded-lg border border-amber-500/10 bg-black/20 divide-y divide-white/[0.04] overflow-hidden">
+                                                                                                {incomingNotesByToken.get(tokenAddress)!.map((note, idx) => {
+                                                                                                    const assetKey = `${tokenAddress.toLowerCase()}-incoming-${idx}`;
+                                                                                                    const convertedValue = convertedAssets.get(assetKey);
+                                                                                                    const isConverting = isConvertingAssets.has(assetKey);
+                                                                                                    const decimals = tokenInfo?.decimals || 18;
+                                                                                                    return (
+                                                                                                        <div
+                                                                                                            key={idx}
+                                                                                                            className="px-3 py-2 flex items-center justify-between gap-3"
+                                                                                                        >
+                                                                                                            <span className="text-[10px] font-mono text-white/40">
+                                                                                                                Note #{idx} · {note.amount.toString()} shares
+                                                                                                            </span>
+                                                                                                            {convertedValue !== undefined && (
+                                                                                                                <span className="text-[10px] text-amber-300/70 font-mono">
+                                                                                                                    ≈&thinsp;{formatTokenValue(convertedValue, decimals)}{" "}
+                                                                                                                    {tokenSymbol}
+                                                                                                                </span>
+                                                                                                            )}
+                                                                                                            {isConverting && (
+                                                                                                                <span className="text-[9px] text-white/20 italic">…</span>
+                                                                                                            )}
+                                                                                                        </div>
+                                                                                                    );
+                                                                                                })}
+                                                                                            </div>
+                                                                                        )}
+                                                                                </details>
+                                                                            )}
+                                                                    </div>
+                                                                </>
+                                                            );
+                                                        })()}
+
+                                                        {/* Discovery error */}
+                                                        {discoveryErrors.has(tokenAddress) && (
+                                                            <p className="text-[11px] text-red-400/70 bg-red-500/10 rounded-lg px-3 py-2 border border-red-500/20">
+                                                                {discoveryErrors.get(tokenAddress)}
+                                                            </p>
+                                                        )}
                                                     </div>
-                                                    {discoveryErrors.has(tokenAddress) && (
-                                                        <p className="text-xs text-red-500 mt-2">
-                                                            {discoveryErrors.get(tokenAddress)}
-                                                        </p>
-                                                    )}
-                                                    
-                                                    {/* Transaction History */}
+
+                                                    {/* ── Transaction History (expandable) ────────────────────────────── */}
                                                     {expandedHistoryToken === tokenAddress.toLowerCase() && (
-                                                        <div className="mt-4 pt-4 border-t border-border/30">
-                                                            <div className="flex items-center justify-between mb-2">
-                                                                <p className="text-xs font-sans font-bold text-foreground uppercase tracking-wider">
+                                                        <div className="border-t border-white/[0.06] px-4 py-3">
+                                                            <div className="flex items-center justify-between mb-3">
+                                                                <p className="text-[11px] font-semibold uppercase tracking-widest text-white/30">
                                                                     Transaction History
                                                                 </p>
-                                                                <Button
-                                                                    size="sm"
-                                                                    variant="ghost"
+                                                                <button
                                                                     onClick={() => loadTokenHistory(tokenAddress)}
                                                                     disabled={loadingHistoryToken === tokenAddress}
-                                                                    className="h-6 px-2 text-xs"
+                                                                    className="
+                h-6 px-2 rounded text-[10px]
+                border border-white/10 bg-white/[0.03] text-white/40
+                hover:text-white/70 hover:border-white/20
+                disabled:opacity-40 transition-all
+              "
                                                                 >
-                                                                    {loadingHistoryToken === tokenAddress ? 'Loading...' : 'Refresh'}
-                                                                </Button>
+                                                                    {loadingHistoryToken === tokenAddress ? "Loading…" : "Refresh"}
+                                                                </button>
                                                             </div>
-                                                            
+
                                                             {historyErrors.has(tokenAddress) && (
-                                                                <p className="text-xs text-red-500 mb-2">
+                                                                <p className="text-[11px] text-red-400/70 bg-red-500/10 rounded-lg px-3 py-2 mb-2 border border-red-500/20">
                                                                     {historyErrors.get(tokenAddress)}
                                                                 </p>
                                                             )}
-                                                            
+
                                                             {loadingHistoryToken === tokenAddress ? (
-                                                                <p className="text-xs text-muted-foreground">Loading history...</p>
+                                                                <p className="text-[11px] text-white/30 italic py-2">Loading history…</p>
                                                             ) : (() => {
                                                                 const history = tokenHistoryMap.get(tokenAddress.toLowerCase()) || [];
                                                                 if (history.length === 0) {
                                                                     return (
-                                                                        <p className="text-xs text-muted-foreground">
+                                                                        <p className="text-[11px] text-white/30 italic py-2">
                                                                             No transaction history found.
                                                                         </p>
                                                                     );
                                                                 }
-                                                                
+                                                                const typeColors: Record<string, string> = {
+                                                                    initialize: "text-sky-400/70 bg-sky-500/10 border-sky-500/20",
+                                                                    deposit: "text-emerald-400/70 bg-emerald-500/10 border-emerald-500/20",
+                                                                    send: "text-orange-400/70 bg-orange-500/10 border-orange-500/20",
+                                                                    withdraw: "text-red-400/70 bg-red-500/10 border-red-500/20",
+                                                                    absorb_send: "text-violet-400/70 bg-violet-500/10 border-violet-500/20",
+                                                                    absorb_withdraw: "text-pink-400/70 bg-pink-500/10 border-pink-500/20",
+                                                                    absorb: "text-amber-400/70 bg-amber-500/10 border-amber-500/20",
+                                                                };
                                                                 return (
-                                                                    <div className="space-y-2 max-h-64 overflow-y-auto">
+                                                                    <div className="space-y-1.5">
                                                                         {history.map((entry, idx) => {
-                                                                            const getTypeLabel = (type: string) => {
-                                                                                switch (type) {
-                                                                                    case 'initialize': return 'INITIALIZE';
-                                                                                    case 'deposit': return 'DEPOSIT';
-                                                                                    case 'send': return 'SEND';
-                                                                                    case 'withdraw': return 'WITHDRAW';
-                                                                                    case 'absorb_send': return 'ABSORB + SEND';
-                                                                                    case 'absorb_withdraw': return 'ABSORB + WITHDRAW';
-                                                                                    case 'absorb': return 'ABSORB';
-                                                                                    default: return type.toUpperCase();
-                                                                                }
-                                                                            };
-                                                                            
+                                                                            const label = entry.type.replace(/_/g, " ").toUpperCase();
+                                                                            const colorClass =
+                                                                                typeColors[entry.type] ||
+                                                                                "text-white/40 bg-white/[0.04] border-white/[0.06]";
                                                                             return (
-                                                                                <div 
-                                                                                    key={idx} 
-                                                                                    className="text-xs font-mono border border-primary/20 bg-card/30 p-2 rounded"
+                                                                                <div
+                                                                                    key={idx}
+                                                                                    className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5"
                                                                                 >
-                                                                                    <div className="flex justify-between items-start mb-1">
-                                                                                        <span className="font-bold text-foreground">
-                                                                                            #{entry.nonce.toString()} - {getTypeLabel(entry.type)}
+                                                                                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                                                                        <span className="text-[10px] font-mono text-white/30">
+                                                                                            #{entry.nonce.toString()}
+                                                                                        </span>
+                                                                                        <span
+                                                                                            className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${colorClass}`}
+                                                                                        >
+                                                                                            {label}
                                                                                         </span>
                                                                                         {entry.blockNumber > BigInt(0) && (
-                                                                                            <span className="text-muted-foreground text-[10px]">
+                                                                                            <span className="text-[9px] text-white/20 font-mono ml-auto">
                                                                                                 Block {entry.blockNumber.toString()}
                                                                                             </span>
                                                                                         )}
                                                                                     </div>
-                                                                                    <div className="text-muted-foreground">
-                                                                                        <p>Amount: {entry.amount.toString()} shares</p>
+                                                                                    <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+                                                                                        <span className="text-[10px] font-mono text-white/40">
+                                                                                            {entry.amount.toString()}{" "}
+                                                                                            <span className="text-white/20">shares</span>
+                                                                                        </span>
                                                                                         {entry.sharesMinted && entry.sharesMinted > BigInt(0) && (
-                                                                                            <p className="text-[10px]">+{entry.sharesMinted.toString()} minted</p>
+                                                                                            <span className="text-[10px] font-mono text-emerald-400/60">
+                                                                                                +{entry.sharesMinted.toString()} minted
+                                                                                            </span>
                                                                                         )}
                                                                                         {entry.transactionHash && (
-                                                                                            <p className="text-[10px] break-all mt-1">
-                                                                                                TX: {entry.transactionHash.slice(0, 10)}...{entry.transactionHash.slice(-8)}
-                                                                                            </p>
+                                                                                            <span className="text-[10px] font-mono text-white/25">
+                                                                                                {entry.transactionHash.slice(0, 8)}…
+                                                                                                {entry.transactionHash.slice(-6)}
+                                                                                            </span>
                                                                                         )}
                                                                                         {entry.timestamp > BigInt(0) && (
-                                                                                            <p className="text-[10px] mt-1">
-                                                                                                {new Date(Number(entry.timestamp) * 1000).toLocaleString()}
-                                                                                            </p>
+                                                                                            <span className="text-[10px] text-white/25">
+                                                                                                {new Date(
+                                                                                                    Number(entry.timestamp) * 1000
+                                                                                                ).toLocaleString()}
+                                                                                            </span>
                                                                                         )}
                                                                                     </div>
                                                                                 </div>

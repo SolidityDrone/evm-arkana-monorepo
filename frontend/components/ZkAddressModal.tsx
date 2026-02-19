@@ -76,7 +76,7 @@ export default function ZkAddressModal({ isOpen, onClose }: ZkAddressModalProps)
 
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
-            <DialogContent className="max-w-sm w-auto mx-auto bg-card/95 backdrop-blur-md border-primary/30">
+            <DialogContent className="max-w-md w-[90vw] sm:w-[420px] min-w-[320px] mx-auto bg-card/95 backdrop-blur-md border-primary/30">
                 <DialogHeader>
                     <DialogTitle className="font-sans text-xl uppercase tracking-wider text-center">
                         ZK Address

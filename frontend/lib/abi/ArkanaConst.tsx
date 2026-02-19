@@ -771,6 +771,24 @@ const ARKANA_ABI = [
     },
     {
         "type": "function",
+        "name": "absorbSend",
+        "inputs": [
+            { "name": "pA", "type": "uint256[2]", "internalType": "uint256[2]" },
+            { "name": "pB", "type": "uint256[2][2]", "internalType": "uint256[2][2]" },
+            { "name": "pC", "type": "uint256[2]", "internalType": "uint256[2]" },
+            { "name": "publicSignals", "type": "uint256[17]", "internalType": "uint256[17]" }
+        ],
+        "outputs": [
+            {
+                "name": "",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
         "name": "supportsInterface",
         "inputs": [
             {

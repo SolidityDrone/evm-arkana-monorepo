@@ -10,10 +10,11 @@ import { useNonceDiscovery } from '@/hooks/useNonceDiscovery';
 import { loadAccountData, saveTokenAccountData } from '@/lib/indexeddb';
 import { convertSharesToAssets } from '@/lib/shares-to-assets';
 import { convertAssetsToShares } from '@/lib/shares-to-assets';
-import { computePrivateKeyFromSignature, getSpendingKeyCircuit, getViewKeyFromUserKey, poseidonHash } from '@/lib/circuit-utils';
+import { computePrivateKeyFromSignature, getSpendingKeyCircuit, getViewKeyFromUserKey, poseidonHash, reduceToBn254Field } from '@/lib/circuit-utils';
 import { proveWithSnarkjs } from '@/lib/circuit-prove';
 import type { Groth16Args } from '@/lib/groth16';
 import { parseZkAddress } from '@/lib/zk-address';
+import { pedersenCommitment } from '@/lib/pedersen-commitments';
 
 const ERC20_ABI = parseAbi([
     'function decimals() view returns (uint8)',
@@ -61,6 +62,8 @@ export function useSend() {
 
     const groth16ResultRef = useRef<Groth16Args | null>(null);
     const [groth16Result, setGroth16Result] = useState<Groth16Args | null>(null);
+    const sendCircuitRef = useRef<'send' | 'absorb_send'>('send');
+    const [sendCircuit, setSendCircuit] = useState<'send' | 'absorb_send'>('send');
     const { balanceEntries } = useAccountState();
 
     useEffect(() => {
@@ -297,6 +300,7 @@ export function useSend() {
         const chainId = BigInt(await publicClient.getChainId());
 
         let previousShares: bigint, nullifierValue: bigint, unlocksAtValue: bigint;
+        let previousOpType = 0;
         let sharesFromContract: bigint | undefined;
         if (tokenPreviousNonce === 0n) {
             const sk0 = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
@@ -328,6 +332,7 @@ export function useSend() {
                 args: [fnc32],
             }) as [number, bigint, string, `0x${string}`, `0x${string}`];
             const [opType, sharesMinted, , encBal, encNull] = op;
+            previousOpType = opType;
             let decShares: bigint;
             if (opType === 0) decShares = BigInt(encBal);
             else decShares = await poseidonCtrDecrypt(BigInt(encBal), viewKey, 0);
@@ -372,9 +377,15 @@ export function useSend() {
             const { computeCommitmentLeaf } = await import('@/lib/reconstructCommitment');
             const skCommit = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt);
             const pncCommit = await poseidonHash([skCommit, tokenPreviousNonce, tokenAddressBigInt]);
-            // Same encoding as useWithdraw: +1 for nonce 0 (entry), as-is for nonce > 0
             const sharesEnc = tokenPreviousNonce === 0n ? previousShares + 1n : previousShares;
-            const nullEnc = tokenPreviousNonce === 0n ? nullifierValue + 1n : nullifierValue;
+            // After AbsorbWithdraw(5) or AbsorbSend(4), new commitment uses OLD nullifier; use old = new - noteStackM for leaf
+            let nullEnc: bigint;
+            if (tokenPreviousNonce === 0n) nullEnc = nullifierValue + 1n;
+            else if (previousOpType === 5 || previousOpType === 4) {
+                const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+                const { noteStackM } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
+                nullEnc = nullifierValue > noteStackM ? nullifierValue - noteStackM : 0n;
+            } else nullEnc = nullifierValue;
             const unlocksEnc = tokenPreviousNonce === 0n ? unlocksAtValue + 1n : (unlocksAtValue === 0n ? 1n : unlocksAtValue);
             const pt = pedersenCommitment5(sharesEnc, nullEnc, skCommit, unlocksEnc, pncCommit);
             previousCommitmentLeaf = await computeCommitmentLeaf(pt, publicClient);
@@ -420,28 +431,122 @@ export function useSend() {
 
         const fmt = (v: bigint | string) => (typeof v === 'bigint' ? v : BigInt((v as string).startsWith('0x') ? v : '0x' + v)).toString();
         const previousSharesEnc = tokenPreviousNonce === 0n ? previousShares + 1n : previousShares;
-        const nullifierEnc = tokenPreviousNonce === 0n ? nullifierValue + 1n : nullifierValue;
+        // After AbsorbWithdraw(5) or AbsorbSend(4), the leaf was built with the OLD nullifier (circuit reused base3),
+        // but the contract stored the NEW nullifier. The send circuit recomputes the leaf from inputs, so it must
+        // receive the OLD nullifier to satisfy leaf_eq assertion.
+        let nullifierEnc: bigint;
+        if (tokenPreviousNonce === 0n) {
+            nullifierEnc = nullifierValue + 1n;
+        } else if (previousOpType === 5 || previousOpType === 4) {
+            const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+            const { noteStackM } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
+            nullifierEnc = nullifierValue > noteStackM ? nullifierValue - noteStackM : 0n;
+        } else {
+            nullifierEnc = nullifierValue;
+        }
         const previousUnlocksEnc = tokenPreviousNonce === 0n ? unlocksAtValue + 1n : (unlocksAtValue === 0n ? 1n : unlocksAtValue);
         const leafPassed = contractLeaves[Number(commitmentIndex)] ?? previousCommitmentLeaf;
 
+        const totalRequired = amountBigInt + relayerFeeBigInt + 1n;
+        const actualBalance = previousSharesEnc > 0n ? previousSharesEnc - 1n : 0n;
+
+        if (previousSharesEnc < totalRequired) {
+            const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+            const { noteStackM, noteStackR } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
+            const absorbable = noteStackM > nullifierValue ? noteStackM - nullifierValue : 0n;
+            const totalAvailable = actualBalance + absorbable;
+            if (amountBigInt + relayerFeeBigInt > totalAvailable) {
+                throw new Error(
+                    `Insufficient balance (on-chain + absorbable). Available: ${totalAvailable.toString()} shares, required: ${amountBigInt + relayerFeeBigInt}.`
+                );
+            }
+            if (absorbable === 0n) {
+                throw new Error(
+                    `Insufficient on-chain balance (${actualBalance.toString()} shares) and no absorbable notes. Required: ${amountBigInt + relayerFeeBigInt}.`
+                );
+            }
+            const noteStackPoint = pedersenCommitment(noteStackM, noteStackR);
+            const noteStackX = reduceToBn254Field(noteStackPoint.x);
+            const noteStackY = reduceToBn254Field(noteStackPoint.y);
+            const noteStackLeaf = await publicClient.readContract({
+                address: ArkanaAddress,
+                abi: ArkanaAbi,
+                functionName: 'computeCommitmentLeaf',
+                args: [noteStackX, noteStackY],
+            }) as bigint;
+            let noteStackCommitmentIndex: bigint;
+            try {
+                noteStackCommitmentIndex = await publicClient.readContract({
+                    address: ArkanaAddress,
+                    abi: ArkanaAbi,
+                    functionName: 'getLeafIndex',
+                    args: [tokenAddr, noteStackLeaf],
+                }) as bigint;
+            } catch {
+                throw new Error('Note stack leaf not found in tree. Ensure incoming notes are indexed.');
+            }
+            let noteStackProof: bigint[];
+            try {
+                noteStackProof = await publicClient.readContract({
+                    address: ArkanaAddress,
+                    abi: ArkanaAbi,
+                    functionName: 'generateProof',
+                    args: [tokenAddr, noteStackCommitmentIndex],
+                }) as unknown as bigint[];
+            } catch {
+                const { generateMerkleProof } = await import('@/lib/merkle-proof');
+                const res = await generateMerkleProof(contractLeaves, Number(noteStackCommitmentIndex), 32);
+                if (res.root !== expectedRoot) throw new Error('Note stack merkle proof root mismatch');
+                noteStackProof = res.siblings.map(s => BigInt(s));
+            }
+            const noteStackMerkleFormatted = Array.from({ length: 32 }, (_, i) => (i < noteStackProof.length ? noteStackProof[i].toString() : '0'));
+            const absorbInputs: Record<string, string | string[]> = {
+                user_key: fmt(userKeyToUse),
+                amount: fmt(amountBigInt),
+                previous_nonce: tokenPreviousNonce.toString(),
+                current_balance: previousSharesEnc.toString(),
+                nullifier: nullifierEnc.toString(),
+                previous_unlocks_at: previousUnlocksEnc.toString(),
+                previous_commitment_leaf: leafPassed.toString(),
+                commitment_index: commitmentIndex.toString(),
+                tree_depth: treeDepth.toString(),
+                merkle_proof: merkleProofFormatted,
+                note_stack_m: noteStackM.toString(),
+                note_stack_r: noteStackR.toString(),
+                note_stack_commitment_index: noteStackCommitmentIndex.toString(),
+                note_stack_merkle_proof: noteStackMerkleFormatted,
+                note_stack_x: noteStackX.toString(),
+                note_stack_y: noteStackY.toString(),
+                token_address: fmt(tokenAddressBigInt),
+                chain_id: chainId.toString(),
+                expected_root: expectedRoot.toString(),
+                receiver_public_key: [receiverX.toString(), receiverY.toString()],
+                relayer_fee_amount: fmt(relayerFeeBigInt),
+            };
+            return { circuit: 'absorb_send' as const, inputs: absorbInputs };
+        }
+
         return {
-            user_key: fmt(userKeyToUse),
-            amount: fmt(amountBigInt),
-            previous_nonce: tokenPreviousNonce.toString(),
-            previous_shares: previousSharesEnc.toString(),
-            nullifier: nullifierEnc.toString(),
-            previous_unlocks_at: previousUnlocksEnc.toString(),
-            previous_commitment_leaf: leafPassed.toString(),
-            commitment_index: commitmentIndex.toString(),
-            tree_depth: treeDepth.toString(),
-            token_address: fmt(tokenAddressBigInt),
-            chain_id: chainId.toString(),
-            expected_root: expectedRoot.toString(),
-            receiver_public_key: [receiverX.toString(), receiverY.toString()],
-            relayer_fee_amount: fmt(relayerFeeBigInt),
-            merkle_proof: merkleProofFormatted,
+            circuit: 'send' as const,
+            inputs: {
+                user_key: fmt(userKeyToUse),
+                amount: fmt(amountBigInt),
+                previous_nonce: tokenPreviousNonce.toString(),
+                previous_shares: previousSharesEnc.toString(),
+                nullifier: nullifierEnc.toString(),
+                previous_unlocks_at: previousUnlocksEnc.toString(),
+                previous_commitment_leaf: leafPassed.toString(),
+                commitment_index: commitmentIndex.toString(),
+                tree_depth: treeDepth.toString(),
+                token_address: fmt(tokenAddressBigInt),
+                chain_id: chainId.toString(),
+                expected_root: expectedRoot.toString(),
+                receiver_public_key: [receiverX.toString(), receiverY.toString()],
+                relayer_fee_amount: fmt(relayerFeeBigInt),
+                merkle_proof: merkleProofFormatted,
+            },
         };
-    }, [tokenAddress, amount, receiverZkAddress, relayerFeeAmount, tokenDecimals, zkAddress, publicClient, account?.signature, contextUserKey, userKey, tokenCurrentNonce, balanceEntries]);
+    }, [tokenAddress, amount, receiverZkAddress, relayerFeeAmount, tokenDecimals, zkAddress, publicClient, account?.signature, contextUserKey, userKey, tokenCurrentNonce, balanceEntries, fetchIncomingNotes]);
 
     const proveSend = useCallback(async () => {
         if (!zkAddress) {
@@ -474,12 +579,14 @@ export function useSend() {
             groth16ResultRef.current = null;
             setIsCalculatingInputs(true);
             const start = performance.now();
-            const inputs = await calculateCircuitInputs();
+            const { circuit, inputs } = await calculateCircuitInputs();
             setIsCalculatingInputs(false);
-            console.log('Send circuit inputs (before proof):', inputs);
-            const result = await proveWithSnarkjs(inputs, 'send');
+            sendCircuitRef.current = circuit;
+            console.log('Send circuit (before proof):', circuit, 'inputs:', inputs);
+            const result = await proveWithSnarkjs(inputs, circuit);
             groth16ResultRef.current = result;
             setGroth16Result(result);
+            setSendCircuit(circuit);
             setProof('0x01');
             setPublicInputs(result.publicSignals ?? []);
             setProvingTime(Math.round(performance.now() - start));
@@ -519,22 +626,23 @@ export function useSend() {
             const publicSignals = groth16.publicSignals.slice(0, 17).map((s: string) => BigInt(s)) as [
                 bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint
             ];
+            const fn = sendCircuitRef.current === 'absorb_send' ? 'absorbSend' : 'send';
             setIsSimulating(true);
             try {
-                console.log('Simulating send...');
+                console.log(`Simulating ${fn}...`);
                 const sim = await publicClient.simulateContract({
                     account: address as `0x${string}`,
                     address: ArkanaAddress as `0x${string}`,
                     abi: ArkanaAbi,
-                    functionName: 'send',
+                    functionName: fn,
                     args: [pA, pB, pC, publicSignals],
                 });
                 setSimulationResult(sim);
-                console.log('Send simulation success', sim);
+                console.log(`${fn} simulation success`, sim);
             } catch (simErr: unknown) {
                 const err = simErr as { shortMessage?: string; message?: string };
                 const msg = err?.shortMessage ?? err?.message ?? 'Simulation failed';
-                console.error('Send simulation failed:', simErr);
+                console.error(`${fn} simulation failed:`, simErr);
                 setTxError(msg);
                 setIsSubmitting(false);
                 setIsSimulating(false);
@@ -545,7 +653,7 @@ export function useSend() {
             writeContract({
                 address: ArkanaAddress as `0x${string}`,
                 abi: ArkanaAbi,
-                functionName: 'send',
+                functionName: fn,
                 args: [pA, pB, pC, publicSignals],
                 gas: BigInt(3_000_000),
             });
@@ -600,6 +708,7 @@ export function useSend() {
         isCalculatingInputs,
         canAbsorb,
         groth16Result,
+        sendCircuit,
         proveSend,
         handleSend,
         balanceEntries,

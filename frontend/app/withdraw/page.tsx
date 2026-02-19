@@ -15,6 +15,7 @@ import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/
 import { encodeFunctionData } from 'viem';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ARKANA_MESSAGE } from '@/lib/zk-address';
+import { ProofParamsConfirmModal } from '@/components/ProofParamsConfirmModal';
 
 export default function WithdrawPage() {
     const { toast } = useToast();
@@ -70,6 +71,7 @@ export default function WithdrawPage() {
     const [relayerError, setRelayerError] = useState<string | null>(null);
     const [isCustomSpell, setIsCustomSpell] = useState(false);
     const [showSignDataModal, setShowSignDataModal] = useState(false);
+    const [showProofConfirmModal, setShowProofConfirmModal] = useState(false);
 
     React.useEffect(() => {
         if (isProving || isPending || isConfirming || isConfirmed) {
@@ -324,9 +326,28 @@ export default function WithdrawPage() {
                                                     )}
 
                                                     {!proof ? (
-                                                        <SpellButton onClick={proveWithdraw} disabled={isProving || isCalculatingInputs || !tokenAddress || !amount || !receiverAddress || !receiverFeeAmount || tokenCurrentNonce === null || isTokenInitialized === false} variant="primary" className="w-full text-xs sm:text-sm">
-                                                            {isCalculatingInputs ? 'CALCULATING INPUTS...' : isProving ? `GENERATING PROOF... (${currentProvingTime}MS)` : isTokenInitialized === false ? 'TOKEN NOT INITIALIZED' : 'GENERATE WITHDRAW PROOF'}
-                                                        </SpellButton>
+                                                        <>
+                                                            <SpellButton onClick={() => setShowProofConfirmModal(true)} disabled={isProving || isCalculatingInputs || !tokenAddress || !amount || !receiverAddress || !receiverFeeAmount || tokenCurrentNonce === null || isTokenInitialized === false} variant="primary" className="w-full text-xs sm:text-sm">
+                                                                {isCalculatingInputs ? 'CALCULATING INPUTS...' : isProving ? `GENERATING PROOF... (${currentProvingTime}MS)` : isTokenInitialized === false ? 'TOKEN NOT INITIALIZED' : 'GENERATE WITHDRAW PROOF'}
+                                                            </SpellButton>
+                                                            <ProofParamsConfirmModal
+                                                                open={showProofConfirmModal}
+                                                                onOpenChange={setShowProofConfirmModal}
+                                                                onConfirm={proveWithdraw}
+                                                                title="Confirm EdDSA signing (withdraw)"
+                                                                description="You are about to generate a proof that commits to the following parameters. This step uses your EdDSA identity. Verify everything before confirming."
+                                                                params={[
+                                                                    { label: 'Token', value: tokenSymbol ? `${tokenSymbol} (${tokenAddress.slice(0, 10)}…)` : tokenAddress, mono: false },
+                                                                    { label: 'Amount', value: amount || '—', mono: false },
+                                                                    { label: 'Receiver address', value: receiverAddress ? `${receiverAddress.slice(0, 10)}…${receiverAddress.slice(-8)}` : '—', mono: true },
+                                                                    { label: 'Relayer fee', value: receiverFeeAmount || '—', mono: false },
+                                                                    { label: 'Next nonce', value: tokenCurrentNonce != null ? tokenCurrentNonce.toString() : '—', mono: true },
+                                                                ]}
+                                                                disclaimer="Verify that these parameters are correct before confirming. By confirming you authorize generating a zero-knowledge proof that commits to these values (EdDSA signing)."
+                                                                confirmLabel="Confirm & generate proof"
+                                                                isSigning={isProving}
+                                                            />
+                                                        </>
                                                     ) : (
                                                         <div className="space-y-2">
                                                             <SpellButton onClick={handleWithdrawViaRelayer} disabled={!groth16Result || isPending || isConfirming || isSubmitting || isSimulating || isRelayerSubmitting} variant="primary" className="w-full text-xs sm:text-sm">

@@ -14,6 +14,7 @@ import { computePrivateKeyFromSignature, getSpendingKeyCircuit, getViewKeyFromUs
 import { proveWithSnarkjs } from '@/lib/circuit-prove';
 import type { Groth16Args } from '@/lib/groth16';
 import { padHex } from 'viem';
+import { parseZkAddress } from '@/lib/zk-address';
 
 const ERC20_ABI = parseAbi([
     'function allowance(address owner, address spender) view returns (uint256)',
@@ -43,6 +44,7 @@ export function useDeposit() {
     const {
         computeCurrentNonce,
         reconstructPersonalCommitmentState,
+        fetchIncomingNotes,
         isComputing,
     } = useNonceDiscovery();
 
@@ -629,6 +631,7 @@ export function useDeposit() {
             // Reconstruct previous_shares, nullifier, previous_unlocks_at
             let previousSharesForReconstruction: bigint;
             let previousStateForReconstruction: CommitmentState | null = null;
+            let previousOpType: number | undefined = undefined;
 
             if (finalTokenPreviousNonce === BigInt(0)) {
                 previousSharesForReconstruction = sharesFromContract || BigInt(0);
@@ -648,6 +651,7 @@ export function useDeposit() {
                 }) as [number, bigint, string, `0x${string}`, `0x${string}`];
 
                 const [opTypeForFinalPrevious, sharesMintedForFinalPrevious, , encryptedBalanceForFinalPrevious, encryptedNullifierForFinalPrevious] = operationInfoForFinalPrevious;
+                previousOpType = opTypeForFinalPrevious;
 
                 let decryptedPreviousShares: bigint;
                 if (opTypeForFinalPrevious === 0) {
@@ -728,7 +732,15 @@ export function useDeposit() {
 
                 // Use as-is: from decryption we already get encoded values (circuit encrypts its encoded inputs)
                 const sharesEncoded = previousSharesForReconstruction;
-                const nullifierEncodedForLeaf = nullifierValue;
+                // After AbsorbWithdraw(5) or AbsorbSend(4), new commitment uses OLD nullifier; use old = new - noteStackM for leaf
+                let nullifierEncodedForLeaf: bigint;
+                if (previousOpType === 5 || previousOpType === 4) {
+                    const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+                    const { noteStackM } = await fetchIncomingNotes(tokenAddress as `0x${string}`, ourX, ourY, userKeyBigInt);
+                    nullifierEncodedForLeaf = nullifierValue > noteStackM ? nullifierValue - noteStackM : BigInt(0);
+                } else {
+                    nullifierEncodedForLeaf = nullifierValue;
+                }
                 const unlocksAtEncodedForLeaf = unlocksAtValue === BigInt(0) ? BigInt(1) : unlocksAtValue;
 
                 const commitmentPoint = pedersenCommitment5(
@@ -827,10 +839,19 @@ export function useDeposit() {
                 finalTokenPreviousNonce === BigInt(0)
                     ? previousSharesForReconstruction + BigInt(1)
                     : previousSharesForReconstruction;
+            // After AbsorbWithdraw(5) or AbsorbSend(4), circuit needs OLD nullifier (new - noteStackM), not the stored new nullifier
+            let nullifierForCircuit: bigint;
+            if (previousOpType === 5 || previousOpType === 4) {
+                const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+                const { noteStackM } = await fetchIncomingNotes(tokenAddress as `0x${string}`, ourX, ourY, userKeyBigInt);
+                nullifierForCircuit = nullifierValue > noteStackM ? nullifierValue - noteStackM : BigInt(0);
+            } else {
+                nullifierForCircuit = nullifierValue;
+            }
             const nullifierEncoded =
                 finalTokenPreviousNonce === BigInt(0)
-                    ? nullifierValue + BigInt(1)
-                    : nullifierValue;
+                    ? nullifierForCircuit + BigInt(1)
+                    : nullifierForCircuit;
             const previousUnlocksAtEncoded =
                 finalTokenPreviousNonce === BigInt(0)
                     ? unlocksAtValue + BigInt(1)

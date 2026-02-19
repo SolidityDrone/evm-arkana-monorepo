@@ -319,6 +319,7 @@ export function useWithdraw() {
         let previousSharesForReconstruction: bigint;
         let nullifierValue: bigint;
         let unlocksAtValue: bigint;
+        let previousOpType: number = 0;
 
         let sharesFromContract: bigint | undefined;
         if (tokenPreviousNonce === BigInt(0)) {
@@ -351,6 +352,7 @@ export function useWithdraw() {
                 args: [finalPreviousNonceCommitmentBytes32],
             }) as [number, bigint, string, `0x${string}`, `0x${string}`];
             const [opType, sharesMinted, , encryptedBalance, encryptedNullifier] = operationInfo;
+            previousOpType = opType;
             let decryptedShares: bigint;
             if (opType === 0) {
                 decryptedShares = BigInt(encryptedBalance);
@@ -403,9 +405,17 @@ export function useWithdraw() {
             const sharesEncodedForLeaf = tokenPreviousNonce === BigInt(0)
                 ? previousSharesForReconstruction + BigInt(1)
                 : previousSharesForReconstruction;
-            const nullifierEncodedForLeaf = tokenPreviousNonce === BigInt(0)
-                ? nullifierValue + BigInt(1)
-                : nullifierValue;
+            // After AbsorbWithdraw(5) or AbsorbSend(4), the new commitment reuses base3 with OLD nullifier but we store NEW nullifier; use old = new - noteStackM for leaf
+            let nullifierEncodedForLeaf: bigint;
+            if (tokenPreviousNonce === BigInt(0)) {
+                nullifierEncodedForLeaf = nullifierValue + BigInt(1);
+            } else if (previousOpType === 5 || previousOpType === 4) {
+                const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+                const { noteStackM } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
+                nullifierEncodedForLeaf = nullifierValue > noteStackM ? nullifierValue - noteStackM : BigInt(0);
+            } else {
+                nullifierEncodedForLeaf = nullifierValue;
+            }
             const unlocksAtEncodedForLeaf = tokenPreviousNonce === BigInt(0)
                 ? unlocksAtValue + BigInt(1)
                 : (unlocksAtValue === BigInt(0) ? BigInt(1) : unlocksAtValue);
@@ -468,9 +478,19 @@ export function useWithdraw() {
         const previousSharesEncoded = tokenPreviousNonce === BigInt(0)
             ? previousSharesForReconstruction + BigInt(1)
             : previousSharesForReconstruction;
-        const nullifierEncoded = tokenPreviousNonce === BigInt(0)
-            ? nullifierValue + BigInt(1)
-            : nullifierValue;
+        // After AbsorbWithdraw(5) or AbsorbSend(4), the leaf was built with the OLD nullifier (circuit reused base3),
+        // but the contract stored the NEW nullifier. The withdraw circuit recomputes the leaf from inputs, so it must
+        // receive the OLD nullifier to satisfy leaf_eq at circom withdraw.circom line 113.
+        let nullifierEncoded: bigint;
+        if (tokenPreviousNonce === BigInt(0)) {
+            nullifierEncoded = nullifierValue + BigInt(1);
+        } else if (previousOpType === 5 || previousOpType === 4) {
+            const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+            const { noteStackM } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
+            nullifierEncoded = nullifierValue > noteStackM ? nullifierValue - noteStackM : BigInt(0);
+        } else {
+            nullifierEncoded = nullifierValue;
+        }
         const previousUnlocksAtEncoded = tokenPreviousNonce === BigInt(0)
             ? unlocksAtValue + BigInt(1)
             : (unlocksAtValue === BigInt(0) ? BigInt(1) : unlocksAtValue);
