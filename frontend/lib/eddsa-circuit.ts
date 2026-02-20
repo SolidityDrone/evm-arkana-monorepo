@@ -57,7 +57,7 @@ export async function getSignerIdentityFromUserKey(userKey: bigint | string): Pr
 }
 
 /**
- * Sign the withdraw message. Message = Hash2(Hash3(ta,ch,amount), Hash2(fee, current_nonce)).
+ * Sign the withdraw message. Message = Poseidon2(left, right) where left=Hash4(ta,ch,amt,fee), right=Hash3(nonce,arb_hash,receiver).
  */
 export async function signWithdrawMessage(
   userKey: bigint | string,
@@ -65,7 +65,9 @@ export async function signWithdrawMessage(
   chain_id: string,
   amount: string,
   relayer_fee_amount: string,
-  current_nonce: string
+  current_nonce: string,
+  arbitrary_calldata_hash: string,
+  receiver_address: string
 ): Promise<{ signature: [string, string, string]; message: string }> {
   const { eddsa, F } = await getCircomLib();
   const { getWithdrawMessageHash } = await import('@/lib/circuit-utils');
@@ -74,7 +76,9 @@ export async function signWithdrawMessage(
     BigInt(chain_id),
     BigInt(amount),
     BigInt(relayer_fee_amount),
-    BigInt(current_nonce)
+    BigInt(current_nonce),
+    BigInt(arbitrary_calldata_hash),
+    BigInt(receiver_address)
   );
   const message = messageBigInt.toString();
   const msgField = F.e(messageBigInt);

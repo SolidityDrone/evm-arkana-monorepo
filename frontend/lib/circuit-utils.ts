@@ -129,14 +129,18 @@ export async function getSendMessageHash(
 }
 
 /**
- * Withdraw message = Hash2(Hash3(token_address, chain_id, amount), Hash2(relayer_fee_amount, current_nonce)).
+ * Withdraw message = Hash2(left, right) where:
+ *   left  = Hash4(token_address, chain_id, amount, relayer_fee_amount)
+ *   right = Hash3(current_nonce, arbitrary_calldata_hash, receiver_address)
  */
 export async function getWithdrawMessageHash(
   tokenAddress: bigint,
   chainId: bigint,
   amount: bigint,
   relayerFeeAmount: bigint,
-  currentNonce: bigint
+  currentNonce: bigint,
+  arbitraryCalldataHash: bigint,
+  receiverAddress: bigint
 ): Promise<bigint> {
   console.log('[getWithdrawMessageHash] Inputs:', {
     tokenAddress: tokenAddress.toString(),
@@ -144,9 +148,11 @@ export async function getWithdrawMessageHash(
     amount: amount.toString(),
     relayerFeeAmount: relayerFeeAmount.toString(),
     currentNonce: currentNonce.toString(),
+    arbitraryCalldataHash: arbitraryCalldataHash.toString(),
+    receiverAddress: receiverAddress.toString(),
   });
-  const left = await poseidonHash([tokenAddress, chainId, amount]);
-  const right = await poseidonHash([relayerFeeAmount, currentNonce]);
+  const left = await poseidonHash([tokenAddress, chainId, amount, relayerFeeAmount]);
+  const right = await poseidonHash([currentNonce, arbitraryCalldataHash, receiverAddress]);
   const result = await poseidonHash([left, right]);
   console.log('[getWithdrawMessageHash] Result:', { left: left.toString(), right: right.toString(), hash: result.toString() });
   return result;

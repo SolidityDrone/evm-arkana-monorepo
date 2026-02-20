@@ -40,16 +40,24 @@ async function getSignerKeyPair(privKeyHex = TEST_SIGNER_PRIVKEY_HEX) {
 }
 
 /**
- * Sign the withdraw message. Message = Poseidon2Hash2(Hash3(ta,ch,amount), Hash2(fee, current_nonce)).
+ * Sign the withdraw message. Message = Poseidon2(left, right) where left=Hash4(ta,ch,amt,fee), right=Hash3(nonce,arb_hash,receiver).
  */
-async function signWithdrawMessage(privKeyHex, token_address, chain_id, amount, relayer_fee_amount, current_nonce) {
+async function signWithdrawMessage(privKeyHex, token_address, chain_id, amount, relayer_fee_amount, current_nonce, arbitrary_calldata_hash, receiver_address) {
     const { eddsa, F } = await getEddsa();
+    const arbHash = arbitrary_calldata_hash !== undefined && arbitrary_calldata_hash !== null
+        ? arbitrary_calldata_hash.toString()
+        : '0';
+    const recvAddr = receiver_address !== undefined && receiver_address !== null
+        ? receiver_address.toString()
+        : '0';
     const message = await getWithdrawMessageHash(
         token_address.toString(),
         chain_id.toString(),
         amount.toString(),
         relayer_fee_amount.toString(),
-        current_nonce.toString()
+        current_nonce.toString(),
+        arbHash,
+        recvAddr
     );
     const msgField = F.e(BigInt(message));
     const prvKey = Buffer.from(privKeyHex, 'hex');

@@ -173,6 +173,8 @@ async function testFrostEntryDepositWithdrawFlow() {
     const relayerFeeAmount = '1';
 
     const currentNonceForWithdraw = '2'; // previous_nonce is 1, sign with current_nonce = previous + 1
+    const arbitraryCalldataHash = hexToDecimal('0x1234567890abcdef');
+    const receiverAddress = hexToDecimal('0x742d35cc6634c0532925a3b8d4c9db96c4b4d8b6');
     // Sign with FROST-derived Baby Jubjub key (same message format as eddsa_helper.signWithdrawMessage)
     const { signature } = await signWithdrawMessageFrost(
         derivedPrivKeyHex,
@@ -180,7 +182,9 @@ async function testFrostEntryDepositWithdrawFlow() {
         entryInput.chain_id,
         withdrawAmount,
         relayerFeeAmount,
-        currentNonceForWithdraw
+        currentNonceForWithdraw,
+        arbitraryCalldataHash,
+        receiverAddress
     );
 
     const withdrawInput = {
@@ -201,8 +205,8 @@ async function testFrostEntryDepositWithdrawFlow() {
         tree_depth: treeDepth.toString(),
         expected_root: rootAfterDeposit,
         merkle_proof: await generateMerkleProof(depositLeaf, 1, treeDepth, allLeaves, treeSize, hashWrapper),
-        arbitrary_calldata_hash: hexToDecimal('0x1234567890abcdef'),
-        receiver_address: hexToDecimal('0x742d35cc6634c0532925a3b8d4c9db96c4b4d8b6'),
+        arbitrary_calldata_hash: arbitraryCalldataHash,
+        receiver_address: receiverAddress,
         relayer_fee_amount: relayerFeeAmount
     };
 

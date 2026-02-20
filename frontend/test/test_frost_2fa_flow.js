@@ -370,10 +370,12 @@ async function main() {
     const relayerFee = '10';
     const previousNonce = '1'; // deposit was nonce 1
     const currentNonce = '2';  // withdraw is nonce 2 = previous + 1
+    const arbitraryCalldataHash = '0'; // 0 when no arbitrary calldata
+    const receiverAddress = token_address; // same as token_address for this test (send to self)
 
-    // Compute withdraw message hash: Poseidon2(Poseidon3(ta, ch, amt), Poseidon2(fee, nonce))
-    const msgLeft = await poseidonHash([token_address, chain_id, withdrawAmount]);
-    const msgRight = await poseidonHash([relayerFee, currentNonce]);
+    // Compute withdraw message hash: Poseidon2(left, right) where left=Hash4(ta,ch,amt,fee), right=Hash3(nonce,arb_hash,receiver)
+    const msgLeft = await poseidonHash([token_address, chain_id, withdrawAmount, relayerFee]);
+    const msgRight = await poseidonHash([currentNonce, arbitraryCalldataHash, receiverAddress]);
     const withdrawMessage = await poseidonHash([msgLeft, msgRight]);
     console.log(`  withdraw message = ${withdrawMessage.slice(0, 20)}...`);
 
@@ -406,7 +408,7 @@ async function main() {
         expected_root: tree2.root,
         merkle_proof: await generateMerkleProof(depositLeaf, 1, treeDepth, allLeaves, treeSize),
         arbitrary_calldata_hash: '0',
-        receiver_address: token_address,
+        receiver_address: receiverAddress,
         relayer_fee_amount: relayerFee,
     };
 

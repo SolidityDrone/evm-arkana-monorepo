@@ -1,7 +1,6 @@
 /**
  * TypeScript implementation of Poseidon CTR Mode Encryption
- * Matches the Noir implementation in circuits/lib/poseidon-ctr-encryption/src/lib.nr
- * 
+ *
  * Provides Poseidon-based encryption in CTR mode for field elements.
  * Includes functions for encrypting individual fields and batch encryption.
  */

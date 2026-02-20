@@ -83,14 +83,18 @@ template AbsorbWithdraw() {
     // === VERIFY EdDSA SIGNATURE OVER MESSAGE ===
     signal current_nonce;
     current_nonce <== previous_nonce + 1;
-    // message = Poseidon2(Poseidon3(token_address, chain_id, amount), Poseidon2(relayer_fee_amount, current_nonce))
-    component msg_left = Poseidon2Hash3();
+    // message = Poseidon2(left, right) where:
+    //   left  = Poseidon4(token_address, chain_id, amount, relayer_fee_amount)
+    //   right = Poseidon3(current_nonce, arbitrary_calldata_hash, receiver_address)
+    component msg_left = Poseidon2Hash4();
     msg_left.in[0] <== token_address;
     msg_left.in[1] <== chain_id;
     msg_left.in[2] <== amount;
-    component msg_right = Poseidon2Hash2();
-    msg_right.in[0] <== relayer_fee_amount;
-    msg_right.in[1] <== current_nonce;
+    msg_left.in[3] <== relayer_fee_amount;
+    component msg_right = Poseidon2Hash3();
+    msg_right.in[0] <== current_nonce;
+    msg_right.in[1] <== arbitrary_calldata_hash;
+    msg_right.in[2] <== receiver_address;
     component msg_hash = Poseidon2Hash2();
     msg_hash.in[0] <== msg_left.out;
     msg_hash.in[1] <== msg_right.out;

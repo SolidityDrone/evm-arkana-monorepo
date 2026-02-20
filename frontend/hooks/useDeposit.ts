@@ -832,7 +832,7 @@ export function useDeposit() {
                 }
             }
 
-            const formatForNoir = (value: bigint | string): string => {
+            const formatFieldElement = (value: bigint | string): string => {
                 if (typeof value === 'bigint') {
                     return value.toString();
                 }
@@ -856,10 +856,10 @@ export function useDeposit() {
             const previousUnlocksAtEncoded = unlocksAtValue; // Use 0 directly, no encoding
 
             const circuitInputs: Record<string, string | string[]> = {
-                user_key: formatForNoir(userKeyForCircuit),
+                user_key: formatFieldElement(userKeyForCircuit),
                 signer_pubkey_hash: depositSignerHash,
-                token_address: formatForNoir(tokenAddress),
-                amount: formatForNoir(amountBigInt),
+                token_address: formatFieldElement(tokenAddress),
+                amount: formatFieldElement(amountBigInt),
                 chain_id: chainId.toString(),
                 previous_nonce: finalTokenPreviousNonce.toString(),
                 previous_shares: previousSharesEncoded.toString(),

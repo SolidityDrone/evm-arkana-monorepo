@@ -517,7 +517,7 @@ export function useWithdraw() {
             merkleProofFormatted.push(i < contractProof.length ? contractProof[i].toString() : '0');
         }
 
-        const formatForNoir = (value: bigint | string): string =>
+        const formatFieldElement = (value: bigint | string): string =>
             typeof value === 'bigint' ? value.toString() : BigInt(value.startsWith('0x') ? value : '0x' + value).toString();
 
         const previousSharesEncoded = previousSharesForReconstruction; // No encoding, use 0 directly
@@ -611,6 +611,8 @@ export function useWithdraw() {
                 const message = await getWithdrawMessageForThreshold(
                     tokenAddressBigInt.toString(), chainId.toString(),
                     amountBigInt.toString(), receiverFeeAmountBigInt.toString(), currentNonceForAbsorbSig,
+                    BigInt(arbitraryCalldataHash).toString(),
+                    receiverAddressBigInt.toString(),
                 );
                 const round1 = signingRound1Ref.current!;
                 absorbWdSig = await signingDesktopRound2(
@@ -623,10 +625,12 @@ export function useWithdraw() {
                 absorbWdSig = await signWithdrawMessage(
                     userKeyBigInt, tokenAddressBigInt.toString(), chainId.toString(),
                     amountBigInt.toString(), receiverFeeAmountBigInt.toString(), currentNonceForAbsorbSig,
+                    BigInt(arbitraryCalldataHash).toString(),
+                    receiverAddressBigInt.toString(),
                 );
             }
             const absorbInputs: Record<string, string | string[]> = {
-                user_key: formatForNoir(userKeyToUse),
+                user_key: formatFieldElement(userKeyToUse),
                 signer_pubkey_hash: wdSignerHash,
                 signer_public_key: [wdSignerPk[0], wdSignerPk[1]],
                 signature: absorbWdSig.signature,
@@ -644,14 +648,14 @@ export function useWithdraw() {
                 note_stack_merkle_proof: noteStackMerkleFormatted,
                 note_stack_x: noteStackX.toString(),
                 note_stack_y: noteStackY.toString(),
-                token_address: formatForNoir(tokenAddressBigInt),
-                amount: formatForNoir(amountBigInt),
+                token_address: formatFieldElement(tokenAddressBigInt),
+                amount: formatFieldElement(amountBigInt),
                 chain_id: chainId.toString(),
                 expected_root: expectedRoot.toString(),
                 declared_time_reference: declaredTimeReference.toString(),
-                arbitrary_calldata_hash: formatForNoir(BigInt(arbitraryCalldataHash)),
-                receiver_address: formatForNoir(receiverAddressBigInt),
-                relayer_fee_amount: formatForNoir(receiverFeeAmountBigInt),
+                arbitrary_calldata_hash: formatFieldElement(BigInt(arbitraryCalldataHash)),
+                receiver_address: formatFieldElement(receiverAddressBigInt),
+                relayer_fee_amount: formatFieldElement(receiverFeeAmountBigInt),
             };
             return { circuit: 'absorb_withdraw' as const, inputs: absorbInputs };
         }
@@ -673,6 +677,8 @@ export function useWithdraw() {
             const message = await getWithdrawMessageForThreshold(
                 tokenAddressBigInt.toString(), chainId.toString(),
                 amountBigInt.toString(), receiverFeeAmountBigInt.toString(), currentNonceForSig,
+                BigInt(arbitraryCalldataHash).toString(),
+                receiverAddressBigInt.toString(),
             );
             console.log('[FROST calculateCircuitInputs] Recomputed message hash:', message);
             console.log('[FROST calculateCircuitInputs] Original signing message from round1:', signingRound1Ref.current?.round1Data?.message);
@@ -688,17 +694,19 @@ export function useWithdraw() {
             wdSig = await signWithdrawMessage(
                 userKeyBigInt, tokenAddressBigInt.toString(), chainId.toString(),
                 amountBigInt.toString(), receiverFeeAmountBigInt.toString(), currentNonceForSig,
+                BigInt(arbitraryCalldataHash).toString(),
+                receiverAddressBigInt.toString(),
             );
         }
         return {
             circuit: 'withdraw' as const,
             inputs: {
-                user_key: formatForNoir(userKeyToUse),
+                user_key: formatFieldElement(userKeyToUse),
                 signer_pubkey_hash: wdSignerHash,
                 signer_public_key: [wdSignerPk[0], wdSignerPk[1]],
                 signature: wdSig.signature,
-                token_address: formatForNoir(tokenAddressBigInt),
-                amount: formatForNoir(amountBigInt),
+                token_address: formatFieldElement(tokenAddressBigInt),
+                amount: formatFieldElement(amountBigInt),
                 chain_id: chainId.toString(),
                 previous_nonce: tokenPreviousNonce.toString(),
                 previous_shares: previousSharesEncoded.toString(),
@@ -710,9 +718,9 @@ export function useWithdraw() {
                 tree_depth: treeDepth.toString(),
                 expected_root: expectedRoot.toString(),
                 merkle_proof: merkleProofFormatted,
-                receiver_address: formatForNoir(receiverAddressBigInt),
-                relayer_fee_amount: formatForNoir(receiverFeeAmountBigInt),
-                arbitrary_calldata_hash: formatForNoir(BigInt(arbitraryCalldataHash)),
+                receiver_address: formatFieldElement(receiverAddressBigInt),
+                relayer_fee_amount: formatFieldElement(receiverFeeAmountBigInt),
+                arbitrary_calldata_hash: formatFieldElement(BigInt(arbitraryCalldataHash)),
             },
         };
     } finally {
@@ -826,9 +834,13 @@ export function useWithdraw() {
                 groupPublicKey: stored2FA.signerPublicKey,
                 browserShare_prefix: stored2FA.browserShare.slice(0, 16) + '...',
             });
+            const arbitraryCalldataHashForSig = BigInt(arbitraryCalldataHash).toString();
+            const receiverAddrForSig = BigInt(receiverAddress.startsWith('0x') ? receiverAddress : '0x' + receiverAddress).toString();
             const message = await getWithdrawMessageForThreshold(
                 tokenAddress, chainIdForSig.toString(),
                 amountBigInt.toString(), receiverFeeAmountBigInt.toString(), currentNonce,
+                arbitraryCalldataHashForSig,
+                receiverAddrForSig,
             );
             console.log('[FROST proveWithdraw] Message hash:', message);
             const round1 = await signingDesktopRound1(message, stored2FA.signerPublicKey);
@@ -855,7 +867,7 @@ export function useWithdraw() {
             return;
         }
         await runWithdrawProof();
-    }, [zkAddress, tokenAddress, amount, receiverAddress, receiverFeeAmount, tokenCurrentNonce, isTokenInitialized, tokenDecimals, publicClient, runWithdrawProof]);
+    }, [zkAddress, tokenAddress, amount, receiverAddress, receiverFeeAmount, arbitraryCalldataHash, tokenCurrentNonce, isTokenInitialized, tokenDecimals, publicClient, runWithdrawProof]);
 
     const onTwoFactorWithdrawSign = useCallback(async (phoneResponse: string) => {
         setTwoFactorSigning(true);

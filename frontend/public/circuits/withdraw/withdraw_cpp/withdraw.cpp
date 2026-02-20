@@ -1357,13 +1357,13 @@ uint get_main_input_signal_start() {return 8;}
 
 uint get_main_input_signal_no() {return 54;}
 
-uint get_total_signal_no() {return 128288;}
+uint get_total_signal_no() {return 128690;}
 
-uint get_number_of_components() {return 19869;}
+uint get_number_of_components() {return 19891;}
 
 uint get_size_of_input_hashmap() {return 256;}
 
-uint get_size_of_witness() {return 32934;}
+uint get_size_of_witness() {return 32991;}
 
 uint get_size_of_constants() {return 25047;}
 
@@ -893756,33 +893756,33 @@ uint index_multiple_eq;
 int cmp_index_ref_load = -1;
 {
 std::string new_cmp_name = "spending_key_hash";
-Poseidon2Hash4_74_create(mySignalStart+125777,19525+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[0] = 19525+ctx_index+1;
+Poseidon2Hash4_74_create(mySignalStart+126179,19547+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[0] = 19547+ctx_index+1;
 }
 {
 std::string new_cmp_name = "view_key_hash";
-Poseidon2Hash2_145_create(mySignalStart+127517,19711+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[1] = 19711+ctx_index+1;
+Poseidon2Hash2_145_create(mySignalStart+127919,19733+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[1] = 19733+ctx_index+1;
 }
 {
 std::string new_cmp_name = "signer_hash_check";
-Poseidon2Hash2_145_create(mySignalStart+125007,19368+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[2] = 19368+ctx_index+1;
+Poseidon2Hash2_145_create(mySignalStart+125409,19390+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[2] = 19390+ctx_index+1;
 }
 {
 std::string new_cmp_name = "signer_eq";
-IsEqual_147_create(mySignalStart+125001,19366+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[3] = 19366+ctx_index+1;
+IsEqual_147_create(mySignalStart+125403,19388+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[3] = 19388+ctx_index+1;
 }
 {
 std::string new_cmp_name = "msg_left";
-Poseidon2Hash3_217_create(mySignalStart+87630,14446+ctx_index+1,ctx,new_cmp_name,myId);
+Poseidon2Hash4_74_create(mySignalStart+87630,14446+ctx_index+1,ctx,new_cmp_name,myId);
 mySubcomponents[4] = 14446+ctx_index+1;
 }
 {
 std::string new_cmp_name = "msg_right";
-Poseidon2Hash2_145_create(mySignalStart+88568,14609+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[5] = 14609+ctx_index+1;
+Poseidon2Hash3_217_create(mySignalStart+88802,14625+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[5] = 14625+ctx_index+1;
 }
 {
 std::string new_cmp_name = "msg_hash";
@@ -893796,8 +893796,8 @@ mySubcomponents[7] = 1643+ctx_index+1;
 }
 {
 std::string new_cmp_name = "previous_nonce_commitment_hash";
-Poseidon2Hash3_217_create(mySignalStart+115640,18175+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[8] = 18175+ctx_index+1;
+Poseidon2Hash3_217_create(mySignalStart+116042,18197+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[8] = 18197+ctx_index+1;
 }
 {
 std::string new_cmp_name = "base3_commit";
@@ -893806,28 +893806,28 @@ mySubcomponents[9] = 0+ctx_index+1;
 }
 {
 std::string new_cmp_name = "previous_m1G";
-PedersenCommitmentM1_323_create(mySignalStart+111531,17658+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[10] = 17658+ctx_index+1;
+PedersenCommitmentM1_323_create(mySignalStart+111933,17680+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[10] = 17680+ctx_index+1;
 }
 {
 std::string new_cmp_name = "previous_rJ";
-PedersenCommitmentR_324_create(mySignalStart+116578,18338+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[11] = 18338+ctx_index+1;
+PedersenCommitmentR_324_create(mySignalStart+116980,18360+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[11] = 18360+ctx_index+1;
 }
 {
 std::string new_cmp_name = "previous_add1";
-BabyAdd_298_create(mySignalStart+110741,17499+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[12] = 17499+ctx_index+1;
+BabyAdd_298_create(mySignalStart+111143,17521+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[12] = 17521+ctx_index+1;
 }
 {
 std::string new_cmp_name = "previous_add2";
-BabyAdd_298_create(mySignalStart+110751,17500+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[13] = 17500+ctx_index+1;
+BabyAdd_298_create(mySignalStart+111153,17522+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[13] = 17522+ctx_index+1;
 }
 {
 std::string new_cmp_name = "previous_leaf_hash";
-Poseidon2Hash2_145_create(mySignalStart+110761,17501+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[14] = 17501+ctx_index+1;
+Poseidon2Hash2_145_create(mySignalStart+111163,17523+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[14] = 17523+ctx_index+1;
 }
 {
 std::string new_cmp_name = "leaf_eq";
@@ -893841,43 +893841,43 @@ mySubcomponents[16] = 4141+ctx_index+1;
 }
 {
 std::string new_cmp_name = "unpack";
-UnpackUnlocksAt_330_create(mySignalStart+127209,19707+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[17] = 19707+ctx_index+1;
+UnpackUnlocksAt_330_create(mySignalStart+127611,19729+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[17] = 19729+ctx_index+1;
 }
 {
 std::string new_cmp_name = "time_check";
-GreaterThanOrEqualField_332_create(mySignalStart+126949,19704+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[18] = 19704+ctx_index+1;
+GreaterThanOrEqualField_332_create(mySignalStart+127351,19726+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[18] = 19726+ctx_index+1;
 }
 {
 std::string new_cmp_name = "new_nonce_commitment_hash";
-Poseidon2Hash3_217_create(mySignalStart+93467,15285+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[19] = 15285+ctx_index+1;
+Poseidon2Hash3_217_create(mySignalStart+93869,15307+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[19] = 15307+ctx_index+1;
 }
 {
 std::string new_cmp_name = "shares_check";
-GreaterThanOrEqualField_332_create(mySignalStart+124741,19363+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[20] = 19363+ctx_index+1;
+GreaterThanOrEqualField_332_create(mySignalStart+125143,19385+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[20] = 19385+ctx_index+1;
 }
 {
 std::string new_cmp_name = "new_m1G";
-PedersenCommitmentM1_323_create(mySignalStart+89358,14768+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[21] = 14768+ctx_index+1;
+PedersenCommitmentM1_323_create(mySignalStart+89760,14790+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[21] = 14790+ctx_index+1;
 }
 {
 std::string new_cmp_name = "new_rJ";
-PedersenCommitmentR_324_create(mySignalStart+94405,15448+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[22] = 15448+ctx_index+1;
+PedersenCommitmentR_324_create(mySignalStart+94807,15470+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[22] = 15470+ctx_index+1;
 }
 {
 std::string new_cmp_name = "new_add1";
-BabyAdd_298_create(mySignalStart+89338,14766+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[23] = 14766+ctx_index+1;
+BabyAdd_298_create(mySignalStart+89740,14788+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[23] = 14788+ctx_index+1;
 }
 {
 std::string new_cmp_name = "new_add2";
-BabyAdd_298_create(mySignalStart+89348,14767+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[24] = 14767+ctx_index+1;
+BabyAdd_298_create(mySignalStart+89750,14789+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[24] = 14789+ctx_index+1;
 }
 {
 std::string new_cmp_name = "encrypt_balance";
@@ -893891,8 +893891,8 @@ mySubcomponents[26] = 3981+ctx_index+1;
 }
 {
 std::string new_cmp_name = "nonce_discovery";
-PedersenCommitment2FixedM1_334_create(mySignalStart+102568,16473+ctx_index+1,ctx,new_cmp_name,myId);
-mySubcomponents[27] = 16473+ctx_index+1;
+PedersenCommitment2FixedM1_334_create(mySignalStart+102970,16495+ctx_index+1,ctx,new_cmp_name,myId);
+mySubcomponents[27] = 16495+ctx_index+1;
 }
 {
 uint cmp_index_ref = 0;
@@ -894084,10 +894084,22 @@ PFrElement aux_dest = &ctx->signalValues[ctx->componentMemory[mySubcomponents[cm
 // end load src
 Fr_copy(aux_dest,&signalValues[mySignalStart + 8]);
 }
+// no need to run sub component
+ctx->componentMemory[mySubcomponents[cmp_index_ref]].inputCounter -= 1;
+assert(ctx->componentMemory[mySubcomponents[cmp_index_ref]].inputCounter > 0);
+}
+{
+uint cmp_index_ref = 4;
+{
+PFrElement aux_dest = &ctx->signalValues[ctx->componentMemory[mySubcomponents[cmp_index_ref]].signalStart + 4];
+// load src
+// end load src
+Fr_copy(aux_dest,&signalValues[mySignalStart + 14]);
+}
 // need to run sub component
 ctx->componentMemory[mySubcomponents[cmp_index_ref]].inputCounter -= 1;
 assert(!(ctx->componentMemory[mySubcomponents[cmp_index_ref]].inputCounter));
-Poseidon2Hash3_217_run(mySubcomponents[cmp_index_ref],ctx);
+Poseidon2Hash4_74_run(mySubcomponents[cmp_index_ref],ctx);
 }
 {
 uint cmp_index_ref = 5;
@@ -894095,7 +894107,7 @@ uint cmp_index_ref = 5;
 PFrElement aux_dest = &ctx->signalValues[ctx->componentMemory[mySubcomponents[cmp_index_ref]].signalStart + 1];
 // load src
 // end load src
-Fr_copy(aux_dest,&signalValues[mySignalStart + 14]);
+Fr_copy(aux_dest,&signalValues[mySignalStart + 63]);
 }
 // no need to run sub component
 ctx->componentMemory[mySubcomponents[cmp_index_ref]].inputCounter -= 1;
@@ -894107,12 +894119,24 @@ uint cmp_index_ref = 5;
 PFrElement aux_dest = &ctx->signalValues[ctx->componentMemory[mySubcomponents[cmp_index_ref]].signalStart + 2];
 // load src
 // end load src
-Fr_copy(aux_dest,&signalValues[mySignalStart + 63]);
+Fr_copy(aux_dest,&signalValues[mySignalStart + 12]);
+}
+// no need to run sub component
+ctx->componentMemory[mySubcomponents[cmp_index_ref]].inputCounter -= 1;
+assert(ctx->componentMemory[mySubcomponents[cmp_index_ref]].inputCounter > 0);
+}
+{
+uint cmp_index_ref = 5;
+{
+PFrElement aux_dest = &ctx->signalValues[ctx->componentMemory[mySubcomponents[cmp_index_ref]].signalStart + 3];
+// load src
+// end load src
+Fr_copy(aux_dest,&signalValues[mySignalStart + 13]);
 }
 // need to run sub component
 ctx->componentMemory[mySubcomponents[cmp_index_ref]].inputCounter -= 1;
 assert(!(ctx->componentMemory[mySubcomponents[cmp_index_ref]].inputCounter));
-Poseidon2Hash2_145_run(mySubcomponents[cmp_index_ref],ctx);
+Poseidon2Hash3_217_run(mySubcomponents[cmp_index_ref],ctx);
 }
 {
 uint cmp_index_ref = 6;
@@ -894518,9 +894542,9 @@ IsEqual_147_run(mySubcomponents[cmp_index_ref],ctx);
 cmp_index_ref_load = 15;
 cmp_index_ref_load = 15;
 {{
-Fr_eq(&expaux[0],&ctx->signalValues[ctx->componentMemory[mySubcomponents[15]].signalStart + 0],&circuitConstants[102]); // line circom 153
+Fr_eq(&expaux[0],&ctx->signalValues[ctx->componentMemory[mySubcomponents[15]].signalStart + 0],&circuitConstants[102]); // line circom 157
 }}
-if (!Fr_isTrue(&expaux[0])) std::cout << "Failed assert in template/function " << myTemplateName << " line 153. " <<  "Followed trace of components: " << ctx->getTrace(myId) << std::endl;
+if (!Fr_isTrue(&expaux[0])) std::cout << "Failed assert in template/function " << myTemplateName << " line 157. " <<  "Followed trace of components: " << ctx->getTrace(myId) << std::endl;
 assert(Fr_isTrue(&expaux[0]));
 }
 {
@@ -894585,7 +894609,7 @@ PFrElement aux_dest = &lvar[0];
 // end load src
 Fr_copy(aux_dest,&circuitConstants[100]);
 }
-Fr_lt(&expaux[0],&lvar[0],&circuitConstants[634]); // line circom 163
+Fr_lt(&expaux[0],&lvar[0],&circuitConstants[634]); // line circom 167
 while(Fr_isTrue(&expaux[0])){
 {
 uint cmp_index_ref = 16;
@@ -894604,11 +894628,11 @@ LeanIMTVerify_328_run(mySubcomponents[cmp_index_ref],ctx);
 {
 PFrElement aux_dest = &lvar[0];
 // load src
-Fr_add(&expaux[0],&lvar[0],&circuitConstants[102]); // line circom 163
+Fr_add(&expaux[0],&lvar[0],&circuitConstants[102]); // line circom 167
 // end load src
 Fr_copy(aux_dest,&expaux[0]);
 }
-Fr_lt(&expaux[0],&lvar[0],&circuitConstants[634]); // line circom 163
+Fr_lt(&expaux[0],&lvar[0],&circuitConstants[634]); // line circom 167
 }
 {
 uint cmp_index_ref = 17;
@@ -894660,9 +894684,9 @@ GreaterThanOrEqualField_332_run(mySubcomponents[cmp_index_ref],ctx);
 cmp_index_ref_load = 18;
 cmp_index_ref_load = 18;
 {{
-Fr_eq(&expaux[0],&ctx->signalValues[ctx->componentMemory[mySubcomponents[18]].signalStart + 0],&circuitConstants[102]); // line circom 178
+Fr_eq(&expaux[0],&ctx->signalValues[ctx->componentMemory[mySubcomponents[18]].signalStart + 0],&circuitConstants[102]); // line circom 182
 }}
-if (!Fr_isTrue(&expaux[0])) std::cout << "Failed assert in template/function " << myTemplateName << " line 178. " <<  "Followed trace of components: " << ctx->getTrace(myId) << std::endl;
+if (!Fr_isTrue(&expaux[0])) std::cout << "Failed assert in template/function " << myTemplateName << " line 182. " <<  "Followed trace of components: " << ctx->getTrace(myId) << std::endl;
 assert(Fr_isTrue(&expaux[0]));
 }
 {
@@ -894713,7 +894737,7 @@ Fr_copy(aux_dest,&ctx->signalValues[ctx->componentMemory[mySubcomponents[19]].si
 {
 PFrElement aux_dest = &signalValues[mySignalStart + 67];
 // load src
-Fr_add(&expaux[0],&signalValues[mySignalStart + 8],&signalValues[mySignalStart + 14]); // line circom 192
+Fr_add(&expaux[0],&signalValues[mySignalStart + 8],&signalValues[mySignalStart + 14]); // line circom 196
 // end load src
 Fr_copy(aux_dest,&expaux[0]);
 }
@@ -894746,15 +894770,15 @@ GreaterThanOrEqualField_332_run(mySubcomponents[cmp_index_ref],ctx);
 cmp_index_ref_load = 20;
 cmp_index_ref_load = 20;
 {{
-Fr_eq(&expaux[0],&ctx->signalValues[ctx->componentMemory[mySubcomponents[20]].signalStart + 0],&circuitConstants[102]); // line circom 198
+Fr_eq(&expaux[0],&ctx->signalValues[ctx->componentMemory[mySubcomponents[20]].signalStart + 0],&circuitConstants[102]); // line circom 202
 }}
-if (!Fr_isTrue(&expaux[0])) std::cout << "Failed assert in template/function " << myTemplateName << " line 198. " <<  "Followed trace of components: " << ctx->getTrace(myId) << std::endl;
+if (!Fr_isTrue(&expaux[0])) std::cout << "Failed assert in template/function " << myTemplateName << " line 202. " <<  "Followed trace of components: " << ctx->getTrace(myId) << std::endl;
 assert(Fr_isTrue(&expaux[0]));
 }
 {
 PFrElement aux_dest = &signalValues[mySignalStart + 68];
 // load src
-Fr_sub(&expaux[0],&signalValues[mySignalStart + 23],&signalValues[mySignalStart + 67]); // line circom 202
+Fr_sub(&expaux[0],&signalValues[mySignalStart + 23],&signalValues[mySignalStart + 67]); // line circom 206
 // end load src
 Fr_copy(aux_dest,&expaux[0]);
 }

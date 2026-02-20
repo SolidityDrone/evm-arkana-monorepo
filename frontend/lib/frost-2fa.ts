@@ -355,7 +355,7 @@ export async function signingPhoneRound2(
 
 /**
  * Compute withdraw message hash for threshold signing.
- * Message = Poseidon2(Poseidon3(ta, ch, amount), Poseidon2(fee, current_nonce))
+ * Message = Poseidon2(left, right) where left=Hash4(ta,ch,amt,fee), right=Hash3(nonce,arb_hash,receiver)
  */
 export async function getWithdrawMessageForThreshold(
   tokenAddress: string,
@@ -363,14 +363,17 @@ export async function getWithdrawMessageForThreshold(
   amount: string,
   relayerFeeAmount: string,
   currentNonce: string,
+  arbitraryCalldataHash: string,
+  receiverAddress: string,
 ): Promise<string> {
   console.log('[FROST getWithdrawMessageForThreshold] Raw inputs:', {
     tokenAddress,
-    tokenAddress_asBigInt: BigInt(tokenAddress).toString(),
     chainId,
     amount,
     relayerFeeAmount,
     currentNonce,
+    arbitraryCalldataHash,
+    receiverAddress,
   });
   const { getWithdrawMessageHash } = await import('./circuit-utils');
   const messageBigInt = await getWithdrawMessageHash(
@@ -379,6 +382,8 @@ export async function getWithdrawMessageForThreshold(
     BigInt(amount),
     BigInt(relayerFeeAmount),
     BigInt(currentNonce),
+    BigInt(arbitraryCalldataHash),
+    BigInt(receiverAddress),
   );
   console.log('[FROST getWithdrawMessageForThreshold] Result:', messageBigInt.toString());
   return messageBigInt.toString();

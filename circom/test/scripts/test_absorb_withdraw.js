@@ -314,15 +314,15 @@ async function testAbsorbWithdrawFlow() {
     const absorbWithdrawAmount = hexToDecimal("0x1e"); // 30
     const relayerFee = "1"; // Single fee for absorb+withdraw
     
-    // Sign WITHDRAW message for absorb_withdraw: Poseidon2(Poseidon3(ta, ch, amount), Poseidon2(fee, current_nonce))
+    // Sign WITHDRAW message for absorb_withdraw: Poseidon2(left, right) where left=Hash4(ta,ch,amt,fee), right=Hash3(nonce,arb_hash,receiver)
     const currentNonceForAbsorbWithdraw = "3"; // previous_nonce is 2, current_nonce = previous + 1
-    const { signature: absorbWithdrawSignature } = await signWithdrawMessage(TEST_SIGNER_PRIVKEY_HEX, tokenAddress, chainId, absorbWithdrawAmount, relayerFee, currentNonceForAbsorbWithdraw);
+    const arbitraryCalldataHash = hexToDecimal("0x1234567890abcdef");
+    const receiverAddress = hexToDecimal("0x742d35cc6634c0532925a3b8d4c9db96c4b4d8b6");
+    const { signature: absorbWithdrawSignature } = await signWithdrawMessage(TEST_SIGNER_PRIVKEY_HEX, tokenAddress, chainId, absorbWithdrawAmount, relayerFee, currentNonceForAbsorbWithdraw, arbitraryCalldataHash, receiverAddress);
     
     // For withdraw, we need previous_unlocks_at (must be unlocked, so use 0)
     // declared_time_reference must be >= unlocks_at
     const declaredTimeReference = hexToDecimal("0x0f4240"); // 1000000 (large timestamp)
-    const arbitraryCalldataHash = hexToDecimal("0x1234567890abcdef");
-    const receiverAddress = hexToDecimal("0x742d35cc6634c0532925a3b8d4c9db96c4b4d8b6");
     
     const absorbWithdrawInput = {
         user_key: userKey,

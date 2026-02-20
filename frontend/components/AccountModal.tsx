@@ -15,7 +15,7 @@ import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { reconstructTokenHistory, TransactionHistoryEntry } from '@/lib/transaction-history';
 import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
-import { ChevronDown, ChevronUp, Clock, Shield } from 'lucide-react';
+import { ChevronDown, ChevronUp, Clock, Shield, X } from 'lucide-react';
 import { TokenIcon } from '@/lib/token-icons';
 import { convertSharesToAssets } from '@/lib/shares-to-assets';
 
@@ -647,6 +647,13 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
             <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto w-[95vw] sm:w-full min-w-0 p-4 sm:p-6">
+                <button
+                    onClick={onClose}
+                    className="absolute top-3 right-3 rounded-lg p-1.5 text-white/40 hover:text-white/80 hover:bg-white/[0.08] transition-all z-10"
+                    aria-label="Close"
+                >
+                    <X size={16} />
+                </button>
                 <DialogHeader className="pb-3 sm:pb-4">
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                         <DialogTitle className="text-lg sm:text-xl flex items-center gap-2">

@@ -162,17 +162,25 @@ async function getFrostSignerIdentityWithGroupIdentity() {
 
 /**
  * Sign withdraw message with the Baby Jubjub key derived from FROST group key.
- * Same message format as eddsa_helper.signWithdrawMessage: Poseidon(5)(..., current_nonce). Pass previous_nonce + 1 as current_nonce.
+ * Same message format as eddsa_helper.signWithdrawMessage: Poseidon2(left, right) where left=Hash4(ta,ch,amt,fee), right=Hash3(nonce,arb_hash,receiver).
  */
-async function signWithdrawMessageFrost(derivedPrivKeyHex, token_address, chain_id, amount, relayer_fee_amount, current_nonce) {
+async function signWithdrawMessageFrost(derivedPrivKeyHex, token_address, chain_id, amount, relayer_fee_amount, current_nonce, arbitrary_calldata_hash, receiver_address) {
     const { eddsa, F } = await getEddsa();
     const { getWithdrawMessageHash } = require(path.join(__dirname, '../../test/scripts/poseidon_hash_helper'));
+    const arbHash = arbitrary_calldata_hash !== undefined && arbitrary_calldata_hash !== null
+        ? arbitrary_calldata_hash.toString()
+        : '0';
+    const recvAddr = receiver_address !== undefined && receiver_address !== null
+        ? receiver_address.toString()
+        : '0';
     const message = await getWithdrawMessageHash(
         token_address.toString(),
         chain_id.toString(),
         amount.toString(),
         relayer_fee_amount.toString(),
-        current_nonce.toString()
+        current_nonce.toString(),
+        arbHash,
+        recvAddr
     );
     const msgField = F.e(BigInt(message));
     const prvKey = Buffer.from(derivedPrivKeyHex, 'hex');

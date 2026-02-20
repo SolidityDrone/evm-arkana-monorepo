@@ -38,7 +38,6 @@ const nextConfig: NextConfig = {
       );
     }
 
-    // Handle ESM packages like @noir-lang/noir_js
     config.resolve.extensionAlias = {
       '.js': ['.js', '.ts', '.tsx'],
       '.jsx': ['.jsx', '.tsx'],

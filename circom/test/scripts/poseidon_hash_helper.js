@@ -78,11 +78,19 @@ async function getSendMessageHash(tokenAddress, chainId, amount, relayerFeeAmoun
 }
 
 /**
- * Withdraw message = Hash2(Hash3(ta, ch, amount), Hash2(fee, current_nonce)).
+ * Withdraw message = Hash2(left, right) where:
+ *   left  = Hash4(token_address, chain_id, amount, relayer_fee_amount)
+ *   right = Hash3(current_nonce, arbitrary_calldata_hash, receiver_address)
  */
-async function getWithdrawMessageHash(tokenAddress, chainId, amount, relayerFeeAmount, currentNonce) {
-    const left = await poseidon2Hash3(tokenAddress, chainId, amount);
-    const right = await poseidon2Hash2(relayerFeeAmount, currentNonce);
+async function getWithdrawMessageHash(tokenAddress, chainId, amount, relayerFeeAmount, currentNonce, arbitraryCalldataHash, receiverAddress) {
+    const arbHash = arbitraryCalldataHash !== undefined && arbitraryCalldataHash !== null
+        ? toBigInt(arbitraryCalldataHash)
+        : 0n;
+    const recvAddr = receiverAddress !== undefined && receiverAddress !== null
+        ? toBigInt(receiverAddress)
+        : 0n;
+    const left = await poseidon2Hash4(tokenAddress, chainId, amount, relayerFeeAmount);
+    const right = await poseidon2Hash3(currentNonce, arbHash, recvAddr);
     return poseidon2Hash2(left, right);
 }
 

@@ -162,34 +162,6 @@ export function HeroSection() {
                                 className="h-10 md:h-12 w-auto object-contain"
                             />
                         </a>
-                        <a
-                            href="https://drand.love"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="opacity-70 hover:opacity-100 transition-all duration-300 hover:scale-105 bg-white/90 hover:bg-white rounded-xl px-4 py-3"
-                        >
-                            <Image
-                                src="/drandlogotext.png"
-                                alt="drand"
-                                width={140}
-                                height={48}
-                                className="h-10 md:h-12 w-auto object-contain"
-                            />
-                        </a>
-                        <a
-                            href="https://uniswap.org"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="opacity-70 hover:opacity-100 transition-all duration-300 hover:scale-105 bg-white/90 hover:bg-white rounded-xl px-4 py-3"
-                        >
-                            <Image
-                                src="/unilogotext.png"
-                                alt="Uniswap"
-                                width={140}
-                                height={48}
-                                className="h-10 md:h-12 w-auto object-contain"
-                            />
-                        </a>
                     </div>
                 </div>
 

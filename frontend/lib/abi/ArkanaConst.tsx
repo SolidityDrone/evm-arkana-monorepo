@@ -1,4 +1,4 @@
-const ARKANA_ADDRESS = "0xe3f89724666d4220e816c80bafcC993337a5e1BF"
+const ARKANA_ADDRESS = "0x0C1CB9AAE8E735d4F95ef50475D1faB842530e5B"
 const ARKANA_ABI = [
     {
         "type": "constructor",
