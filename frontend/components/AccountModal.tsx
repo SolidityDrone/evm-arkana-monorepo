@@ -6,7 +6,7 @@ import { useAccountState } from '@/context/AccountStateProvider';
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { usePublicClient } from 'wagmi';
 import { Address, formatUnits, keccak256, encodePacked } from 'viem';
-import { saveTokenAccountData, loadTokenAccountData, TokenAccountData, getTokenAddresses, loadAccountData, AccountData, DiscoveryMode, saveDiscoveryMode, loadTwoFactorData, type TwoFactorData } from '@/lib/indexeddb';
+import { saveTokenAccountData, loadTokenAccountData, TokenAccountData, getTokenAddresses, loadAccountData, AccountData, DiscoveryMode, saveDiscoveryMode, checkProfileSetup } from '@/lib/indexeddb';
 import { parseZkAddress } from '@/lib/zk-address';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { useAaveTokens } from '@/hooks/useAaveTokens';
@@ -15,7 +15,7 @@ import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { reconstructTokenHistory, TransactionHistoryEntry } from '@/lib/transaction-history';
 import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
-import { ChevronDown, ChevronUp, Clock, Shield, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Clock, Key, Shield, X } from 'lucide-react';
 import { TokenIcon } from '@/lib/token-icons';
 import { convertSharesToAssets } from '@/lib/shares-to-assets';
 
@@ -66,7 +66,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
     const [incomingNotesByToken, setIncomingNotesByToken] = useState<Map<string, import('@/lib/indexeddb').IncomingNote[]>>(new Map());
     const [loadingIncomingToken, setLoadingIncomingToken] = useState<Set<string>>(new Set());
     const fetchedIncomingNotesRef = useRef<Set<string>>(new Set());
-    const [twoFactorActive, setTwoFactorActive] = useState(false);
+    const [profileType, setProfileType] = useState<'single' | '2fa' | undefined>(undefined);
     const tokenDataMapRef = useRef<Map<string, TokenAccountData>>(new Map());
 
     const isModalClosedRef = useRef(false);
@@ -75,10 +75,14 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         tokenDataMapRef.current = tokenDataMap;
     }, [tokenDataMap]);
 
+    // Load profile type (and 2FA status) when modal opens
     useEffect(() => {
         if (!isOpen || !zkAddress) return;
-        const addr = zkAddress.replace('zk', '');
-        loadTwoFactorData(addr).then(d => setTwoFactorActive(!!d?.is2FA));
+        const rawHex = zkAddress.replace('zk', '');
+        checkProfileSetup(rawHex).then(status => {
+            if (status === 'single' || status === '2fa') setProfileType(status);
+            else setProfileType(undefined);
+        }).catch(() => setProfileType(undefined));
     }, [isOpen, zkAddress]);
 
     // Helper function to format value with decimals
@@ -658,7 +662,12 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                         <DialogTitle className="text-lg sm:text-xl flex items-center gap-2">
                             Account
-                            {twoFactorActive && (
+                            {profileType === 'single' && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-white/10 text-white/50 border border-white/10">
+                                    <Key className="w-3 h-3" /> Single Key
+                                </span>
+                            )}
+                            {profileType === '2fa' && (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-primary/15 text-primary border border-primary/20">
                                     <Shield className="w-3 h-3" /> 2FA
                                 </span>

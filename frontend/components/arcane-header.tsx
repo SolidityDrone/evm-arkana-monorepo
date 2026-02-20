@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import Image from "next/image"
 import { useAccount } from 'wagmi'
 import { useZkAddress } from '@/context/AccountProvider'
@@ -11,14 +11,35 @@ import ZkAddressDisplay from './ZkAddressDisplay'
 import Link from "next/link"
 import AccountModal from './AccountModal'
 import ZkAddressModal from './ZkAddressModal'
+import { ProfileBootstrapModal, type ProfileSetupResult } from './ProfileBootstrapModal'
+import { checkProfileSetup, saveProfileType } from '@/lib/indexeddb'
 
 export function ArcaneHeader() {
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
     const [accountModalOpen, setAccountModalOpen] = useState(false)
     const [zkAddressModalOpen, setZkAddressModalOpen] = useState(false)
+    const [profileBootstrapOpen, setProfileBootstrapOpen] = useState(false)
     const { isConnected, address } = useAccount()
     const zkAddress = useZkAddress()
     const { handleSign, isSigning, isLoading } = useAccountSigning()
+
+    // Check if profile has been set up whenever zkAddress becomes available
+    useEffect(() => {
+        if (!zkAddress) return
+        const rawHex = zkAddress.replace('zk', '')
+        checkProfileSetup(rawHex).then(status => {
+            if (status === 'not-initialized') {
+                setProfileBootstrapOpen(true)
+            }
+        }).catch(() => { /* DB unavailable — skip bootstrap */ })
+    }, [zkAddress])
+
+    const handleProfileBootstrapComplete = async (result: ProfileSetupResult) => {
+        if (!zkAddress) return
+        const rawHex = zkAddress.replace('zk', '')
+        await saveProfileType(rawHex, result.type, result.twoFactorData)
+        setProfileBootstrapOpen(false)
+    }
 
     const navLinks = [
         { label: "Grimoire", href: "/aave-tokens" },
@@ -174,6 +195,10 @@ export function ArcaneHeader() {
             </nav>
             <AccountModal isOpen={accountModalOpen} onClose={() => setAccountModalOpen(false)} />
             <ZkAddressModal isOpen={zkAddressModalOpen} onClose={() => setZkAddressModalOpen(false)} />
+            <ProfileBootstrapModal
+                open={profileBootstrapOpen}
+                onComplete={handleProfileBootstrapComplete}
+            />
         </header>
     )
 }

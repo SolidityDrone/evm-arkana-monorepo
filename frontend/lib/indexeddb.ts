@@ -65,6 +65,8 @@ export interface AccountData {
     mageTokenData?: TokenAccountData[];
     archonTokenData?: TokenAccountData[];
     twoFactor?: TwoFactorData;
+    /** Explicitly chosen profile type. undefined = not yet bootstrapped. */
+    profileType?: 'single' | '2fa';
 }
 
 const DB_NAME = 'arkana_account_db';
@@ -153,6 +155,7 @@ export async function saveAccountData(data: AccountData): Promise<void> {
             mageTokenData: serializeTokenData(data.mageTokenData),
             archonTokenData: serializeTokenData(data.archonTokenData),
             twoFactor: data.twoFactor ?? undefined,
+            profileType: data.profileType ?? undefined,
         };
 
         await new Promise<void>((resolve, reject) => {
@@ -219,6 +222,7 @@ export async function loadAccountData(zkAddress: string): Promise<AccountData | 
                     mageTokenData: deserializeTokenData(result.mageTokenData),
                     archonTokenData: deserializeTokenData(result.archonTokenData),
                     twoFactor: result.twoFactor ?? undefined,
+                    profileType: result.profileType ?? undefined,
                 };
 
                 resolve(data);
@@ -389,3 +393,51 @@ export async function loadTwoFactorData(zkAddress: string): Promise<TwoFactorDat
     }
 }
 
+/**
+ * Save the user's chosen profile type (single key or 2FA).
+ * If type is '2fa', twoFactorData must be provided.
+ */
+export async function saveProfileType(
+    zkAddress: string,
+    type: 'single' | '2fa',
+    twoFactorData?: TwoFactorData
+): Promise<void> {
+    try {
+        const existingData = await loadAccountData(zkAddress);
+        const updatedData: AccountData = {
+            zkAddress,
+            userKey: existingData?.userKey || null,
+            tokenData: existingData?.tokenData || [],
+            lastUpdated: Date.now(),
+            discoveryMode: existingData?.discoveryMode || 'mage',
+            mageTokenData: existingData?.mageTokenData,
+            archonTokenData: existingData?.archonTokenData,
+            twoFactor: type === '2fa' && twoFactorData ? twoFactorData : existingData?.twoFactor,
+            profileType: type,
+        };
+        await saveAccountData(updatedData);
+    } catch (error) {
+        console.error('Error saving profile type to IndexedDB:', error);
+    }
+}
+
+/**
+ * Check the profile setup state for a given zkAddress.
+ * Returns:
+ *   'no-db'           – IndexedDB is unavailable (private mode, etc.)
+ *   'not-initialized' – DB is available but this account has no profile set yet
+ *   'single' | '2fa'  – Profile type already chosen
+ */
+export async function checkProfileSetup(
+    zkAddress: string
+): Promise<'no-db' | 'not-initialized' | 'single' | '2fa'> {
+    try {
+        const db = await getDB();
+        if (!db) return 'no-db';
+        const accountData = await loadAccountData(zkAddress);
+        if (!accountData || !accountData.profileType) return 'not-initialized';
+        return accountData.profileType;
+    } catch {
+        return 'no-db';
+    }
+}
