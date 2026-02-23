@@ -1,4 +1,4 @@
-const ARKANA_ADDRESS = "0x0C1CB9AAE8E735d4F95ef50475D1faB842530e5B"
+const ARKANA_ADDRESS = "0x899c160f64e5bC78c29e50BC75309635aCeb3586"
 const ARKANA_ABI = [
     {
         "type": "constructor",
@@ -374,6 +374,11 @@ const ARKANA_ABI = [
                 "name": "encryptedNullifier",
                 "type": "bytes32",
                 "internalType": "bytes32"
+            },
+            {
+                "name": "unlockAt",
+                "type": "uint256",
+                "internalType": "uint256"
             }
         ],
         "stateMutability": "view"

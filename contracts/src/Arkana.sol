@@ -189,6 +189,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         OperationType operationType;
         uint256 sharesMinted; // Shares minted for this operation (only for Initialize/Deposit, 0 otherwise)
         address tokenAddress; // Token address for this operation
+        uint256 unlockAt;     // Unix timestamp when this position can be withdrawn (0 = no lock)
     }
 
     struct EncryptedNote {
@@ -615,6 +616,10 @@ contract Arkana is AccessControl, ReentrancyGuard {
         // Nullifier is 0 for nonce 0
         encryptedStateDetails[bytes32(newNonceCommitment)] = EncryptedStateDetails(bytes32(shares), bytes32(uint256(0)));
 
+        // Store operation info including unlock timestamp (0 = no lock / immediately available)
+        operationInfo[bytes32(newNonceCommitment)] =
+            OperationInfo({operationType: OperationType.Initialize, sharesMinted: shares, tokenAddress: tokenAddress, unlockAt: unlocks_at_timestamp});
+
         // Mint shares to Arkana contract (Arkana holds all shares for users)
         // This allows Arkana to redeem/burn shares when fees are paid
         vault.mintShares(address(this), shares);
@@ -679,7 +684,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
 
         // Store operation info for nonceCommitment
         operationInfo[bytes32(newNonceCommitment)] =
-            OperationInfo({operationType: OperationType.Deposit, sharesMinted: shares, tokenAddress: tokenAddress});
+            OperationInfo({operationType: OperationType.Deposit, sharesMinted: shares, tokenAddress: tokenAddress, unlockAt: 0});
 
         // Get generator G
         (uint256 gX, uint256 gY) = Generators.getG();
@@ -776,7 +781,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         _handleWithdrawal(tokenAddress, amount, relayerFeeAmount, receiverAddress, call, arbitraryCalldataHash);
 
         operationInfo[bytes32(outputs.newNonceCommitment)] =
-            OperationInfo({operationType: opType, sharesMinted: 0, tokenAddress: tokenAddress});
+            OperationInfo({operationType: opType, sharesMinted: 0, tokenAddress: tokenAddress, unlockAt: 0});
 
         return _addLeaf(tokenAddress, poseidonHasher.hash_2(finalCommitment.x, finalCommitment.y));
     }
@@ -919,7 +924,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
         if (tokenHistoricalNoteCommitments[tokenAddress][note_digest]) revert NoteAlreadyUsed();
 
         operationInfo[bytes32(newNonceCommitment)] =
-            OperationInfo({operationType: opType, sharesMinted: 0, tokenAddress: tokenAddress});
+            OperationInfo({operationType: opType, sharesMinted: 0, tokenAddress: tokenAddress, unlockAt: 0});
 
         nonceCommitmentToReceiver[bytes32(newNonceCommitment)] = CurvePoint(receiverPublicKeyX, receiverPublicKeyY);
         tokenHistoricalNoteCommitments[tokenAddress][note_digest] = true;
@@ -1015,6 +1020,7 @@ contract Arkana is AccessControl, ReentrancyGuard {
     /// @return tokenAddress The token address for this operation
     /// @return encryptedBalance The encrypted balance (bytes32)
     /// @return encryptedNullifier The encrypted nullifier (bytes32)
+    /// @return unlockAt Unix timestamp when this position can be withdrawn (0 = no lock / immediately available)
     function getNonceCommitmentInfo(bytes32 nonceCommitment)
         external
         view
@@ -1023,14 +1029,15 @@ contract Arkana is AccessControl, ReentrancyGuard {
             uint256 sharesMinted,
             address tokenAddress,
             bytes32 encryptedBalance,
-            bytes32 encryptedNullifier
+            bytes32 encryptedNullifier,
+            uint256 unlockAt
         )
     {
         OperationInfo memory info = operationInfo[nonceCommitment];
         EncryptedStateDetails memory state = encryptedStateDetails[nonceCommitment];
 
         return
-            (info.operationType, info.sharesMinted, info.tokenAddress, state.encryptedBalance, state.encryptedNullifier);
+            (info.operationType, info.sharesMinted, info.tokenAddress, state.encryptedBalance, state.encryptedNullifier, info.unlockAt);
     }
 
     /// @notice Get nonce discovery info for a token (consolidated getter)

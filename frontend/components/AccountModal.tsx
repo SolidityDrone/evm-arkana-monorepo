@@ -1,6 +1,6 @@
 'use client';
 
-import { useNonceDiscovery, BalanceEntry } from '@/hooks/useNonceDiscovery';
+import { useNonceDiscovery, BalanceEntry, ArchonPosition } from '@/hooks/useNonceDiscovery';
 import { useZkAddress, useAccount } from '@/context/AccountProvider';
 import { useAccountState } from '@/context/AccountStateProvider';
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
@@ -15,9 +15,12 @@ import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { reconstructTokenHistory, TransactionHistoryEntry } from '@/lib/transaction-history';
 import { computePrivateKeyFromSignature } from '@/lib/circuit-utils';
-import { ChevronDown, ChevronUp, Clock, Key, Shield, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Clock, Key, Shield, X, Users, Plus, Crown, UserPlus } from 'lucide-react';
 import { TokenIcon } from '@/lib/token-icons';
 import { convertSharesToAssets } from '@/lib/shares-to-assets';
+import { MultisigSetupWizard } from './MultisigSetupWizard';
+import { useActiveProfile } from '@/context/ActiveProfileProvider';
+import type { MultisigProfileData } from '@/lib/indexeddb';
 
 interface AccountModalProps {
     isOpen: boolean;
@@ -51,12 +54,14 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
     const [discoveryErrors, setDiscoveryErrors] = useState<Map<string, string>>(new Map());
     const [dataLastSaved, setDataLastSaved] = useState<number | null>(null);
     const [isLoadingSavedData, setIsLoadingSavedData] = useState(false);
-    const [expandedHistoryToken, setExpandedHistoryToken] = useState<string | null>(null);
+    const [historyModalToken, setHistoryModalToken] = useState<string | null>(null);
     const [tokenHistoryMap, setTokenHistoryMap] = useState<Map<string, TransactionHistoryEntry[]>>(new Map());
     const [loadingHistoryToken, setLoadingHistoryToken] = useState<string | null>(null);
     const [historyErrors, setHistoryErrors] = useState<Map<string, string>>(new Map());
     const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('mage');
     const [skipCacheOnNextDiscovery, setSkipCacheOnNextDiscovery] = useState(false);
+    // Archon mode: per-token array of discovered positions (indexed by tokenAddress lower)
+    const [archonPositionsMap, setArchonPositionsMap] = useState<Map<string, ArchonPosition[]>>(new Map());
     // Map of "tokenAddress-nonce" -> converted asset value (bigint)
     const [convertedAssets, setConvertedAssets] = useState<Map<string, bigint>>(new Map());
     const [isConvertingAssets, setIsConvertingAssets] = useState<Set<string>>(new Set());
@@ -67,9 +72,17 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
     const [loadingIncomingToken, setLoadingIncomingToken] = useState<Set<string>>(new Set());
     const fetchedIncomingNotesRef = useRef<Set<string>>(new Set());
     const [profileType, setProfileType] = useState<'single' | '2fa' | undefined>(undefined);
+    const [multisigWizardOpen, setMultisigWizardOpen] = useState(false);
     const tokenDataMapRef = useRef<Map<string, TokenAccountData>>(new Map());
 
+    const { availableMultisigs, switchProfile, activeProfileId, refreshProfiles, effectiveZkAddress, effectiveUserKey, activeMultisigProfile, isSignerMode } = useActiveProfile();
+    // Use the effective zkAddress (multisig or main) for all IndexedDB/discovery operations
+    const activeAccountKey = effectiveZkAddress ?? zkAddress;
+
     const isModalClosedRef = useRef(false);
+    // Generation counter: incremented every time activeAccountKey changes.
+    // loadSavedData captures the generation at call time and discards results if stale.
+    const loadGenRef = useRef(0);
 
     useEffect(() => {
         tokenDataMapRef.current = tokenDataMap;
@@ -77,13 +90,19 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
 
     // Load profile type (and 2FA status) when modal opens
     useEffect(() => {
-        if (!isOpen || !zkAddress) return;
+        if (!isOpen) return;
+        if (activeMultisigProfile) {
+            // Multisig profile is active — badge is handled separately via activeMultisigProfile
+            setProfileType(undefined);
+            return;
+        }
+        if (!zkAddress) return;
         const rawHex = zkAddress.replace('zk', '');
         checkProfileSetup(rawHex).then(status => {
             if (status === 'single' || status === '2fa') setProfileType(status);
             else setProfileType(undefined);
         }).catch(() => setProfileType(undefined));
-    }, [isOpen, zkAddress]);
+    }, [isOpen, zkAddress, activeMultisigProfile]);
 
     // Helper function to format value with decimals
     const formatTokenValue = useCallback((value: bigint, decimals: number, maxDecimals: number = 6): string => {
@@ -103,7 +122,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
 
     // Convert shares to assets for all balance entries when tokenDataMap changes
     useEffect(() => {
-        if (!publicClient || tokenDataMap.size === 0) return;
+        if (!publicClient || (tokenDataMap.size === 0 && archonPositionsMap.size === 0)) return;
 
         const convertAll = async () => {
             const conversionsToMake: Array<{ tokenAddress: string; nonce: bigint; shares: bigint; key: string }> = [];
@@ -156,6 +175,33 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                 }
             }
 
+            // Archon mode: convert each position's latest balance and the overall total
+            for (const [tokenAddress, positions] of archonPositionsMap.entries()) {
+                for (const pos of positions) {
+                    const latestEntry = pos.balanceEntries.length > 0
+                        ? pos.balanceEntries[pos.balanceEntries.length - 1]
+                        : null;
+                    if (!latestEntry || latestEntry.amount <= BigInt(0)) continue;
+                    const key = `${tokenAddress.toLowerCase()}-archon-${pos.userKeyOffset.toString()}`;
+                    if (!convertedAssets.has(key) && !isConvertingAssets.has(key) && !pendingConversionsRef.current.has(key)) {
+                        conversionsToMake.push({ tokenAddress, nonce: pos.userKeyOffset, shares: latestEntry.amount, key });
+                        pendingConversionsRef.current.add(key);
+                    }
+                }
+                // Also convert total across all positions
+                const totalShares = positions.reduce((sum, pos) => {
+                    const latest = pos.balanceEntries.length > 0 ? pos.balanceEntries[pos.balanceEntries.length - 1] : null;
+                    return sum + (latest?.amount ?? BigInt(0));
+                }, BigInt(0));
+                if (totalShares > BigInt(0)) {
+                    const totalKey = `${tokenAddress.toLowerCase()}-archon-total`;
+                    if (!convertedAssets.has(totalKey) && !isConvertingAssets.has(totalKey) && !pendingConversionsRef.current.has(totalKey)) {
+                        conversionsToMake.push({ tokenAddress, nonce: BigInt(-3), shares: totalShares, key: totalKey });
+                        pendingConversionsRef.current.add(totalKey);
+                    }
+                }
+            }
+
             if (conversionsToMake.length === 0) return;
 
             // Mark all as converting
@@ -201,14 +247,19 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         };
 
         convertAll();
-    }, [publicClient, tokenDataMap, incomingNotesByToken, convertedAssets, isConvertingAssets]);
+    }, [publicClient, tokenDataMap, archonPositionsMap, incomingNotesByToken, convertedAssets, isConvertingAssets]);
 
     const loadSavedData = useCallback(async () => {
-        if (!zkAddress) return;
+        if (!activeAccountKey) return;
+        // Capture current generation — if it changes before we finish, discard stale results
+        const gen = loadGenRef.current;
 
         try {
             setIsLoadingSavedData(true);
-            const savedData = await loadAccountData(zkAddress);
+            const savedData = await loadAccountData(activeAccountKey);
+
+            // Profile switched while we were loading — discard
+            if (loadGenRef.current !== gen) return;
 
             if (savedData) {
                 const savedMode = savedData.discoveryMode || 'mage';
@@ -240,13 +291,14 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         } catch (error) {
             console.error('Error loading saved data:', error);
         } finally {
-            setIsLoadingSavedData(false);
+            if (loadGenRef.current === gen) setIsLoadingSavedData(false);
         }
-    }, [zkAddress, setCurrentNonce, setBalanceEntries]);
+    }, [activeAccountKey, setCurrentNonce, setBalanceEntries]);
 
     // Discover nonce for all Aave tokens
     const discoverAllTokens = useCallback(async () => {
-        if (!publicClient || !account?.signature || !zkAddress) {
+        const hasCredentials = activeMultisigProfile ? !!effectiveUserKey : !!account?.signature;
+        if (!publicClient || !hasCredentials || !activeAccountKey) {
             return;
         }
 
@@ -258,6 +310,9 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         if (aaveTokens.length === 0) {
             return;
         }
+
+        // Capture generation to detect profile switches mid-discovery
+        const gen = loadGenRef.current;
 
         setIsDiscoveringTokens(new Set(aaveTokens.map(t => t.address)));
         setDiscoveryErrors(new Map());
@@ -272,7 +327,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         }
 
         for (const token of aaveTokens) {
-            if (isModalClosedRef.current) {
+            if (isModalClosedRef.current || loadGenRef.current !== gen) {
                 break;
             }
 
@@ -283,7 +338,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                 // Only use cache if we're not skipping it
                 if (!shouldSkipCache) {
                     // Reload cached data before each token to get the latest state
-                    const cachedData = await loadAccountData(zkAddress);
+                    const cachedData = await loadAccountData(activeAccountKey);
                     const tokenAddressLower = token.address.toLowerCase();
 
                     // Get cached data for this specific token
@@ -299,7 +354,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
 
                 if (result && !isModalClosedRef.current) {
                     // Save token-specific data (per mode)
-                    await saveTokenAccountData(zkAddress, token.address, result.currentNonce, result.balanceEntries, discoveryMode);
+                    await saveTokenAccountData(activeAccountKey, token.address, result.currentNonce, result.balanceEntries, discoveryMode);
 
                     newTokenDataMap.set(token.address.toLowerCase(), {
                         tokenAddress: token.address,
@@ -307,6 +362,15 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                         balanceEntries: result.balanceEntries,
                         lastUpdated: Date.now(),
                     });
+
+                    // Capture per-position data in archon mode
+                    if (result.archonPositions && result.archonPositions.length > 0) {
+                        setArchonPositionsMap(prev => {
+                            const next = new Map(prev);
+                            next.set(token.address.toLowerCase(), result.archonPositions!);
+                            return next;
+                        });
+                    }
 
                     // Update state immediately for this token to show progress
                     setTokenDataMap(new Map(newTokenDataMap));
@@ -330,14 +394,15 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
             await new Promise(resolve => setTimeout(resolve, 10));
         }
 
-        if (!isModalClosedRef.current) {
+        if (!isModalClosedRef.current && loadGenRef.current === gen) {
             setTokenDataMap(newTokenDataMap);
             setDataLastSaved(Date.now());
         }
-    }, [publicClient, account?.signature, zkAddress, isLoadingAaveTokens, aaveTokens, computeCurrentNonce, discoveryMode, skipCacheOnNextDiscovery]);
+    }, [publicClient, account?.signature, activeAccountKey, activeMultisigProfile, effectiveUserKey, isLoadingAaveTokens, aaveTokens, computeCurrentNonce, discoveryMode, skipCacheOnNextDiscovery]);
 
     const handleDiscoverToken = useCallback(async (tokenAddress: string) => {
-        if (!zkAddress || !publicClient || !account?.signature || isModalClosedRef.current) {
+        const hasCredentials = activeMultisigProfile ? !!effectiveUserKey : !!account?.signature;
+        if (!activeAccountKey || !publicClient || !hasCredentials || isModalClosedRef.current) {
             return;
         }
 
@@ -357,7 +422,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
             if (isModalClosedRef.current) return;
 
             // Load cached data for this token (mode-specific)
-            const cachedTokenData = await loadTokenAccountData(zkAddress, normalizedTokenAddress, discoveryMode);
+            const cachedTokenData = await loadTokenAccountData(activeAccountKey, normalizedTokenAddress, discoveryMode);
             const cachedNonce = cachedTokenData?.currentNonce || null;
             const cachedBalanceEntries = cachedTokenData?.balanceEntries || [];
 
@@ -372,7 +437,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
 
             if (result) {
                 await saveTokenAccountData(
-                    zkAddress,
+                    activeAccountKey,
                     normalizedTokenAddress,
                     result.currentNonce,
                     result.balanceEntries,
@@ -389,6 +454,14 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                     });
                     return newMap;
                 });
+
+                if (result.archonPositions && result.archonPositions.length > 0) {
+                    setArchonPositionsMap(prev => {
+                        const next = new Map(prev);
+                        next.set(normalizedTokenAddress, result.archonPositions!);
+                        return next;
+                    });
+                }
 
                 setCurrentNonce(result.currentNonce);
                 setBalanceEntries(result.balanceEntries);
@@ -408,11 +481,11 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                 return newSet;
             });
         }
-    }, [zkAddress, publicClient, account?.signature, computeCurrentNonce, setCurrentNonce, setBalanceEntries, discoveryMode]);
+    }, [activeAccountKey, publicClient, account?.signature, activeMultisigProfile, effectiveUserKey, computeCurrentNonce, setCurrentNonce, setBalanceEntries, discoveryMode]);
 
     // Load transaction history for a specific token
     const loadTokenHistory = useCallback(async (tokenAddress: string) => {
-        if (!publicClient || !account?.signature || !zkAddress || isModalClosedRef.current) {
+        if (!publicClient || !account?.signature || !activeAccountKey || isModalClosedRef.current) {
             return;
         }
 
@@ -425,8 +498,8 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         });
 
         try {
-            // Get userKey
-            let userKey: bigint | null = contextUserKey;
+            // Get userKey — use profile's effective key if multisig is active
+            let userKey: bigint | null = effectiveUserKey ?? contextUserKey;
             if (!userKey && account?.signature) {
                 const userKeyHex = await computePrivateKeyFromSignature(account.signature);
                 userKey = BigInt(userKeyHex.startsWith('0x') ? userKeyHex : '0x' + userKeyHex);
@@ -464,47 +537,48 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         } finally {
             setLoadingHistoryToken(null);
         }
-    }, [publicClient, account?.signature, zkAddress, contextUserKey, tokenDataMap]);
+    }, [publicClient, account?.signature, activeAccountKey, contextUserKey, tokenDataMap]);
 
-    // Toggle history view for a token
+    // Toggle history modal for a token
     const toggleHistory = useCallback((tokenAddress: string) => {
         const normalizedTokenAddress = tokenAddress.toLowerCase();
-        if (expandedHistoryToken === normalizedTokenAddress) {
-            setExpandedHistoryToken(null);
+        if (historyModalToken === normalizedTokenAddress) {
+            setHistoryModalToken(null);
         } else {
-            setExpandedHistoryToken(normalizedTokenAddress);
+            setHistoryModalToken(normalizedTokenAddress);
             // Load history if not already loaded
             if (!tokenHistoryMap.has(normalizedTokenAddress)) {
                 loadTokenHistory(normalizedTokenAddress);
             }
         }
-    }, [expandedHistoryToken, tokenHistoryMap, loadTokenHistory]);
+    }, [historyModalToken, tokenHistoryMap, loadTokenHistory]);
 
     // Toggle discovery mode
     const handleModeToggle = useCallback(async (newMode: DiscoveryMode) => {
-        if (!zkAddress) return;
+        if (!activeAccountKey) return;
         console.log('🔍 [MODAL] Mode changed to:', newMode);
         setDiscoveryMode(newMode);
-        await saveDiscoveryMode(zkAddress, newMode);
+        await saveDiscoveryMode(activeAccountKey, newMode);
         // Set flag to skip cache on next discovery
         setSkipCacheOnNextDiscovery(true);
         // Clear token data to trigger re-discovery with new mode
         setTokenDataMap(new Map());
+        setArchonPositionsMap(new Map());
         // Clear converted assets for new mode
         setConvertedAssets(new Map());
         pendingConversionsRef.current.clear();
-    }, [zkAddress]);
+    }, [activeAccountKey]);
 
     // Fetch incoming notes count for each discovered token (on-chain only, no decrypt). Run only when discovery is idle to avoid loop/flicker.
     useEffect(() => {
-        if (!isOpen || !publicClient || !zkAddress || tokenDataMap.size === 0 || isDiscoveringTokens.size > 0) return;
+        if (!isOpen || !publicClient || !activeAccountKey || tokenDataMap.size === 0 || isDiscoveringTokens.size > 0) return;
 
         let cancelled = false;
         const tokens = Array.from(tokenDataMap.keys());
 
         (async () => {
             try {
-                const { x, y } = parseZkAddress(zkAddress);
+                const { x, y } = parseZkAddress(activeAccountKey!);
                 const pubkeyHash = keccak256(
                     encodePacked(['uint256', 'uint256'], [x, y])
                 ) as `0x${string}`;
@@ -535,18 +609,19 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
         return () => {
             cancelled = true;
         };
-    }, [isOpen, publicClient, zkAddress, tokenDataMap, isDiscoveringTokens.size]);
+    }, [isOpen, publicClient, activeAccountKey, tokenDataMap, isDiscoveringTokens.size]);
 
     // Clear "already fetched" ref when modal closes or account changes so we can re-fetch next time
     useEffect(() => {
         if (!isOpen) {
             fetchedIncomingNotesRef.current = new Set();
         }
-    }, [isOpen, zkAddress]);
+    }, [isOpen, activeAccountKey]);
 
     // Fetch and decrypt incoming notes for tokens that have count > 0 (run only when count map changes, not when our own state updates)
     useEffect(() => {
-        if (!isOpen || !account?.signature || !zkAddress || !fetchIncomingNotes) return;
+        const hasCredentials = activeMultisigProfile ? !!effectiveUserKey : !!account?.signature;
+        if (!isOpen || !hasCredentials || !activeAccountKey || !fetchIncomingNotes) return;
 
         const tokensToFetch = Array.from(incomingNotesCountMap.entries())
             .filter(([, count]) => count > 0)
@@ -559,7 +634,8 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
 
         let cancelled = false;
         (async () => {
-            let userKey: bigint | null = contextUserKey;
+            // For multisig, use the profile's userKey directly; otherwise derive from signature
+            let userKey: bigint | null = effectiveUserKey ?? contextUserKey;
             if (!userKey && account?.signature) {
                 try {
                     const userKeyHex = await computePrivateKeyFromSignature(account.signature);
@@ -570,7 +646,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
             }
             if (!userKey) return;
 
-            const { x: receiverX, y: receiverY } = parseZkAddress(zkAddress);
+            const { x: receiverX, y: receiverY } = parseZkAddress(activeAccountKey!);
             setLoadingIncomingToken(prev => {
                 const next = new Set(prev);
                 tokensToFetch.forEach(t => next.add(t));
@@ -606,7 +682,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                     const tokenData = latestTokenData.get(tokenAddress);
                     if (tokenData?.currentNonce != null) {
                         saveTokenAccountData(
-                            zkAddress,
+                            activeAccountKey!,
                             tokenAddress,
                             tokenData.currentNonce,
                             tokenData.balanceEntries,
@@ -625,7 +701,17 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
             }
         })();
         return () => { cancelled = true; };
-    }, [isOpen, account?.signature, zkAddress, contextUserKey, fetchIncomingNotes, incomingNotesCountMap, discoveryMode]);
+    }, [isOpen, account?.signature, activeAccountKey, contextUserKey, fetchIncomingNotes, incomingNotesCountMap, discoveryMode]);
+
+    // Reset token data when the active profile changes so discovery re-runs for the new profile.
+    // Incrementing loadGenRef invalidates any in-flight loadSavedData calls from the previous profile.
+    useEffect(() => {
+        loadGenRef.current += 1;
+        setTokenDataMap(new Map());
+        setArchonPositionsMap(new Map());
+        setConvertedAssets(new Map());
+        fetchedIncomingNotesRef.current.clear();
+    }, [activeAccountKey]);
 
     // Auto-discover tokens when modal opens
     useEffect(() => {
@@ -637,18 +723,21 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
 
     // Discover all tokens when Aave tokens are loaded or mode changes
     useEffect(() => {
-        if (isOpen && zkAddress && account?.signature && !isLoadingAaveTokens && aaveTokens.length > 0 && tokenDataMap.size === 0) {
+        // For multisig profiles, effectiveUserKey replaces the signature requirement
+        const hasCredentials = activeMultisigProfile ? !!effectiveUserKey : !!account?.signature;
+        if (isOpen && activeAccountKey && hasCredentials && !isLoadingAaveTokens && aaveTokens.length > 0 && tokenDataMap.size === 0) {
             const timeoutId = setTimeout(() => {
                 discoverAllTokens();
             }, 100); // Small delay to ensure modal is rendered
 
             return () => clearTimeout(timeoutId);
         }
-    }, [isOpen, zkAddress, account?.signature, isLoadingAaveTokens, aaveTokens.length, tokenDataMap.size, discoverAllTokens]);
+    }, [isOpen, activeAccountKey, activeMultisigProfile, effectiveUserKey, account?.signature, isLoadingAaveTokens, aaveTokens.length, tokenDataMap.size, discoverAllTokens]);
 
     if (!isOpen) return null;
 
     return (
+    <>
         <Dialog open={isOpen} onOpenChange={onClose}>
             <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto w-[95vw] sm:w-full min-w-0 p-4 sm:p-6">
                 <button
@@ -662,16 +751,19 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                         <DialogTitle className="text-lg sm:text-xl flex items-center gap-2">
                             Account
-                            {profileType === 'single' && (
+                            {activeMultisigProfile ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-sky-500/15 text-sky-400 border border-sky-500/20">
+                                    <Users className="w-3 h-3" /> {activeMultisigProfile.name || `Multisig ${activeMultisigProfile.threshold}-of-${activeMultisigProfile.maxSigners}`}
+                                </span>
+                            ) : profileType === 'single' ? (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-white/10 text-white/50 border border-white/10">
                                     <Key className="w-3 h-3" /> Single Key
                                 </span>
-                            )}
-                            {profileType === '2fa' && (
+                            ) : profileType === '2fa' ? (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-primary/15 text-primary border border-primary/20">
                                     <Shield className="w-3 h-3" /> 2FA
                                 </span>
-                            )}
+                            ) : null}
                         </DialogTitle>
                         <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-[10px] sm:text-xs text-muted-foreground uppercase">Mode:</span>
@@ -698,7 +790,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                 </DialogHeader>
 
                 <div className="space-y-4">
-                    {!zkAddress && (
+                    {!activeAccountKey && (
                         <Card>
                             <CardContent className="pt-6">
                                 <p className="text-sm text-muted-foreground">Please sign in to view your account.</p>
@@ -706,7 +798,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                         </Card>
                     )}
 
-                    {zkAddress && (
+                    {activeAccountKey && (
                         <>
                             <Card>
                                 <CardHeader>
@@ -764,12 +856,18 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                                                 <div className="flex items-center gap-2 mt-0.5">
                                                                     <span className="text-[11px] text-white/40">{tokenName}</span>
                                                                     <span className="text-white/20 text-[10px]">·</span>
-                                                                    <span className="text-[11px] text-white/40">
-                                                                        Nonce&nbsp;
-                                                                        <span className="text-white/60 font-mono">
-                                                                            {tokenData.currentNonce?.toString() ?? "—"}
+                                                                    {discoveryMode === 'archon' && archonPositionsMap.has(tokenAddress) ? (
+                                                                        <span className="text-[11px] text-white/40">
+                                                                            {archonPositionsMap.get(tokenAddress)!.length} position{archonPositionsMap.get(tokenAddress)!.length !== 1 ? 's' : ''}
                                                                         </span>
-                                                                    </span>
+                                                                    ) : (
+                                                                        <span className="text-[11px] text-white/40">
+                                                                            Nonce&nbsp;
+                                                                            <span className="text-white/60 font-mono">
+                                                                                {tokenData.currentNonce?.toString() ?? "—"}
+                                                                            </span>
+                                                                        </span>
+                                                                    )}
                                                                     {incomingNotesCountMap.has(tokenAddress) && (
                                                                         <>
                                                                             <span className="text-white/20 text-[10px]">·</span>
@@ -814,11 +912,7 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
             "
                                                             >
                                                                 <Clock size={11} className="opacity-60" />
-                                                                {loadingHistoryToken === tokenAddress
-                                                                    ? "…"
-                                                                    : expandedHistoryToken === tokenAddress.toLowerCase()
-                                                                        ? "Hide"
-                                                                        : "History"}
+                                                                {loadingHistoryToken === tokenAddress ? "…" : "History"}
                                                             </button>
                                                         </div>
                                                     </div>
@@ -826,8 +920,136 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                                     {/* ── Balance Body ────────────────────────────────────────────────── */}
                                                     <div className="px-4 pb-4 space-y-2">
 
-                                                        {/* Available balance pill */}
-                                                        {currentBalanceEntry && (() => {
+                                                        {/* ── Archon mode: per-position breakdown ─────────────────── */}
+                                                        {discoveryMode === 'archon' && archonPositionsMap.has(tokenAddress) && (() => {
+                                                            const positions = archonPositionsMap.get(tokenAddress)!;
+                                                            const decimals = tokenInfo?.decimals || 18;
+                                                            const totalKey = `${tokenAddress.toLowerCase()}-archon-total`;
+                                                            const totalConverted = convertedAssets.get(totalKey);
+                                                            const totalConverting = isConvertingAssets.has(totalKey);
+                                                            const now = Math.floor(Date.now() / 1000);
+
+                                                            const totalShares = positions.reduce((sum, pos) => {
+                                                                const latest = pos.balanceEntries.length > 0 ? pos.balanceEntries[pos.balanceEntries.length - 1] : null;
+                                                                return sum + (latest?.amount ?? BigInt(0));
+                                                            }, BigInt(0));
+
+                                                            return (
+                                                                <div className="space-y-1.5">
+                                                                    {/* Total balance */}
+                                                                    {totalShares > BigInt(0) && (
+                                                                        <div className="rounded-lg bg-white/[0.04] border border-white/[0.06] px-3 py-2.5 flex items-center justify-between gap-4">
+                                                                            <div>
+                                                                                <p className="text-[9px] font-semibold uppercase tracking-widest text-white/30 mb-0.5">
+                                                                                    Total ({positions.length} position{positions.length !== 1 ? 's' : ''})
+                                                                                </p>
+                                                                                <p className="text-[11px] font-mono text-white/50">
+                                                                                    {totalShares.toString()} <span className="text-white/25">shares</span>
+                                                                                </p>
+                                                                            </div>
+                                                                            <div className="text-right">
+                                                                                {totalConverted !== undefined ? (
+                                                                                    <p className="text-base font-semibold text-violet-300 tracking-tight">
+                                                                                        ≈&thinsp;{formatTokenValue(totalConverted, decimals)} <span className="text-sm">{tokenSymbol}</span>
+                                                                                    </p>
+                                                                                ) : totalConverting ? (
+                                                                                    <p className="text-xs text-white/30 italic">converting…</p>
+                                                                                ) : null}
+                                                                            </div>
+                                                                        </div>
+                                                                    )}
+
+                                                                    {/* Per-position breakdown */}
+                                                                    <details className="group">
+                                                                        <summary className="
+                                                                            inline-flex items-center gap-1 cursor-pointer select-none
+                                                                            text-[10px] text-white/35 hover:text-white/60
+                                                                            border border-white/[0.06] rounded-md px-2 py-1
+                                                                            hover:border-white/10 transition-colors
+                                                                            list-none [&::-webkit-details-marker]:hidden
+                                                                        ">
+                                                                            <ChevronDown size={10} className="group-open:hidden opacity-50" />
+                                                                            <ChevronUp size={10} className="hidden group-open:block opacity-50" />
+                                                                            {positions.length} archon position{positions.length !== 1 ? 's' : ''}
+                                                                        </summary>
+                                                                        <div className="mt-1.5 rounded-lg border border-white/[0.06] bg-black/20 divide-y divide-white/[0.04] overflow-hidden">
+                                                                            {positions.map((pos) => {
+                                                                                const firstEntry = pos.balanceEntries.length > 0
+                                                                                    ? pos.balanceEntries[0]
+                                                                                    : null;
+                                                                                const latestEntry = pos.balanceEntries.length > 0
+                                                                                    ? pos.balanceEntries[pos.balanceEntries.length - 1]
+                                                                                    : null;
+                                                                                const posKey = `${tokenAddress.toLowerCase()}-archon-${pos.userKeyOffset.toString()}`;
+                                                                                const posConverted = convertedAssets.get(posKey);
+                                                                                const posConverting = isConvertingAssets.has(posKey);
+                                                                                const unlockSec = Number(pos.unlockAt);
+                                                                                const isLocked = unlockSec > 0 && unlockSec > now;
+                                                                                const wasLocked = unlockSec > 0 && unlockSec <= now;
+                                                                                const withdrawnShares = firstEntry && latestEntry && latestEntry.amount < firstEntry.amount
+                                                                                    ? firstEntry.amount - latestEntry.amount
+                                                                                    : BigInt(0);
+
+                                                                                return (
+                                                                                    <div key={pos.userKeyOffset.toString()} className="px-3 py-2.5 space-y-1">
+                                                                                        <div className="flex items-center justify-between gap-3">
+                                                                                            <div className="flex items-center gap-2">
+                                                                                                <span className="text-[10px] font-mono text-white/40">
+                                                                                                    Position #{pos.userKeyOffset.toString()}
+                                                                                                </span>
+                                                                                                <span className="text-[10px] font-mono text-white/50">
+                                                                                                    {latestEntry ? `${latestEntry.amount.toString()} ` : '0 '}
+                                                                                                    <span className="text-white/25">shares</span>
+                                                                                                </span>
+                                                                                                <span className="text-[9px] font-mono text-white/25">
+                                                                                                    nonce {pos.currentNonce.toString()}
+                                                                                                </span>
+                                                                                            </div>
+                                                                                            <div className="flex items-center gap-1.5 shrink-0">
+                                                                                                {posConverted !== undefined && (
+                                                                                                    <span className="text-[10px] text-violet-300/70 font-mono">
+                                                                                                        ≈&thinsp;{formatTokenValue(posConverted, decimals)}
+                                                                                                    </span>
+                                                                                                )}
+                                                                                                {posConverting && (
+                                                                                                    <span className="text-[9px] text-white/20 italic">…</span>
+                                                                                                )}
+                                                                                            </div>
+                                                                                        </div>
+                                                                                        {/* Withdrawn amount */}
+                                                                                        {withdrawnShares > BigInt(0) && (
+                                                                                            <div className="flex items-center gap-1.5">
+                                                                                                <span className="text-[9px] text-rose-400/60">
+                                                                                                    Withdrawn: {withdrawnShares.toString()} shares
+                                                                                                </span>
+                                                                                            </div>
+                                                                                        )}
+                                                                                        {/* Lock status */}
+                                                                                        {isLocked ? (
+                                                                                            <div className="flex items-center gap-1.5">
+                                                                                                <Clock size={9} className="text-amber-400/60" />
+                                                                                                <span className="text-[9px] text-amber-400/70">
+                                                                                                    Locked until {new Date(unlockSec * 1000).toLocaleString()}
+                                                                                                </span>
+                                                                                            </div>
+                                                                                        ) : wasLocked ? (
+                                                                                            <div className="flex items-center gap-1.5">
+                                                                                                <span className="text-[9px] text-emerald-400/60">
+                                                                                                    Unlocked since {new Date(unlockSec * 1000).toLocaleString()}
+                                                                                                </span>
+                                                                                            </div>
+                                                                                        ) : null}
+                                                                                    </div>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    </details>
+                                                                </div>
+                                                            );
+                                                        })()}
+
+                                                        {/* Available balance pill (Mage mode only) */}
+                                                        {discoveryMode !== 'archon' && currentBalanceEntry && (() => {
                                                             const assetKey = `${tokenAddress.toLowerCase()}-${previousNonce.toString()}`;
                                                             const convertedValue = convertedAssets.get(assetKey);
                                                             const isConverting = isConvertingAssets.has(assetKey);
@@ -1067,112 +1289,6 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                                         )}
                                                     </div>
 
-                                                    {/* ── Transaction History (expandable) ────────────────────────────── */}
-                                                    {expandedHistoryToken === tokenAddress.toLowerCase() && (
-                                                        <div className="border-t border-white/[0.06] px-4 py-3">
-                                                            <div className="flex items-center justify-between mb-3">
-                                                                <p className="text-[11px] font-semibold uppercase tracking-widest text-white/30">
-                                                                    Transaction History
-                                                                </p>
-                                                                <button
-                                                                    onClick={() => loadTokenHistory(tokenAddress)}
-                                                                    disabled={loadingHistoryToken === tokenAddress}
-                                                                    className="
-                h-6 px-2 rounded text-[10px]
-                border border-white/10 bg-white/[0.03] text-white/40
-                hover:text-white/70 hover:border-white/20
-                disabled:opacity-40 transition-all
-              "
-                                                                >
-                                                                    {loadingHistoryToken === tokenAddress ? "Loading…" : "Refresh"}
-                                                                </button>
-                                                            </div>
-
-                                                            {historyErrors.has(tokenAddress) && (
-                                                                <p className="text-[11px] text-red-400/70 bg-red-500/10 rounded-lg px-3 py-2 mb-2 border border-red-500/20">
-                                                                    {historyErrors.get(tokenAddress)}
-                                                                </p>
-                                                            )}
-
-                                                            {loadingHistoryToken === tokenAddress ? (
-                                                                <p className="text-[11px] text-white/30 italic py-2">Loading history…</p>
-                                                            ) : (() => {
-                                                                const history = tokenHistoryMap.get(tokenAddress.toLowerCase()) || [];
-                                                                if (history.length === 0) {
-                                                                    return (
-                                                                        <p className="text-[11px] text-white/30 italic py-2">
-                                                                            No transaction history found.
-                                                                        </p>
-                                                                    );
-                                                                }
-                                                                const typeColors: Record<string, string> = {
-                                                                    initialize: "text-sky-400/70 bg-sky-500/10 border-sky-500/20",
-                                                                    deposit: "text-emerald-400/70 bg-emerald-500/10 border-emerald-500/20",
-                                                                    send: "text-orange-400/70 bg-orange-500/10 border-orange-500/20",
-                                                                    withdraw: "text-red-400/70 bg-red-500/10 border-red-500/20",
-                                                                    absorb_send: "text-violet-400/70 bg-violet-500/10 border-violet-500/20",
-                                                                    absorb_withdraw: "text-pink-400/70 bg-pink-500/10 border-pink-500/20",
-                                                                    absorb: "text-amber-400/70 bg-amber-500/10 border-amber-500/20",
-                                                                };
-                                                                return (
-                                                                    <div className="space-y-1.5">
-                                                                        {history.map((entry, idx) => {
-                                                                            const label = entry.type.replace(/_/g, " ").toUpperCase();
-                                                                            const colorClass =
-                                                                                typeColors[entry.type] ||
-                                                                                "text-white/40 bg-white/[0.04] border-white/[0.06]";
-                                                                            return (
-                                                                                <div
-                                                                                    key={idx}
-                                                                                    className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5"
-                                                                                >
-                                                                                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                                                                                        <span className="text-[10px] font-mono text-white/30">
-                                                                                            #{entry.nonce.toString()}
-                                                                                        </span>
-                                                                                        <span
-                                                                                            className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${colorClass}`}
-                                                                                        >
-                                                                                            {label}
-                                                                                        </span>
-                                                                                        {entry.blockNumber > BigInt(0) && (
-                                                                                            <span className="text-[9px] text-white/20 font-mono ml-auto">
-                                                                                                Block {entry.blockNumber.toString()}
-                                                                                            </span>
-                                                                                        )}
-                                                                                    </div>
-                                                                                    <div className="flex flex-wrap gap-x-4 gap-y-0.5">
-                                                                                        <span className="text-[10px] font-mono text-white/40">
-                                                                                            {entry.amount.toString()}{" "}
-                                                                                            <span className="text-white/20">shares</span>
-                                                                                        </span>
-                                                                                        {entry.sharesMinted && entry.sharesMinted > BigInt(0) && (
-                                                                                            <span className="text-[10px] font-mono text-emerald-400/60">
-                                                                                                +{entry.sharesMinted.toString()} minted
-                                                                                            </span>
-                                                                                        )}
-                                                                                        {entry.transactionHash && (
-                                                                                            <span className="text-[10px] font-mono text-white/25">
-                                                                                                {entry.transactionHash.slice(0, 8)}…
-                                                                                                {entry.transactionHash.slice(-6)}
-                                                                                            </span>
-                                                                                        )}
-                                                                                        {entry.timestamp > BigInt(0) && (
-                                                                                            <span className="text-[10px] text-white/25">
-                                                                                                {new Date(
-                                                                                                    Number(entry.timestamp) * 1000
-                                                                                                ).toLocaleString()}
-                                                                                            </span>
-                                                                                        )}
-                                                                                    </div>
-                                                                                </div>
-                                                                            );
-                                                                        })}
-                                                                    </div>
-                                                                );
-                                                            })()}
-                                                        </div>
-                                                    )}
                                                 </div>
                                             );
                                         })}
@@ -1189,11 +1305,200 @@ export default function AccountModal({ isOpen, onClose }: AccountModalProps) {
                                     </CardContent>
                                 </Card>
                             )}
+
+                            {/* ── Multisig Accounts ────────────────────────────────────────── */}
+                            <Card>
+                                <CardHeader className="pb-2">
+                                    <div className="flex items-center justify-between">
+                                        <CardTitle className="text-sm flex items-center gap-2">
+                                            <Users className="w-4 h-4 text-sky-400/60" />
+                                            Multisig Accounts
+                                        </CardTitle>
+                                        {/* Signer mode: can't create new multisigs without a wallet */}
+                                        {!isSignerMode && (
+                                            <button
+                                                onClick={() => setMultisigWizardOpen(true)}
+                                                className="
+                                                    inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium
+                                                    border border-sky-500/20 bg-sky-500/10 text-sky-300/70
+                                                    hover:bg-sky-500/15 hover:text-sky-300 hover:border-sky-500/30
+                                                    transition-all duration-150
+                                                "
+                                            >
+                                                <Plus className="w-3 h-3" /> Add Multisig
+                                            </button>
+                                        )}
+                                    </div>
+                                    {isSignerMode && (
+                                        <p className="text-[10px] text-sky-400/60 mt-1">
+                                            Signer mode — connect a wallet to create or join new multisig groups.
+                                        </p>
+                                    )}
+                                </CardHeader>
+                                <CardContent>
+                                    {availableMultisigs.length === 0 ? (
+                                        <p className="text-xs text-muted-foreground italic">
+                                            No multisig accounts yet. Create or join one to get started.
+                                        </p>
+                                    ) : (
+                                        <div className="space-y-2">
+                                            {availableMultisigs.map(ms => {
+                                                const isActive = activeProfileId === ms.profileId;
+                                                return (
+                                                    <div
+                                                        key={ms.profileId}
+                                                        className={`
+                                                            rounded-xl border px-4 py-3 flex items-center justify-between gap-3
+                                                            ${isActive
+                                                                ? 'border-sky-500/30 bg-sky-500/[0.06]'
+                                                                : 'border-white/[0.06] bg-white/[0.02]'
+                                                            }
+                                                        `}
+                                                    >
+                                                        <div className="flex items-center gap-3 min-w-0">
+                                                            {ms.role === 'initiator'
+                                                                ? <Crown className="w-4 h-4 text-amber-400/60 shrink-0" />
+                                                                : <UserPlus className="w-4 h-4 text-sky-400/60 shrink-0" />
+                                                            }
+                                                            <div className="min-w-0">
+                                                                <p className="text-sm font-medium text-white/90 truncate">{ms.name}</p>
+                                                                <p className="text-[10px] text-white/40 font-mono">
+                                                                    {ms.threshold}-of-{ms.maxSigners} · {ms.role}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex items-center gap-2 shrink-0">
+                                                            {isActive && (
+                                                                <span className="text-[9px] px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300/70 font-medium">
+                                                                    active
+                                                                </span>
+                                                            )}
+                                                            {!isActive && (
+                                                                <button
+                                                                    onClick={() => {
+                                                                        switchProfile(ms.profileId);
+                                                                        onClose();
+                                                                    }}
+                                                                    className="
+                                                                        h-7 px-3 rounded-lg text-[11px] font-medium
+                                                                        border border-white/10 bg-white/[0.04] text-white/60
+                                                                        hover:bg-white/[0.08] hover:text-white/90
+                                                                        transition-all duration-150
+                                                                    "
+                                                                >
+                                                                    Switch
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </CardContent>
+                            </Card>
                         </>
                     )}
                 </div>
             </DialogContent>
+
+            <MultisigSetupWizard
+                open={multisigWizardOpen}
+                onClose={() => { setMultisigWizardOpen(false); refreshProfiles(); }}
+            />
         </Dialog>
+
+        {/* ── History Modal (on top of AccountModal) ──────────────────────── */}
+        {historyModalToken && (() => {
+            const tokenAddress = historyModalToken;
+            const tokenInfo = aaveTokens.find(t => t.address.toLowerCase() === tokenAddress);
+            const tokenSymbol = tokenInfo?.symbol ?? tokenAddress.slice(0, 6);
+            const history = tokenHistoryMap.get(tokenAddress) || [];
+            const typeColors: Record<string, string> = {
+                initialize: "text-sky-400/70 bg-sky-500/10 border-sky-500/20",
+                deposit: "text-emerald-400/70 bg-emerald-500/10 border-emerald-500/20",
+                send: "text-orange-400/70 bg-orange-500/10 border-orange-500/20",
+                withdraw: "text-red-400/70 bg-red-500/10 border-red-500/20",
+                absorb_send: "text-violet-400/70 bg-violet-500/10 border-violet-500/20",
+                absorb_withdraw: "text-pink-400/70 bg-pink-500/10 border-pink-500/20",
+                absorb: "text-amber-400/70 bg-amber-500/10 border-amber-500/20",
+            };
+            return (
+                <Dialog open={true} onOpenChange={() => setHistoryModalToken(null)}>
+                    <DialogContent className="max-w-lg w-[95vw] sm:w-[500px] max-h-[80vh] overflow-y-auto">
+                        <button
+                            onClick={() => setHistoryModalToken(null)}
+                            className="absolute top-3 right-3 rounded-lg p-1.5 text-white/40 hover:text-white/80 hover:bg-white/[0.08] transition-all z-10"
+                            aria-label="Close"
+                        >
+                            <X size={16} />
+                        </button>
+                        <DialogHeader className="pb-3">
+                            <DialogTitle className="text-sm font-sans tracking-wider uppercase text-center"
+                                style={{ textShadow: '0 0 20px rgba(139, 92, 246, 0.3)' }}>
+                                {tokenSymbol} History
+                            </DialogTitle>
+                        </DialogHeader>
+                        <div className="flex justify-end mb-3">
+                            <button
+                                onClick={() => loadTokenHistory(tokenAddress)}
+                                disabled={loadingHistoryToken === tokenAddress}
+                                className="h-6 px-2 rounded text-[10px] border border-white/10 bg-white/[0.03] text-white/40 hover:text-white/70 hover:border-white/20 disabled:opacity-40 transition-all"
+                            >
+                                {loadingHistoryToken === tokenAddress ? "Loading…" : "Refresh"}
+                            </button>
+                        </div>
+                        {historyErrors.has(tokenAddress) && (
+                            <p className="text-[11px] text-red-400/70 bg-red-500/10 rounded-lg px-3 py-2 mb-3 border border-red-500/20">
+                                {historyErrors.get(tokenAddress)}
+                            </p>
+                        )}
+                        {loadingHistoryToken === tokenAddress ? (
+                            <p className="text-[11px] text-white/30 italic py-4 text-center">Loading history…</p>
+                        ) : history.length === 0 ? (
+                            <p className="text-[11px] text-white/30 italic py-4 text-center">No transaction history found.</p>
+                        ) : (
+                            <div className="space-y-1.5">
+                                {history.map((entry, idx) => {
+                                    const label = entry.type.replace(/_/g, " ").toUpperCase();
+                                    const colorClass = typeColors[entry.type] || "text-white/40 bg-white/[0.04] border-white/[0.06]";
+                                    return (
+                                        <div key={idx} className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
+                                            <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                                <span className="text-[10px] font-mono text-white/30">#{entry.nonce.toString()}</span>
+                                                <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${colorClass}`}>{label}</span>
+                                                {entry.blockNumber > BigInt(0) && (
+                                                    <span className="text-[9px] text-white/20 font-mono ml-auto">Block {entry.blockNumber.toString()}</span>
+                                                )}
+                                            </div>
+                                            <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+                                                <span className="text-[10px] font-mono text-white/40">
+                                                    {entry.amount.toString()} <span className="text-white/20">shares</span>
+                                                </span>
+                                                {entry.sharesMinted && entry.sharesMinted > BigInt(0) && (
+                                                    <span className="text-[10px] font-mono text-emerald-400/60">+{entry.sharesMinted.toString()} minted</span>
+                                                )}
+                                                {entry.transactionHash && (
+                                                    <span className="text-[10px] font-mono text-white/25">
+                                                        {entry.transactionHash.slice(0, 8)}…{entry.transactionHash.slice(-6)}
+                                                    </span>
+                                                )}
+                                                {entry.timestamp > BigInt(0) && (
+                                                    <span className="text-[10px] text-white/25">
+                                                        {new Date(Number(entry.timestamp) * 1000).toLocaleString()}
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </DialogContent>
+                </Dialog>
+            );
+        })()}
+    </>
     );
 }
 

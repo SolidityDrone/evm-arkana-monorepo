@@ -13,12 +13,26 @@ import { getSignerIdentityFromUserKey } from '@/lib/eddsa-circuit';
 import { loadTwoFactorData } from '@/lib/indexeddb';
 import { computeSharedKeyHashForNote } from '@/lib/crypto-keys';
 import { keccak256, encodePacked } from 'viem';
+import { useActiveProfile } from '@/context/ActiveProfileProvider';
 export interface BalanceEntry {
   tokenAddress: bigint;
   amount: bigint;
   nonce: bigint;
   /** Decrypted nullifier for this commitment (from encryptedStateDetails, counter 1) */
   nullifier?: bigint;
+}
+
+export interface ArchonPosition {
+  /** Horizontal offset from base user_key (starts at 1) */
+  userKeyOffset: bigint;
+  /** Effective user_key for this position (base + offset) */
+  userKey: bigint;
+  /** Next unused nonce for this position */
+  currentNonce: bigint;
+  /** Decrypted balance entries for this position */
+  balanceEntries: BalanceEntry[];
+  /** Unix timestamp when this position can be withdrawn; 0 = no lock */
+  unlockAt: bigint;
 }
 
 export interface PersonalCommitmentState {
@@ -44,6 +58,7 @@ export function useNonceDiscovery() {
   const { address } = useAccount();
   const zkAddress = useZkAddress();
   const { account } = useAccountContext();
+  const { activeMultisigProfile, effectiveUserKey: msigUserKey, effectiveZkAddress } = useActiveProfile();
 
   const computePrivateKeyFromSignature = useCallback(async (signature: string): Promise<bigint> => {
     const { ensureBufferPolyfill } = await import('@/lib/buffer-polyfill');
@@ -82,6 +97,11 @@ export function useNonceDiscovery() {
   // spending_key = Poseidon4(user_key, chain_id, token_address, signer_pubkey_hash)
   const getSpendingKeyForDiscovery = useCallback(
     async (userKey: bigint, chainId: bigint, tokenAddress: bigint): Promise<bigint> => {
+      // Multisig: use the group's signer_pubkey_hash directly
+      if (activeMultisigProfile?.signerPubkeyHash) {
+        return getSpendingKeyCircuit(userKey, chainId, tokenAddress, activeMultisigProfile.signerPubkeyHash);
+      }
+      // Single/2FA: check 2FA data for override, then derive from user_key
       const zkAddr = zkAddress?.replace('zk', '') || '';
       const stored2FA = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
       const signerHash = stored2FA?.is2FA
@@ -89,7 +109,7 @@ export function useNonceDiscovery() {
         : (await getSignerIdentityFromUserKey(userKey)).signer_pubkey_hash;
       return getSpendingKeyCircuit(userKey, chainId, tokenAddress, signerHash);
     },
-    [zkAddress]
+    [zkAddress, activeMultisigProfile]
   );
 
   const getNonceCommitmentForDiscovery = useCallback(
@@ -204,7 +224,7 @@ export function useNonceDiscovery() {
   );
 
   const decryptBalances = useCallback(async (highestNonce: bigint, userKey: bigint, lowestNonce: bigint = BigInt(0), tokenAddress: bigint) => {
-    if (!publicClient || !account?.signature) {
+    if (!publicClient || (!msigUserKey && !account?.signature)) {
       return;
     }
 
@@ -256,7 +276,7 @@ export function useNonceDiscovery() {
             abi: ArkanaAbi,
             functionName: 'getNonceCommitmentInfo',
             args: [nonceCommitmentBytes32ForInfo],
-          }) as [number, bigint, string, `0x${string}`, `0x${string}`];
+          }) as [number, bigint, string, `0x${string}`, `0x${string}`, bigint];
 
           const [operationType, sharesMinted] = operationInfo;
 
@@ -281,13 +301,11 @@ export function useNonceDiscovery() {
     } finally {
       setIsDecrypting(false);
     }
-  }, [publicClient, account?.signature]);
+  }, [publicClient, account?.signature, msigUserKey, getSpendingKeyForDiscovery]);
 
-  const computeCurrentNonceArchon = useCallback(async (tokenAddress: `0x${string}`, cachedNonce: bigint | null = null, cachedBalanceEntries: BalanceEntry[] = [], cachedUserKeyOffset: bigint | null = null) => {
+  const computeCurrentNonceArchon = useCallback(async (tokenAddress: `0x${string}`, _cachedNonce: bigint | null = null, _cachedBalanceEntries: BalanceEntry[] = [], _cachedUserKeyOffset: bigint | null = null) => {
     setIsComputing(true);
     setError(null);
-
-    console.log('🔍 [ARCHON DISCOVERY] ===== STARTING ARCHON MODE DISCOVERY =====');
 
     try {
       const { ensureBufferPolyfill } = await import('@/lib/buffer-polyfill');
@@ -297,155 +315,107 @@ export function useNonceDiscovery() {
         throw new Error('Public client not available.');
       }
 
-      if (!account?.signature) {
+      if (!msigUserKey && !account?.signature) {
         throw new Error('No signature available. Please sign the message first.');
       }
 
-      if (!zkAddress) {
+      if (!msigUserKey && !zkAddress) {
         throw new Error('zkAddress not available. Please sign the message first.');
       }
 
       const tokenAddressBigInt = BigInt(tokenAddress);
-      const userKey = await computePrivateKeyFromSignature(account.signature);
+      const baseUserKey = msigUserKey !== null ? msigUserKey : await computePrivateKeyFromSignature(account!.signature!);
       const { padHex } = await import('viem');
       const chainId = BigInt(await publicClient.getChainId());
 
-      console.log('🔍 [ARCHON DISCOVERY] Base user_key (bigint):', userKey.toString());
+      // Archon mode: user_key+0 is reserved for Mage; Archon starts at offset 1.
+      // Search horizontally through offsets 1..maxOffset.
+      // For each offset n:
+      //   - If nonce 0 not used → no position at n, STOP horizontal search.
+      //   - If nonce 0 used → find the highest used nonce (vertical search), collect balance entries,
+      //     fetch unlockAt from operationInfo of nonce 0, record as a position, then advance to n+1.
+      const maxOffset = BigInt(100);
+      const maxNoncePerPosition = BigInt(100);
+      const positions: ArchonPosition[] = [];
 
-      const toBigInt = async (hash: any): Promise<bigint> => {
-        if (typeof hash === 'bigint') return hash;
-        if ('toBigInt' in hash && typeof hash.toBigInt === 'function') return hash.toBigInt();
-        if ('value' in hash) return BigInt(hash.value);
-        return BigInt(hash.toString());
-      };
+      for (let offset = BigInt(1); offset < maxOffset; offset++) {
+        const currentUserKey = baseUserKey + offset;
+        const spendingKey = await getSpendingKeyForDiscovery(currentUserKey, chainId, tokenAddressBigInt);
 
-      // In Archon mode (liquidity provision), we increment user_key horizontally
-      // user_key (offset 0) is reserved for Mage mode (regular init with lock = 0)
-      // user_key+1, user_key+2, etc. (offset 1+) is for Archon mode (liquidity provision with lock > 0)
-      // So we ALWAYS start from user_key+1 (offset 1) in Archon mode
-      const startOffset = BigInt(1);
-
-      // Use cached offset if available, otherwise use calculated start offset
-      let userKeyOffset = cachedUserKeyOffset !== null ? cachedUserKeyOffset : startOffset;
-      console.log('🔍 [ARCHON DISCOVERY] Starting from offset:', userKeyOffset.toString());
-      const maxUserKeyOffset = BigInt(100); // Max horizontal search
-
-      let foundUserKey = false;
-      let foundNonce: bigint | null = null;
-      let foundBalanceEntries: BalanceEntry[] = cachedBalanceEntries;
-
-      // Search horizontally through user_key offsets
-      while (userKeyOffset < maxUserKeyOffset && !foundUserKey) {
-        const currentUserKey = userKey + userKeyOffset;
-
-        console.log('🔍 [ARCHON DISCOVERY] Checking offset:', userKeyOffset.toString());
-        console.log('🔍 [ARCHON DISCOVERY] Current user_key (bigint):', currentUserKey.toString());
-
-        // For each user_key, check vertically (nonce 0, 1) - max 2 vertical
-        let foundEntry = false;
-        let highestNonce = BigInt(-1);
-
-        // Check nonce 0 and 1 (max 2 vertical)
-        for (let nonce = BigInt(0); nonce <= BigInt(1); nonce++) {
-          const spendingKeyBigInt =
-            await getSpendingKeyForDiscovery(currentUserKey, chainId, tokenAddressBigInt);
-          const nonceCommitmentBigInt = await getNonceCommitmentForDiscovery(spendingKeyBigInt, nonce, tokenAddressBigInt);
-          const nonceCommitmentBytes32 = padHex(`0x${nonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
-
-          const isKnown = await publicClient.readContract({
-            address: ArkanaAddress,
-            abi: ArkanaAbi,
-            functionName: 'usedCommitments',
-            args: [nonceCommitmentBytes32],
-          }) as boolean;
-
-          console.log('🔍 [ARCHON DISCOVERY] Offset', userKeyOffset.toString(), 'nonce', nonce.toString(), 'isKnown:', isKnown);
-
-          if (isKnown) {
-            foundEntry = true;
-            highestNonce = nonce > highestNonce ? nonce : highestNonce;
-          }
-        }
-
-        // If we found at least one entry, this is our user_key
-        if (foundEntry) {
-          foundUserKey = true;
-          foundNonce = highestNonce;
-          console.log('🔍 [ARCHON DISCOVERY] ✅ Found entry at offset', userKeyOffset.toString(), 'with highest nonce:', highestNonce.toString());
-
-          // Decrypt balances for nonces 0 and 1
-          if (highestNonce >= BigInt(0)) {
-            const entries = await decryptBalances(highestNonce, currentUserKey, BigInt(0), tokenAddressBigInt);
-            foundBalanceEntries = entries || [];
-          }
-        } else {
-          // No entries found for this user_key, try next offset
-          console.log('🔍 [ARCHON DISCOVERY] ❌ No entry at offset', userKeyOffset.toString(), '- trying next...');
-          userKeyOffset++;
-        }
-      }
-
-      if (!foundUserKey) {
-        // No user_key found, return nonce 0
-        console.log('🔍 [ARCHON DISCOVERY] ❌ No Archon positions found, returning nonce 0');
-        setCurrentNonce(BigInt(0));
-        return {
-          currentNonce: BigInt(0),
-          balanceEntries: cachedBalanceEntries,
-          userKey: userKey,
-        };
-      }
-
-      // Determine current nonce (next nonce after highest found)
-      // In Archon mode, max 2 vertical (nonce 0 and 1)
-      const finalUserKey = userKey + userKeyOffset;
-      const spendingKeyFinalBigInt =
-        await getSpendingKeyForDiscovery(finalUserKey, chainId, tokenAddressBigInt);
-      const nextNonce = foundNonce! + BigInt(1);
-
-      // Check if next nonce exists (can only be nonce 1 if we found nonce 0, or nonce 2 if we found both 0 and 1)
-      // But nonce 2 is beyond the 2-vertical limit, so if we found both 0 and 1, we're done
-      if (nextNonce <= BigInt(1)) { // Max 2 vertical (0, 1)
-        const nextNonceCommitmentBigInt =
-          await getNonceCommitmentForDiscovery(spendingKeyFinalBigInt, nextNonce, tokenAddressBigInt);
-        const nextNonceCommitmentBytes32 = padHex(`0x${nextNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
-
-        const nextIsKnown = await publicClient.readContract({
+        // Check nonce 0 — if not used, no more positions
+        const nonce0Commitment = await getNonceCommitmentForDiscovery(spendingKey, BigInt(0), tokenAddressBigInt);
+        const nonce0Bytes32 = padHex(`0x${nonce0Commitment.toString(16)}`, { size: 32 }) as `0x${string}`;
+        const nonce0Used = await publicClient.readContract({
           address: ArkanaAddress,
           abi: ArkanaAbi,
           functionName: 'usedCommitments',
-          args: [nextNonceCommitmentBytes32],
+          args: [nonce0Bytes32],
         }) as boolean;
 
-        if (!nextIsKnown) {
-          // Next nonce is available, that's our current nonce
-          setCurrentNonce(nextNonce);
-          return {
-            currentNonce: nextNonce,
-            balanceEntries: foundBalanceEntries,
-            userKey: finalUserKey,
-          };
-        } else {
-          // Next nonce is also used, so we found both 0 and 1
-          // Current nonce is 2 (but we can't use it due to 2-vertical limit)
-          // Return nonce 2 to indicate we're at the limit
-          setCurrentNonce(nextNonce);
-          return {
-            currentNonce: nextNonce,
-            balanceEntries: foundBalanceEntries,
-            userKey: finalUserKey,
-          };
+        if (!nonce0Used) break; // No position at this offset or beyond
+
+        // Vertical search: find the first unused nonce for this position
+        let positionCurrentNonce = BigInt(0);
+        for (let n = BigInt(1); n < maxNoncePerPosition; n++) {
+          const nCommitment = await getNonceCommitmentForDiscovery(spendingKey, n, tokenAddressBigInt);
+          const nBytes32 = padHex(`0x${nCommitment.toString(16)}`, { size: 32 }) as `0x${string}`;
+          const nUsed = await publicClient.readContract({
+            address: ArkanaAddress,
+            abi: ArkanaAbi,
+            functionName: 'usedCommitments',
+            args: [nBytes32],
+          }) as boolean;
+          if (!nUsed) {
+            positionCurrentNonce = n;
+            break;
+          }
+          // If all nonces up to max are used, position is exhausted
+          if (n === maxNoncePerPosition - BigInt(1)) {
+            positionCurrentNonce = maxNoncePerPosition;
+          }
         }
-      } else {
-        // We found both nonce 0 and 1, next nonce would be 2 (beyond limit)
-        // Return nonce 2 to indicate we're at the limit
-        setCurrentNonce(nextNonce);
-        return {
-          currentNonce: nextNonce,
-          balanceEntries: foundBalanceEntries,
-          userKey: finalUserKey,
-        };
+
+        // Decrypt balance entries for this position (nonces 0..positionCurrentNonce-1)
+        const highestUsedNonce = positionCurrentNonce > BigInt(0) ? positionCurrentNonce - BigInt(1) : BigInt(0);
+        const entries = await decryptBalances(highestUsedNonce, currentUserKey, BigInt(0), tokenAddressBigInt);
+        const positionEntries = entries || [];
+
+        // Fetch unlockAt from operationInfo of nonce 0 (set during initialize)
+        let unlockAt = BigInt(0);
+        try {
+          const opInfo = await publicClient.readContract({
+            address: ArkanaAddress,
+            abi: ArkanaAbi,
+            functionName: 'getNonceCommitmentInfo',
+            args: [nonce0Bytes32],
+          }) as [number, bigint, string, `0x${string}`, `0x${string}`, bigint];
+          unlockAt = opInfo[5] ?? BigInt(0);
+        } catch {
+          // Contract may not have unlockAt yet (old deployment); ignore
+        }
+
+        positions.push({
+          userKeyOffset: offset,
+          userKey: currentUserKey,
+          currentNonce: positionCurrentNonce,
+          balanceEntries: positionEntries,
+          unlockAt,
+        });
       }
+
+      // Flatten all positions' balance entries for tokenDataMap (aggregate view)
+      const allEntries = positions.flatMap(p => p.balanceEntries);
+      const totalNonce = BigInt(positions.length);
+
+      setCurrentNonce(totalNonce);
+      setBalanceEntries(allEntries);
+
+      return {
+        currentNonce: totalNonce,
+        balanceEntries: allEntries,
+        userKey: baseUserKey,
+        archonPositions: positions,
+      };
 
     } catch (err) {
       console.error('Error computing current nonce (Archon mode):', err);
@@ -454,7 +424,7 @@ export function useNonceDiscovery() {
     } finally {
       setIsComputing(false);
     }
-  }, [account?.signature, zkAddress, computePrivateKeyFromSignature, decryptBalances, publicClient]);
+  }, [account?.signature, zkAddress, msigUserKey, getSpendingKeyForDiscovery, computePrivateKeyFromSignature, decryptBalances, publicClient]);
 
   const computeCurrentNonce = useCallback(async (tokenAddress: `0x${string}`, cachedNonce: bigint | null = null, cachedBalanceEntries: BalanceEntry[] = [], mode: DiscoveryMode = 'mage') => {
     setIsComputing(true);
@@ -470,11 +440,12 @@ export function useNonceDiscovery() {
         throw new Error('Public client not available.');
       }
 
-      if (!account?.signature) {
+      // For multisig profiles, user_key comes from the profile (msigUserKey) — no signature needed.
+      if (!msigUserKey && !account?.signature) {
         throw new Error('No signature available. Please sign the message first.');
       }
 
-      if (!zkAddress) {
+      if (!msigUserKey && !zkAddress) {
         throw new Error('zkAddress not available. Please sign the message first.');
       }
 
@@ -489,12 +460,13 @@ export function useNonceDiscovery() {
       let finalCachedNonce = cachedNonce;
       let finalCachedBalanceEntries = cachedBalanceEntries;
 
-      if (finalCachedNonce === null && zkAddress) {
+      const activeZkAddressForDiscovery = effectiveZkAddress ?? zkAddress;
+      if (finalCachedNonce === null && activeZkAddressForDiscovery) {
         try {
           const { loadTokenAccountData } = await import('@/lib/indexeddb');
           const normalizedTokenAddress = tokenAddress.toLowerCase();
           // This is Mage mode discovery, so load from mage token data
-          const tokenData = await loadTokenAccountData(zkAddress, normalizedTokenAddress, 'mage');
+          const tokenData = await loadTokenAccountData(activeZkAddressForDiscovery, normalizedTokenAddress, 'mage');
           if (tokenData && tokenData.currentNonce !== null) {
             finalCachedNonce = tokenData.currentNonce;
             finalCachedBalanceEntries = tokenData.balanceEntries || [];
@@ -510,9 +482,10 @@ export function useNonceDiscovery() {
       setAggregatedM(totM);
       setAggregatedR(totR);
 
-      const userKey = await computePrivateKeyFromSignature(account.signature);
+      // For multisig profiles, use the profile's user_key directly; otherwise derive from signature
+      const userKey = msigUserKey !== null ? msigUserKey : await computePrivateKeyFromSignature(account!.signature!);
       console.log('🔍 [MAGE DISCOVERY] tokenAddress:', tokenAddress, '| tokenAddressBigInt:', tokenAddressBigInt.toString());
-      console.log('🔍 [MAGE DISCOVERY] user_key:', userKey.toString());
+      console.log('🔍 [MAGE DISCOVERY] user_key:', userKey.toString(), msigUserKey ? '(multisig)' : '(wallet)');
       cachedNonce = finalCachedNonce;
       cachedBalanceEntries = finalCachedBalanceEntries;
 
@@ -625,6 +598,7 @@ export function useNonceDiscovery() {
             currentNonce: BigInt(0),
             balanceEntries: cachedBalanceEntries,
             userKey: userKey,
+            archonPositions: [],
           };
         }
       }
@@ -687,6 +661,7 @@ export function useNonceDiscovery() {
               currentNonce: BigInt(0),
               balanceEntries: cachedBalanceEntries,
               userKey: userKey,
+              archonPositions: [],
             };
           } else {
             nonce++;
@@ -832,6 +807,7 @@ export function useNonceDiscovery() {
         currentNonce: nonce,
         balanceEntries: finalBalanceEntries,
         userKey: userKey,
+        archonPositions: [],
       };
 
     } catch (err) {
@@ -841,7 +817,7 @@ export function useNonceDiscovery() {
     } finally {
       setIsComputing(false);
     }
-  }, [account?.signature, zkAddress, readNonceDiscoveryFromContract, computePrivateKeyFromSignature, decryptBalances, publicClient, computeCurrentNonceArchon]);
+  }, [account?.signature, zkAddress, msigUserKey, activeMultisigProfile, getSpendingKeyForDiscovery, readNonceDiscoveryFromContract, computePrivateKeyFromSignature, decryptBalances, publicClient, computeCurrentNonceArchon]);
 
   const reconstructPersonalCommitmentState = useCallback(async (
     balance: bigint,

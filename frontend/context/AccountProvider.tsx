@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react'
 import { computeZkAddress } from '@/lib/zk-address'
+import { deriveKeyFromSignature, setIdbKey } from '@/lib/idb-crypto'
 
 // Account model interface - can be extended based on your needs
 interface AccountData {
@@ -48,6 +49,8 @@ export function AccountProvider({ children }: { children: ReactNode }) {
                             const computedZkAddr = await computeZkAddress(savedAccount.signature)
                             if (computedZkAddr === savedAccount.zkAddress) {
                                 setAccountState(savedAccount)
+                                // Derive IDB encryption key from the restored signature
+                                deriveKeyFromSignature(savedAccount.signature!).then(setIdbKey).catch(console.warn)
                             } else {
                                 sessionStorage.removeItem(SESSION_STORAGE_KEY)
                             }
@@ -133,6 +136,8 @@ export function AccountProvider({ children }: { children: ReactNode }) {
                 } catch (error) {
                     console.error('[AccountProvider] Error saving to sessionStorage:', error)
                 }
+                // Derive IDB encryption key from signature
+                deriveKeyFromSignature(signature).then(setIdbKey).catch(console.warn)
             }
 
             return updated

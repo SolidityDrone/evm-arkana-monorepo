@@ -4,7 +4,7 @@ import { useZkAddress, useAccount } from '@/context/AccountProvider';
 import { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { QRCodeSVG } from 'qrcode.react';
-import { Copy, Check, Key } from 'lucide-react';
+import { Copy, Check, Key, X } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { computePrivateKeyFromSignature, getViewKeyFromUserKey } from '@/lib/circuit-utils';
@@ -77,6 +77,13 @@ export default function ZkAddressModal({ isOpen, onClose }: ZkAddressModalProps)
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
             <DialogContent className="max-w-md w-[90vw] sm:w-[420px] min-w-[320px] mx-auto bg-card/95 backdrop-blur-md border-primary/30">
+                <button
+                    onClick={onClose}
+                    className="absolute top-3 right-3 rounded-lg p-1.5 text-white/40 hover:text-white/80 hover:bg-white/[0.08] transition-all z-10"
+                    aria-label="Close"
+                >
+                    <X size={16} />
+                </button>
                 <DialogHeader>
                     <DialogTitle className="font-sans text-xl uppercase tracking-wider text-center">
                         ZK Address

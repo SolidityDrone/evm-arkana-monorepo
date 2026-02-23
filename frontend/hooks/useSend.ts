@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useAccount as useWagmiAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from 'wagmi';
 import { useAccount as useAccountContext, useZkAddress } from '@/context/AccountProvider';
 import { useAccountState } from '@/context/AccountStateProvider';
+import { useActiveProfile } from '@/context/ActiveProfileProvider';
 import { parseAbi, Address, padHex } from 'viem';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { useNonceDiscovery } from '@/hooks/useNonceDiscovery';
@@ -19,6 +20,7 @@ import {
   decodeFrostPayload,
   type SigningRound2,
 } from '@/lib/frost-2fa';
+import type { SigningRequestPayload as MsigSigningRequestPayload } from '@/lib/frost-multisig';
 import { loadTwoFactorData, type TwoFactorData } from '@/lib/indexeddb';
 import { proveWithSnarkjs } from '@/lib/circuit-prove';
 import type { Groth16Args } from '@/lib/groth16';
@@ -82,6 +84,14 @@ export function useSend() {
     const signingRound1Ref = useRef<{ desktopNonceScalar: string; round1Data: any } | null>(null);
     const { balanceEntries } = useAccountState();
 
+    // Multisig signing state
+    const [multisigSignOpen, setMultisigSignOpen] = useState(false);
+    const [multisigRequest, setMultisigRequest] = useState<MsigSigningRequestPayload | null>(null);
+
+    // Active profile — for multisig, these override the wallet-derived values
+    const { effectiveUserKey: msigUserKey, effectiveSignerPubkeyHash: msigSignerPubkeyHash, effectiveZkAddress, activeMultisigProfile } = useActiveProfile();
+    const activeZkAddress = effectiveZkAddress ?? zkAddress;
+
     useEffect(() => {
         let interval: ReturnType<typeof setInterval>;
         if (isProving) {
@@ -94,6 +104,10 @@ export function useSend() {
     useEffect(() => {
         let mounted = true;
         const init = async () => {
+            if (msigUserKey) {
+                if (mounted) setUserKey('0x' + msigUserKey.toString(16));
+                return;
+            }
             if (zkAddress && account?.signature && !userKey && !contextUserKey) {
                 try {
                     const { computePrivateKeyFromSignature } = await import('@/lib/circuit-utils');
@@ -108,7 +122,7 @@ export function useSend() {
         };
         init();
         return () => { mounted = false; };
-    }, [zkAddress, account?.signature, userKey, contextUserKey]);
+    }, [zkAddress, account?.signature, userKey, contextUserKey, msigUserKey]);
 
     useEffect(() => {
         if (!tokenAddress || !publicClient) {
@@ -142,7 +156,7 @@ export function useSend() {
     useEffect(() => {
         let mounted = true;
         const load = async () => {
-            if (!tokenAddress || !zkAddress) {
+            if (!tokenAddress || !activeZkAddress) {
                 if (mounted) {
                     setTokenCurrentNonce(null);
                     setIsTokenInitialized(null);
@@ -153,7 +167,7 @@ export function useSend() {
             if (!publicClient || !account?.signature) {
                 try {
                     const { loadTokenAccountData } = await import('@/lib/indexeddb');
-                    const data = await loadTokenAccountData(zkAddress, norm, 'mage');
+                    const data = await loadTokenAccountData(activeZkAddress!, norm, 'mage');
                     if (!mounted) return;
                     if (data?.currentNonce != null && data.currentNonce > 0n) {
                         setTokenCurrentNonce(data.currentNonce);
@@ -172,7 +186,7 @@ export function useSend() {
             }
             if (mounted) setIsCheckingTokenState(true);
             try {
-                const cached = await loadAccountData(zkAddress);
+                const cached = await loadAccountData(activeZkAddress!);
                 if (!mounted) return;
                 const mage = cached?.mageTokenData || [];
                 const tok = mage.find((t: { tokenAddress: string }) => t.tokenAddress.toLowerCase() === norm);
@@ -181,7 +195,7 @@ export function useSend() {
                 const result = await computeCurrentNonce(tokenAddress as `0x${string}`, cachedNonce, cachedEntries, 'mage');
                 if (!mounted) return;
                 if (result) {
-                    await saveTokenAccountData(zkAddress, tokenAddress, result.currentNonce, result.balanceEntries, 'mage');
+                    await saveTokenAccountData(activeZkAddress!, tokenAddress, result.currentNonce, result.balanceEntries, 'mage');
                     if (result.balanceEntries.length > 0) setBalanceEntries(result.balanceEntries);
                     if (result.currentNonce != null && result.currentNonce > 0n) {
                         setTokenCurrentNonce(result.currentNonce);
@@ -209,11 +223,11 @@ export function useSend() {
             mounted = false;
             clearTimeout(t);
         };
-    }, [tokenAddress, zkAddress, publicClient, account?.signature, computeCurrentNonce, setBalanceEntries]);
+    }, [tokenAddress, activeZkAddress, publicClient, account?.signature, computeCurrentNonce, setBalanceEntries]);
 
     // Available balance = current + (incoming - nullifier)
     useEffect(() => {
-        if (!tokenAddress || !zkAddress || tokenCurrentNonce == null || tokenCurrentNonce === 0n) {
+        if (!tokenAddress || !activeZkAddress || tokenCurrentNonce == null || tokenCurrentNonce === 0n) {
             setAvailableBalance(null);
             setAvailableBalanceAssets(null);
             setCanAbsorb(false);
@@ -249,7 +263,7 @@ export function useSend() {
                     if (!cancelled) setAvailableBalance(currentShares);
                     return;
                 }
-                const { x: rx, y: ry } = parseZkAddress(zkAddress);
+                const { x: rx, y: ry } = parseZkAddress(activeZkAddress!);
                 const { notes } = await fetchIncomingNotes(tokenAddress as `0x${string}`, rx, ry, userKeyBigInt);
                 if (cancelled) return;
                 const sumIncoming = notes.reduce((acc, n) => acc + n.amount, 0n);
@@ -265,7 +279,7 @@ export function useSend() {
             }
         })();
         return () => { cancelled = true; };
-    }, [tokenAddress, zkAddress, balanceEntries, tokenCurrentNonce, account?.signature, contextUserKey, userKey, fetchIncomingNotes, publicClient]);
+    }, [tokenAddress, activeZkAddress, balanceEntries, tokenCurrentNonce, account?.signature, contextUserKey, userKey, fetchIncomingNotes, publicClient]);
 
     useEffect(() => {
         if (!publicClient || !tokenAddress || availableBalance === null) {
@@ -279,15 +293,20 @@ export function useSend() {
         return () => { cancelled = true; };
     }, [publicClient, tokenAddress, availableBalance]);
 
-    const calculateCircuitInputs = useCallback(async (phonePartialSig?: SigningRound2) => {
+    const calculateCircuitInputs = useCallback(async (phonePartialSig?: SigningRound2, msigGroupSigningKey?: bigint) => {
         if (!tokenAddress || !amount || !receiverZkAddress.trim() || !relayerFeeAmount || !zkAddress || !publicClient)
             throw new Error('Missing required fields or client');
         if (tokenCurrentNonce == null) throw new Error('Token nonce not discovered');
-        let userKeyToUse: string = contextUserKey ? '0x' + contextUserKey.toString(16) : userKey;
-        if (!userKeyToUse && account?.signature) {
-            const hex = await computePrivateKeyFromSignature(account.signature);
-            userKeyToUse = hex.startsWith('0x') ? hex : '0x' + hex;
-            setUserKey(userKeyToUse);
+        let userKeyToUse: string;
+        if (msigUserKey) {
+            userKeyToUse = '0x' + msigUserKey.toString(16);
+        } else {
+            userKeyToUse = contextUserKey ? '0x' + contextUserKey.toString(16) : userKey;
+            if (!userKeyToUse && account?.signature) {
+                const hex = await computePrivateKeyFromSignature(account.signature);
+                userKeyToUse = hex.startsWith('0x') ? hex : '0x' + hex;
+                setUserKey(userKeyToUse);
+            }
         }
         if (!userKeyToUse) throw new Error('Missing userKey. Sign the message first.');
 
@@ -315,19 +334,25 @@ export function useSend() {
         const userKeyBigInt = BigInt(userKeyToUse.startsWith('0x') ? userKeyToUse : '0x' + userKeyToUse);
         const chainId = BigInt(await publicClient.getChainId());
 
-        // Resolve signer identity: use stored 2FA data or derive from user_key
-        const zkAddr = zkAddress?.replace('zk', '') || '';
-        const storedTwoFactor = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
-        twoFactorDataRef.current = storedTwoFactor ?? null;
+        // Resolve signer identity: multisig > 2FA > single-key
         let sendSignerHash: string;
         let sendSignerPk: [string, string];
-        if (storedTwoFactor?.is2FA) {
-            sendSignerHash = storedTwoFactor.signerPubkeyHash;
-            sendSignerPk = storedTwoFactor.signerPublicKey;
+        if (msigSignerPubkeyHash && activeMultisigProfile) {
+            sendSignerHash = msigSignerPubkeyHash;
+            sendSignerPk = activeMultisigProfile.groupPublicKey;
+            twoFactorDataRef.current = null;
         } else {
-            const sendSignerIdentity = await getSignerIdentityFromUserKey(userKeyBigInt);
-            sendSignerHash = sendSignerIdentity.signer_pubkey_hash;
-            sendSignerPk = sendSignerIdentity.signer_public_key;
+            const zkAddr = zkAddress?.replace('zk', '') || '';
+            const storedTwoFactor = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
+            twoFactorDataRef.current = storedTwoFactor ?? null;
+            if (storedTwoFactor?.is2FA) {
+                sendSignerHash = storedTwoFactor.signerPubkeyHash;
+                sendSignerPk = storedTwoFactor.signerPublicKey;
+            } else {
+                const sendSignerIdentity = await getSignerIdentityFromUserKey(userKeyBigInt);
+                sendSignerHash = sendSignerIdentity.signer_pubkey_hash;
+                sendSignerPk = sendSignerIdentity.signer_public_key;
+            }
         }
 
         let previousShares: bigint, nullifierValue: bigint, unlocksAtValue: bigint;
@@ -361,7 +386,7 @@ export function useSend() {
                 abi: ArkanaAbi,
                 functionName: 'getNonceCommitmentInfo',
                 args: [fnc32],
-            }) as [number, bigint, string, `0x${string}`, `0x${string}`];
+            }) as [number, bigint, string, `0x${string}`, `0x${string}`, bigint];
             const [opType, sharesMinted, , encBal, encNull] = op;
             previousOpType = opType;
             let decShares: bigint;
@@ -375,7 +400,7 @@ export function useSend() {
                 abi: ArkanaAbi,
                 functionName: 'getNonceCommitmentInfo',
                 args: [pnc32],
-            }) as [number, bigint, string, `0x${string}`, `0x${string}`];
+            }) as [number, bigint, string, `0x${string}`, `0x${string}`, bigint];
             nullifierValue = await poseidonCtrDecrypt(BigInt(prevEncNull), viewKey, 1);
             unlocksAtValue = 0n;
         }
@@ -413,7 +438,7 @@ export function useSend() {
             let nullEnc: bigint;
             if (tokenPreviousNonce === 0n) nullEnc = nullifierValue; // Use 0 directly, no encoding
             else if (previousOpType === 5 || previousOpType === 4) {
-                const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+                const { x: ourX, y: ourY } = parseZkAddress(activeZkAddress!);
                 const { noteStackM } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
                 nullEnc = nullifierValue > noteStackM ? nullifierValue - noteStackM : 0n;
             } else nullEnc = nullifierValue;
@@ -469,7 +494,7 @@ export function useSend() {
         if (tokenPreviousNonce === 0n) {
             nullifierEnc = nullifierValue; // Use 0 directly, no encoding
         } else if (previousOpType === 5 || previousOpType === 4) {
-            const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+            const { x: ourX, y: ourY } = parseZkAddress(activeZkAddress!);
             const { noteStackM } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
             nullifierEnc = nullifierValue > noteStackM ? nullifierValue - noteStackM : 0n;
         } else {
@@ -482,7 +507,7 @@ export function useSend() {
         const actualBalance = previousSharesEnc; // No encoding
 
         if (previousSharesEnc < totalRequired) {
-            const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+            const { x: ourX, y: ourY } = parseZkAddress(activeZkAddress!);
             const { noteStackM, noteStackR } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
             const absorbable = noteStackM > nullifierValue ? noteStackM - nullifierValue : 0n;
             const totalAvailable = actualBalance + absorbable;
@@ -533,7 +558,13 @@ export function useSend() {
             const noteStackMerkleFormatted = Array.from({ length: 32 }, (_, i) => (i < noteStackProof.length ? noteStackProof[i].toString() : '0'));
             const currentNonceForAbsorbSendSig = (tokenPreviousNonce + 1n).toString();
             let absorbSendSig: { signature: [string, string, string]; message: string };
-            if (twoFactorDataRef.current?.is2FA && phonePartialSig) {
+            if (msigGroupSigningKey) {
+                absorbSendSig = await signSendMessage(
+                    msigGroupSigningKey, tokenAddressBigInt.toString(), chainId.toString(),
+                    amountBigInt.toString(), relayerFeeBigInt.toString(),
+                    receiverX.toString(), receiverY.toString(), currentNonceForAbsorbSendSig,
+                );
+            } else if (twoFactorDataRef.current?.is2FA && phonePartialSig) {
                 const message = await getSendMessageForThreshold(
                     tokenAddressBigInt.toString(), chainId.toString(),
                     amountBigInt.toString(), relayerFeeBigInt.toString(),
@@ -584,7 +615,13 @@ export function useSend() {
 
         const currentNonceForSendSig = (tokenPreviousNonce + 1n).toString();
         let sendSig: { signature: [string, string, string]; message: string };
-        if (twoFactorDataRef.current?.is2FA && phonePartialSig) {
+        if (msigGroupSigningKey) {
+            sendSig = await signSendMessage(
+                msigGroupSigningKey, tokenAddressBigInt.toString(), chainId.toString(),
+                amountBigInt.toString(), relayerFeeBigInt.toString(),
+                receiverX.toString(), receiverY.toString(), currentNonceForSendSig,
+            );
+        } else if (twoFactorDataRef.current?.is2FA && phonePartialSig) {
             const message = await getSendMessageForThreshold(
                 tokenAddressBigInt.toString(), chainId.toString(),
                 amountBigInt.toString(), relayerFeeBigInt.toString(),
@@ -627,9 +664,9 @@ export function useSend() {
                 merkle_proof: merkleProofFormatted,
             },
         };
-    }, [tokenAddress, amount, receiverZkAddress, relayerFeeAmount, tokenDecimals, zkAddress, publicClient, account?.signature, contextUserKey, userKey, tokenCurrentNonce, balanceEntries, fetchIncomingNotes]);
+    }, [tokenAddress, amount, receiverZkAddress, relayerFeeAmount, tokenDecimals, zkAddress, publicClient, account?.signature, contextUserKey, userKey, tokenCurrentNonce, balanceEntries, fetchIncomingNotes, msigUserKey, msigSignerPubkeyHash, activeMultisigProfile]);
 
-    const runSendProof = useCallback(async (phonePartialSig?: SigningRound2) => {
+    const runSendProof = useCallback(async (phonePartialSig?: SigningRound2, msigGroupSigningKey?: bigint) => {
         try {
             setIsProving(true);
             setProofError(null);
@@ -637,7 +674,7 @@ export function useSend() {
             groth16ResultRef.current = null;
             setIsCalculatingInputs(true);
             const start = performance.now();
-            const { circuit, inputs } = await calculateCircuitInputs(phonePartialSig);
+            const { circuit, inputs } = await calculateCircuitInputs(phonePartialSig, msigGroupSigningKey);
             setIsCalculatingInputs(false);
             sendCircuitRef.current = circuit;
             console.log('Send circuit (before proof):', circuit, 'inputs:', inputs);
@@ -681,6 +718,22 @@ export function useSend() {
             setProofError('Invalid receiver zkAddress. Expected zk + 128 hex chars (x,y).');
             return;
         }
+        // Check if multisig profile is active
+        if (activeMultisigProfile && msigSignerPubkeyHash) {
+            const msigRequest: MsigSigningRequestPayload = {
+                type: 'msig-sign-request',
+                profileId: activeMultisigProfile.profileId,
+                tokenAddress: BigInt(tokenAddress.startsWith('0x') ? tokenAddress : '0x' + tokenAddress).toString(),
+                amount: amount,
+                fee: relayerFeeAmount,
+                nonce: tokenCurrentNonce!.toString(),
+                calldataHash: '0',
+                receiver: receiverZkAddress.trim(),
+            };
+            setMultisigRequest(msigRequest);
+            setMultisigSignOpen(true);
+            return;
+        }
         // Check if 2FA is active
         const zkAddr = zkAddress?.replace('zk', '') || '';
         const stored2FA = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
@@ -714,7 +767,12 @@ export function useSend() {
             return;
         }
         await runSendProof();
-    }, [zkAddress, tokenAddress, amount, receiverZkAddress, relayerFeeAmount, tokenCurrentNonce, isTokenInitialized, publicClient, runSendProof]);
+    }, [zkAddress, tokenAddress, amount, receiverZkAddress, relayerFeeAmount, tokenCurrentNonce, isTokenInitialized, publicClient, runSendProof, activeMultisigProfile, msigSignerPubkeyHash]);
+
+    const onMultisigSigningKeyReady = useCallback(async (signingKey: bigint) => {
+        setMultisigSignOpen(false);
+        await runSendProof(undefined, signingKey);
+    }, [runSendProof]);
 
     const onTwoFactorSendSign = useCallback(async (phoneResponse: string) => {
         setTwoFactorSigning(true);
@@ -860,5 +918,11 @@ export function useSend() {
         twoFactorSigning,
         onTwoFactorSendSign,
         twoFactorSigningRequest: signingRound1Ref.current?.round1Data || null,
+        // Multisig
+        multisigSignOpen,
+        setMultisigSignOpen,
+        multisigRequest,
+        activeMultisigProfile,
+        onMultisigSigningKeyReady,
     };
 }

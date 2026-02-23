@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useAccount as useWagmiAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient, useChainId } from 'wagmi';
 import { useAccount as useAccountContext, useZkAddress } from '@/context/AccountProvider';
 import { useAccountState } from '@/context/AccountStateProvider';
+import { useActiveProfile } from '@/context/ActiveProfileProvider';
 import { createPublicClient, http, parseAbi, Address } from 'viem';
 import { getActiveChain, getChainById, getRpcUrlForChain } from '@/config';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
@@ -86,6 +87,11 @@ export function useDeposit() {
     // Get balanceEntries and currentNonce from context
     const { balanceEntries, currentNonce } = useAccountState();
 
+    // Active profile — multisig overrides user_key, signer_pubkey_hash, zkAddress
+    const { effectiveUserKey: msigUserKey, effectiveSignerPubkeyHash: msigSignerPubkeyHash, effectiveZkAddress, activeMultisigProfile } = useActiveProfile();
+    // Use the effective zkAddress (multisig or main) for IndexedDB lookups
+    const activeZkAddress = effectiveZkAddress ?? zkAddress;
+
     // Real-time timer for proving
     useEffect(() => {
         let interval: NodeJS.Timeout;
@@ -103,9 +109,14 @@ export function useDeposit() {
         };
     }, [isProving]);
 
-    // Initialize user_key from existing signature when component mounts
+    // Initialize user_key — use multisig profile's key when active, else derive from wallet signature
     useEffect(() => {
         const initializeFromExisting = async () => {
+            if (msigUserKey) {
+                // Multisig profile active: use pre-computed user_key directly
+                setUserKey('0x' + msigUserKey.toString(16));
+                return;
+            }
             if (zkAddress && account?.signature && !userKey && !contextUserKey) {
                 try {
                     const userKeyHex = await computePrivateKeyFromSignature(account.signature);
@@ -119,7 +130,7 @@ export function useDeposit() {
             }
         };
         initializeFromExisting();
-    }, [zkAddress, account?.signature, userKey, contextUserKey]);
+    }, [zkAddress, account?.signature, userKey, contextUserKey, msigUserKey]);
 
     // Load token decimals and metadata
     useEffect(() => {
@@ -194,7 +205,7 @@ export function useDeposit() {
     // Check if token is initialized (has nonce) and auto-discover nonce when token is selected
     useEffect(() => {
         const loadTokenNonce = async () => {
-            if (!tokenAddress || !zkAddress) {
+            if (!tokenAddress || !activeZkAddress) {
                 setTokenCurrentNonce(null);
                 setIsTokenInitialized(null);
                 return;
@@ -207,7 +218,7 @@ export function useDeposit() {
                     const { loadTokenAccountData } = await import('@/lib/indexeddb');
                     const normalizedTokenAddress = tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : '0x' + tokenAddress.toLowerCase();
                     // Deposit uses Mage mode (base user_key)
-                    const tokenData = await loadTokenAccountData(zkAddress, normalizedTokenAddress, 'mage');
+                    const tokenData = await loadTokenAccountData(activeZkAddress!, normalizedTokenAddress, 'mage');
 
                     if (tokenData && tokenData.currentNonce !== null && tokenData.currentNonce !== undefined && tokenData.currentNonce > BigInt(0)) {
                         setTokenCurrentNonce(tokenData.currentNonce);
@@ -234,7 +245,7 @@ export function useDeposit() {
 
             try {
                 // Load cached data from IndexedDB (Mage mode for deposits)
-                const cachedData = await loadAccountData(zkAddress);
+                const cachedData = await loadAccountData(activeZkAddress!);
                 const mageTokenData = cachedData?.mageTokenData || [];
                 const tokenData = mageTokenData.find(t => {
                     return t.tokenAddress.toLowerCase() === normalizedTokenAddress;
@@ -255,7 +266,7 @@ export function useDeposit() {
 
                 if (result) {
                     // Save updated token data if it changed (Mage mode)
-                    await saveTokenAccountData(zkAddress, tokenAddress, result.currentNonce, result.balanceEntries, 'mage');
+                    await saveTokenAccountData(activeZkAddress!, tokenAddress, result.currentNonce, result.balanceEntries, 'mage');
 
                     // Update global balance entries if needed
                     if (result.balanceEntries.length > 0) {
@@ -284,7 +295,7 @@ export function useDeposit() {
                 console.error('❌ Error loading/checking token nonce:', error);
                 // On error, try to use cached data as fallback
                 try {
-                    const cachedData = await loadAccountData(zkAddress);
+                    const cachedData = await loadAccountData(activeZkAddress!);
                     const tokenData = cachedData?.tokenData?.find(t => {
                         return t.tokenAddress.toLowerCase() === normalizedTokenAddress;
                     });
@@ -311,7 +322,7 @@ export function useDeposit() {
         }, 100);
 
         return () => clearTimeout(timeoutId);
-    }, [tokenAddress, zkAddress, publicClient, account?.signature, computeCurrentNonce, setBalanceEntries]);
+    }, [tokenAddress, activeZkAddress, publicClient, account?.signature, computeCurrentNonce, setBalanceEntries]);
 
     // Check allowance
     const checkAllowance = useCallback(async () => {
@@ -438,7 +449,7 @@ export function useDeposit() {
             throw new Error('Missing required inputs: tokenAddress or amount');
         }
 
-        if (!zkAddress) {
+        if (!activeZkAddress) {
             throw new Error('Missing zkAddress. Please sign the message first.');
         }
 
@@ -612,11 +623,17 @@ export function useDeposit() {
                 args: [tokenAddress as `0x${string}`],
             }) as unknown as bigint[];
 
-            const zkAddr = zkAddress?.replace('zk', '') || '';
-            const stored2FA = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
-            const depositSignerHash = stored2FA?.is2FA
-                ? stored2FA.signerPubkeyHash
-                : (await getSignerIdentityFromUserKey(userKeyBigInt)).signer_pubkey_hash;
+            // Multisig: use the group's signer_pubkey_hash; 2FA: from stored data; else: derive from user_key
+            let depositSignerHash: string;
+            if (msigSignerPubkeyHash) {
+                depositSignerHash = msigSignerPubkeyHash;
+            } else {
+                const zkAddr = zkAddress?.replace('zk', '') || '';
+                const stored2FA = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
+                depositSignerHash = stored2FA?.is2FA
+                    ? stored2FA.signerPubkeyHash
+                    : (await getSignerIdentityFromUserKey(userKeyBigInt)).signer_pubkey_hash;
+            }
 
             let sharesFromContract: bigint | undefined = undefined;
             if (finalTokenPreviousNonce === BigInt(0)) {
@@ -655,7 +672,7 @@ export function useDeposit() {
                     abi: ArkanaAbi,
                     functionName: 'getNonceCommitmentInfo',
                     args: [finalPreviousNonceCommitmentBytes32],
-                }) as [number, bigint, string, `0x${string}`, `0x${string}`];
+                }) as [number, bigint, string, `0x${string}`, `0x${string}`, bigint];
 
                 const [opTypeForFinalPrevious, sharesMintedForFinalPrevious, , encryptedBalanceForFinalPrevious, encryptedNullifierForFinalPrevious] = operationInfoForFinalPrevious;
                 previousOpType = opTypeForFinalPrevious;
@@ -697,7 +714,7 @@ export function useDeposit() {
                         abi: ArkanaAbi,
                         functionName: 'getNonceCommitmentInfo',
                         args: [previousNonceCommitmentBytes32],
-                    }) as [number, bigint, string, `0x${string}`, `0x${string}`];
+                    }) as [number, bigint, string, `0x${string}`, `0x${string}`, bigint];
 
                     const previousEncryptedNullifierBigInt = BigInt(previousEncryptedNullifierBytes32);
                     nullifierForReconstruction = await poseidonCtrDecrypt(previousEncryptedNullifierBigInt, viewKeyBigInt, 1);
@@ -742,7 +759,7 @@ export function useDeposit() {
                 // After AbsorbWithdraw(5) or AbsorbSend(4), new commitment uses OLD nullifier; use old = new - noteStackM for leaf
                 let nullifierEncodedForLeaf: bigint;
                 if (previousOpType === 5 || previousOpType === 4) {
-                    const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+                    const { x: ourX, y: ourY } = parseZkAddress(activeZkAddress!);
                     const { noteStackM } = await fetchIncomingNotes(tokenAddress as `0x${string}`, ourX, ourY, userKeyBigInt);
                     nullifierEncodedForLeaf = nullifierValue > noteStackM ? nullifierValue - noteStackM : BigInt(0);
                 } else {
@@ -846,7 +863,7 @@ export function useDeposit() {
             // After AbsorbWithdraw(5) or AbsorbSend(4), circuit needs OLD nullifier (new - noteStackM), not the stored new nullifier
             let nullifierForCircuit: bigint;
             if (previousOpType === 5 || previousOpType === 4) {
-                const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+                const { x: ourX, y: ourY } = parseZkAddress(activeZkAddress!);
                 const { noteStackM } = await fetchIncomingNotes(tokenAddress as `0x${string}`, ourX, ourY, userKeyBigInt);
                 nullifierForCircuit = nullifierValue > noteStackM ? nullifierValue - noteStackM : BigInt(0);
             } else {
@@ -876,7 +893,7 @@ export function useDeposit() {
         } finally {
             setIsCalculatingInputs(false);
         }
-    }, [tokenAddress, amount, tokenDecimals, contextUserKey, userKey, zkAddress, balanceEntries, publicClient, account?.signature, tokenCurrentNonce]);
+    }, [tokenAddress, amount, tokenDecimals, contextUserKey, userKey, activeZkAddress, balanceEntries, publicClient, account?.signature, tokenCurrentNonce]);
 
     // Generate deposit proof
     const proveDeposit = useCallback(async () => {
@@ -897,7 +914,7 @@ export function useDeposit() {
             return;
         }
 
-        if (!zkAddress) {
+        if (!activeZkAddress) {
             setProofError('Please sign a message first to access the Arkana network');
             return;
         }
@@ -935,7 +952,7 @@ export function useDeposit() {
         } finally {
             setIsProving(false);
         }
-    }, [zkAddress, tokenAddress, amount, tokenCurrentNonce, isTokenInitialized, calculateCircuitInputs]);
+    }, [activeZkAddress, tokenAddress, amount, tokenCurrentNonce, isTokenInitialized, calculateCircuitInputs]);
 
     // Handle deposit transaction (contract expects pA, pB, pC, publicSignals[11])
     const handleDeposit = useCallback(async () => {

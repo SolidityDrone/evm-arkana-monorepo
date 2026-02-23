@@ -78,12 +78,6 @@ The commitment scheme is split between circuit and contract to avoid race condit
 - `frontend/hooks/` — React hooks for each protocol operation (useDeposit, useWithdraw, useSend…)
 - `frontend/providers/` — AccountProvider (zkAddress), AccountStateProvider (nonce/state discovery)
 
-### Timelock Swap Flow
-
-1. User encrypts swap intent with drand BN254 public key for a future round
-2. At unlock time, drand publishes randomness; executor decrypts the order
-3. Executor withdraws funds via TLswapRegister using a hash chain to enforce order integrity and prevent double-spending
-4. Swap executes through Uniswap V4 Universal Router
 
 ### Privacy Model
 

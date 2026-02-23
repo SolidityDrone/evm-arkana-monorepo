@@ -17,6 +17,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { ARKANA_MESSAGE } from '@/lib/zk-address';
 import { ProofParamsConfirmModal } from '@/components/ProofParamsConfirmModal';
 import { TwoFactorSignModal } from '@/components/TwoFactorSignModal';
+import { MultisigSignModal } from '@/components/MultisigSignModal';
+import { ProfileSelectorBadge } from '@/components/ProfileSelectorBadge';
 
 export default function WithdrawPage() {
     const { toast } = useToast();
@@ -67,6 +69,16 @@ export default function WithdrawPage() {
         twoFactorSigning,
         onTwoFactorWithdrawSign,
         twoFactorSigningRequest,
+        multisigSignOpen,
+        setMultisigSignOpen,
+        multisigRequest,
+        activeMultisigProfile,
+        onMultisigSigningKeyReady,
+        withdrawMode,
+        setWithdrawMode,
+        archonPositions,
+        selectedArchonPosition,
+        setSelectedArchonPosition,
     } = useWithdraw();
 
     const { handleSign, isSigning } = useAccountSigning();
@@ -152,6 +164,9 @@ export default function WithdrawPage() {
                 style={{ background: 'radial-gradient(ellipse at center, rgba(167, 139, 250, 0.06) 0%, transparent 60%)' }}
             />
             <div className="max-w-2xl mx-auto relative z-10 w-full">
+                <div className="flex justify-end mb-4">
+                    <ProfileSelectorBadge />
+                </div>
                 <div className="text-center mb-12">
                     <div className="inline-flex items-center gap-3 mb-6">
                         <div className="w-8 h-px bg-gradient-to-r from-transparent to-primary/40" />
@@ -246,9 +261,32 @@ export default function WithdrawPage() {
                                         <div className="absolute -bottom-1 -right-1 w-2 h-2 border-b border-r border-primary/30" />
                                         <Card className="relative border border-primary/10 bg-card/40 backdrop-blur-sm border-0 w-full min-w-0">
                                             <CardHeader className="border-b border-border/30 bg-card/30 py-3 px-4 sm:px-5 mb-3">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="text-primary/60 text-xs">◈</span>
-                                                    <CardTitle className="text-xs sm:text-sm font-sans uppercase tracking-wider">WITHDRAW DETAILS</CardTitle>
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-primary/60 text-xs">◈</span>
+                                                        <CardTitle className="text-xs sm:text-sm font-sans uppercase tracking-wider">WITHDRAW DETAILS</CardTitle>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-[10px] font-mono text-muted-foreground uppercase">Mode:</span>
+                                                        <div className="flex gap-1 border border-border rounded-lg p-0.5">
+                                                            <Button
+                                                                size="sm"
+                                                                variant={withdrawMode === 'mage' ? 'default' : 'ghost'}
+                                                                onClick={() => setWithdrawMode('mage')}
+                                                                className="h-6 px-2 text-[10px]"
+                                                            >
+                                                                Mage
+                                                            </Button>
+                                                            <Button
+                                                                size="sm"
+                                                                variant={withdrawMode === 'archon' ? 'default' : 'ghost'}
+                                                                onClick={() => setWithdrawMode('archon')}
+                                                                className="h-6 px-2 text-[10px]"
+                                                            >
+                                                                Archon
+                                                            </Button>
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             </CardHeader>
                                             <CardContent>
@@ -285,6 +323,55 @@ export default function WithdrawPage() {
                                                         <Input type="text" value={tokenAddress} onChange={(e) => setTokenAddress(e.target.value.toLowerCase())} placeholder="0x..." className="text-xs sm:text-sm w-full" />
                                                         {tokenName && tokenSymbol && <p className="text-[10px] font-mono text-accent text-right mt-1">✓ {tokenName} ({tokenSymbol}) - {tokenDecimals} decimals</p>}
                                                     </div>
+
+                                                    {/* Archon position selector */}
+                                                    {withdrawMode === 'archon' && tokenAddress && (
+                                                        <div>
+                                                            <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider mb-1 sm:mb-2">ARCHON POSITION</label>
+                                                            {isCheckingTokenState && (
+                                                                <p className="text-xs font-mono text-muted-foreground">Discovering positions...</p>
+                                                            )}
+                                                            {!isCheckingTokenState && archonPositions.length === 0 && (
+                                                                <p className="text-xs font-mono text-yellow-400/80">No archon positions found for this token.</p>
+                                                            )}
+                                                            {archonPositions.length > 0 && (
+                                                                <div className="space-y-1 border border-border/50 rounded p-2 bg-card/60 max-h-48 overflow-y-auto">
+                                                                    {archonPositions.map((pos) => {
+                                                                        const latestEntry = pos.balanceEntries.length > 0 ? pos.balanceEntries[pos.balanceEntries.length - 1] : null;
+                                                                        const isSelected = selectedArchonPosition?.userKeyOffset === pos.userKeyOffset;
+                                                                        const now = Math.floor(Date.now() / 1000);
+                                                                        const unlockSec = Number(pos.unlockAt);
+                                                                        const isLocked = unlockSec > 0 && unlockSec > now;
+                                                                        return (
+                                                                            <button
+                                                                                key={pos.userKeyOffset.toString()}
+                                                                                type="button"
+                                                                                onClick={() => setSelectedArchonPosition(isSelected ? null : pos)}
+                                                                                className={`w-full text-left px-3 py-2 rounded border transition-colors ${isSelected ? 'border-primary/50 bg-primary/10' : 'border-transparent hover:bg-secondary/50 hover:border-accent/30'}`}
+                                                                            >
+                                                                                <div className="flex items-center justify-between">
+                                                                                    <div>
+                                                                                        <p className="text-xs font-mono text-foreground font-bold">Position #{pos.userKeyOffset.toString()}</p>
+                                                                                        <p className="text-[10px] font-mono text-muted-foreground">
+                                                                                            {latestEntry ? `${latestEntry.amount.toString()} shares` : '0 shares'} · Nonce {pos.currentNonce.toString()}
+                                                                                        </p>
+                                                                                    </div>
+                                                                                    <div className="text-right shrink-0 ml-2">
+                                                                                        {isLocked ? (
+                                                                                            <span className="text-[10px] text-amber-400/80">🔒 Locked</span>
+                                                                                        ) : unlockSec > 0 ? (
+                                                                                            <span className="text-[10px] text-emerald-400/80">✓ Unlocked</span>
+                                                                                        ) : null}
+                                                                                        {isSelected && <span className="block text-[10px] text-primary mt-0.5">Selected</span>}
+                                                                                    </div>
+                                                                                </div>
+                                                                            </button>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
 
                                                     <div>
                                                         <label className="block text-xs sm:text-sm font-sans font-bold text-foreground uppercase tracking-wider mb-1 sm:mb-2">WITHDRAW AMOUNT {tokenDecimals != null ? `(${tokenDecimals} decimals)` : ''}</label>
@@ -329,13 +416,16 @@ export default function WithdrawPage() {
                                                         <div className="border border-primary/20 bg-card/40 p-3 rounded-sm">
                                                             <p className="text-xs font-mono text-foreground">NEXT NONCE: <span className="font-bold text-primary">{tokenCurrentNonce.toString()}</span></p>
                                                             <p className="text-[10px] font-mono text-muted-foreground uppercase">Using prev nonce {(tokenCurrentNonce > BigInt(0) ? tokenCurrentNonce - BigInt(1) : BigInt(0)).toString()} for withdraw</p>
+                                                            {withdrawMode === 'archon' && selectedArchonPosition && (
+                                                                <p className="text-[10px] font-mono text-primary/70 mt-0.5">Archon position #{selectedArchonPosition.userKeyOffset.toString()}</p>
+                                                            )}
                                                         </div>
                                                     )}
 
                                                     {!proof ? (
                                                         <>
-                                                            <SpellButton onClick={() => setShowProofConfirmModal(true)} disabled={isProving || isCalculatingInputs || !tokenAddress || !amount || !receiverAddress || !receiverFeeAmount || tokenCurrentNonce === null || isTokenInitialized === false} variant="primary" className="w-full text-xs sm:text-sm">
-                                                                {isCalculatingInputs ? 'CALCULATING INPUTS...' : isProving ? `GENERATING PROOF... (${currentProvingTime}MS)` : isTokenInitialized === false ? 'TOKEN NOT INITIALIZED' : 'GENERATE WITHDRAW PROOF'}
+                                                            <SpellButton onClick={() => setShowProofConfirmModal(true)} disabled={isProving || isCalculatingInputs || !tokenAddress || !amount || !receiverAddress || !receiverFeeAmount || tokenCurrentNonce === null || isTokenInitialized === false || (withdrawMode === 'archon' && !selectedArchonPosition)} variant="primary" className="w-full text-xs sm:text-sm">
+                                                                {isCalculatingInputs ? 'CALCULATING INPUTS...' : isProving ? `GENERATING PROOF... (${currentProvingTime}MS)` : isTokenInitialized === false ? 'TOKEN NOT INITIALIZED' : withdrawMode === 'archon' && !selectedArchonPosition ? 'SELECT ARCHON POSITION' : 'GENERATE WITHDRAW PROOF'}
                                                             </SpellButton>
                                                             <ProofParamsConfirmModal
                                                                 open={showProofConfirmModal}
@@ -344,6 +434,7 @@ export default function WithdrawPage() {
                                                                 title="Confirm EdDSA signing (withdraw)"
                                                                 description="You are about to generate a proof that commits to the following parameters. This step uses your EdDSA identity. Verify everything before confirming."
                                                                 params={[
+                                                                    { label: 'Mode', value: withdrawMode === 'archon' ? `Archon (position #${selectedArchonPosition?.userKeyOffset?.toString() ?? '?'})` : 'Mage', mono: false },
                                                                     { label: 'Token', value: tokenSymbol ? `${tokenSymbol} (${tokenAddress.slice(0, 10)}…)` : tokenAddress, mono: false },
                                                                     { label: 'Amount', value: amount || '—', mono: false },
                                                                     { label: 'Receiver address', value: receiverAddress ? `${receiverAddress.slice(0, 10)}…${receiverAddress.slice(-8)}` : '—', mono: true },
@@ -428,6 +519,17 @@ export default function WithdrawPage() {
                 isSigning={twoFactorSigning}
                 error={twoFactorError}
             />
+
+            {/* Multisig Sign Modal */}
+            {multisigSignOpen && activeMultisigProfile && multisigRequest && (
+                <MultisigSignModal
+                    open={multisigSignOpen}
+                    profile={activeMultisigProfile}
+                    request={multisigRequest}
+                    onSigningKeyReady={onMultisigSigningKeyReady}
+                    onCancel={() => setMultisigSignOpen(false)}
+                />
+            )}
         </div>
     );
 }

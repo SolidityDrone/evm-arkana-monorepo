@@ -17,6 +17,8 @@ import { QrCode } from 'lucide-react';
 import { ProofParamsConfirmModal } from '@/components/ProofParamsConfirmModal';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { TwoFactorSignModal } from '@/components/TwoFactorSignModal';
+import { MultisigSignModal } from '@/components/MultisigSignModal';
+import { ProfileSelectorBadge } from '@/components/ProfileSelectorBadge';
 import { encodeFunctionData } from 'viem';
 
 export default function SendPage() {
@@ -63,6 +65,11 @@ export default function SendPage() {
         twoFactorSigning,
         onTwoFactorSendSign,
         twoFactorSigningRequest,
+        multisigSignOpen,
+        setMultisigSignOpen,
+        multisigRequest,
+        activeMultisigProfile,
+        onMultisigSigningKeyReady,
     } = useSend();
 
     const { handleSign, isSigning } = useAccountSigning();
@@ -165,6 +172,9 @@ export default function SendPage() {
                 style={{ background: 'radial-gradient(ellipse at center, rgba(167, 139, 250, 0.06) 0%, transparent 60%)' }}
             />
             <div className="max-w-2xl mx-auto relative z-10 w-full">
+                <div className="flex justify-end mb-4">
+                    <ProfileSelectorBadge />
+                </div>
                 <div className="text-center mb-12">
                     <div className="inline-flex items-center gap-3 mb-6">
                         <div className="w-8 h-px bg-gradient-to-r from-transparent to-primary/40" />
@@ -436,6 +446,17 @@ export default function SendPage() {
                 isSigning={twoFactorSigning}
                 error={twoFactorError}
             />
+
+            {/* Multisig Sign Modal */}
+            {multisigSignOpen && activeMultisigProfile && multisigRequest && (
+                <MultisigSignModal
+                    open={multisigSignOpen}
+                    profile={activeMultisigProfile}
+                    request={multisigRequest}
+                    onSigningKeyReady={onMultisigSigningKeyReady}
+                    onCancel={() => setMultisigSignOpen(false)}
+                />
+            )}
         </div>
     );
 }

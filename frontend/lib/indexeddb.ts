@@ -1,6 +1,7 @@
 'use client';
 
 import { BalanceEntry } from '@/hooks/useNonceDiscovery';
+import { encryptIdb, decryptIdb } from '@/lib/idb-crypto';
 
 // Discovery mode type
 export type DiscoveryMode = 'mage' | 'archon';
@@ -70,8 +71,9 @@ export interface AccountData {
 }
 
 const DB_NAME = 'arkana_account_db';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE_NAME = 'account_data';
+const MULTISIG_STORE_NAME = 'multisig_profiles';
 
 let dbInstance: IDBDatabase | null = null;
 let dbOpenFailed = false;
@@ -105,6 +107,10 @@ async function getDB(): Promise<IDBDatabase | null> {
             if (!db.objectStoreNames.contains(STORE_NAME)) {
                 const objectStore = db.createObjectStore(STORE_NAME, { keyPath: 'zkAddress' });
                 objectStore.createIndex('lastUpdated', 'lastUpdated', { unique: false });
+            }
+            if (!db.objectStoreNames.contains(MULTISIG_STORE_NAME)) {
+                const msStore = db.createObjectStore(MULTISIG_STORE_NAME, { keyPath: 'profileId' });
+                msStore.createIndex('lastUpdated', 'lastUpdated', { unique: false });
             }
         };
     });
@@ -158,8 +164,15 @@ export async function saveAccountData(data: AccountData): Promise<void> {
             profileType: data.profileType ?? undefined,
         };
 
+        const plainJson = JSON.stringify(dataToStore);
+        const enc = await encryptIdb(plainJson);
+        const isEncrypted = enc !== plainJson;
+        const recordToStore = isEncrypted
+            ? { zkAddress: data.zkAddress, enc }
+            : dataToStore;
+
         await new Promise<void>((resolve, reject) => {
-            const request = store.put(dataToStore);
+            const request = store.put(recordToStore);
             request.onsuccess = () => resolve();
             request.onerror = () => reject(request.error);
         });
@@ -177,11 +190,24 @@ export async function loadAccountData(zkAddress: string): Promise<AccountData | 
 
         return new Promise<AccountData | null>((resolve, reject) => {
             const request = store.get(zkAddress);
-            request.onsuccess = () => {
+            request.onsuccess = async () => {
+                try {
                 const result = request.result;
                 if (!result) {
                     resolve(null);
                     return;
+                }
+
+                // Decrypt the record if it was stored encrypted
+                let raw: any = result;
+                if (result.enc) {
+                    const decrypted = await decryptIdb(result.enc);
+                    if (decrypted) {
+                        raw = JSON.parse(decrypted);
+                    } else {
+                        // enc may be plaintext JSON stored before key was ready
+                        try { raw = JSON.parse(result.enc); } catch { /* use result as-is */ }
+                    }
                 }
 
                 const deserializeTokenData = (tokens: any[] | undefined): TokenAccountData[] => {
@@ -202,30 +228,31 @@ export async function loadAccountData(zkAddress: string): Promise<AccountData | 
                             senderPublicKey: { x: BigInt(n.senderPublicKey.x), y: BigInt(n.senderPublicKey.y) },
                             index: n.index,
                         })),
-                        lastUpdated: token.lastUpdated || result.lastUpdated,
+                        lastUpdated: token.lastUpdated || raw.lastUpdated,
                     }));
                 };
 
                 const data: AccountData = {
-                    zkAddress: result.zkAddress,
-                    userKey: result.userKey !== null ? BigInt(result.userKey) : null,
-                    tokenData: deserializeTokenData(result.tokenData),
-                    lastUpdated: result.lastUpdated,
-                    currentNonce: result.currentNonce !== null ? BigInt(result.currentNonce) : null,
-                    balanceEntries: result.balanceEntries ? result.balanceEntries.map((entry: any) => ({
+                    zkAddress: raw.zkAddress,
+                    userKey: raw.userKey !== null ? BigInt(raw.userKey) : null,
+                    tokenData: deserializeTokenData(raw.tokenData),
+                    lastUpdated: raw.lastUpdated,
+                    currentNonce: raw.currentNonce !== null ? BigInt(raw.currentNonce) : null,
+                    balanceEntries: raw.balanceEntries ? raw.balanceEntries.map((entry: any) => ({
                         tokenAddress: BigInt(entry.tokenAddress),
                         amount: BigInt(entry.amount),
                         nonce: BigInt(entry.nonce),
                         nullifier: entry.nullifier != null ? BigInt(entry.nullifier) : BigInt(0),
                     })) : [],
-                    discoveryMode: result.discoveryMode || 'mage',
-                    mageTokenData: deserializeTokenData(result.mageTokenData),
-                    archonTokenData: deserializeTokenData(result.archonTokenData),
-                    twoFactor: result.twoFactor ?? undefined,
-                    profileType: result.profileType ?? undefined,
+                    discoveryMode: raw.discoveryMode || 'mage',
+                    mageTokenData: deserializeTokenData(raw.mageTokenData),
+                    archonTokenData: deserializeTokenData(raw.archonTokenData),
+                    twoFactor: raw.twoFactor ?? undefined,
+                    profileType: raw.profileType ?? undefined,
                 };
 
                 resolve(data);
+                } catch (e) { reject(e as Error); }
             };
             request.onerror = () => reject(request.error);
         });
@@ -439,5 +466,130 @@ export async function checkProfileSetup(
         return accountData.profileType;
     } catch {
         return 'no-db';
+    }
+}
+
+// ── Multisig profile store ────────────────────────────────────────────────
+
+export interface MultisigParticipant {
+    index: number;
+    name?: string;
+}
+
+/**
+ * A multisig profile stored in the `multisig_profiles` object store.
+ * `profileId` is the full zkAddress derived from the group's Baby Jubjub public key
+ * (constructed via constructZkAddress(groupPublicKey[0], groupPublicKey[1])).
+ * Token discovery data lives in the main `account_data` store keyed by this same profileId.
+ */
+export interface MultisigProfileData {
+    /** Primary key = constructZkAddress(groupPublicKey[0], groupPublicKey[1]) */
+    profileId: string;
+    name: string;
+    threshold: number;
+    maxSigners: number;
+    role: 'initiator' | 'signer';
+    /** Poseidon2(groupPublicKey.x, groupPublicKey.y) — decimal string, used in circuits */
+    signerPubkeyHash: string;
+    /** Baby Jubjub group public key [x, y] as decimal strings */
+    groupPublicKey: [string, string];
+    /** Hex-encoded 32-byte identity secret shared by all participants */
+    groupIdentitySecret: string;
+    /** Poseidon2(identitySecret.lo, identitySecret.hi) — decimal string — circuit user_key */
+    userKey: string;
+    /** This participant's Shamir share index (1-based) */
+    myIndex: number;
+    /** This participant's Shamir share value as hex */
+    myShare: string;
+    participants: MultisigParticipant[];
+    createdAt: number;
+    lastUpdated: number;
+}
+
+export async function saveMultisigProfile(data: MultisigProfileData): Promise<void> {
+    try {
+        const db = await getDB();
+        if (!db) return;
+        const tx = db.transaction([MULTISIG_STORE_NAME], 'readwrite');
+        const store = tx.objectStore(MULTISIG_STORE_NAME);
+
+        const fullData = { ...data, lastUpdated: Date.now() };
+        const fullJson = JSON.stringify(fullData);
+        const enc = await encryptIdb(fullJson);
+        const isEncrypted = enc !== fullJson;
+        // Always keep display fields plaintext so listMultisigProfiles works without decryption
+        const recordToStore = isEncrypted
+            ? { profileId: data.profileId, name: data.name, threshold: data.threshold, maxSigners: data.maxSigners, role: data.role, lastUpdated: Date.now(), enc }
+            : fullData;
+
+        await new Promise<void>((resolve, reject) => {
+            const req = store.put(recordToStore);
+            req.onsuccess = () => resolve();
+            req.onerror = () => reject(req.error);
+        });
+    } catch (error) {
+        console.error('Error saving multisig profile:', error);
+    }
+}
+
+export async function loadMultisigProfile(profileId: string): Promise<MultisigProfileData | null> {
+    try {
+        const db = await getDB();
+        if (!db) return null;
+        const tx = db.transaction([MULTISIG_STORE_NAME], 'readonly');
+        const store = tx.objectStore(MULTISIG_STORE_NAME);
+        return new Promise<MultisigProfileData | null>((resolve, reject) => {
+            const req = store.get(profileId);
+            req.onsuccess = async () => {
+                try {
+                    const raw = req.result;
+                    if (!raw) { resolve(null); return; }
+                    if (raw.enc) {
+                        const decrypted = await decryptIdb(raw.enc);
+                        if (decrypted) { resolve(JSON.parse(decrypted) as MultisigProfileData); return; }
+                        // enc may be plaintext JSON stored before key was ready
+                        try { resolve(JSON.parse(raw.enc) as MultisigProfileData); return; } catch { /* */ }
+                    }
+                    resolve(raw as MultisigProfileData);
+                } catch (e) { reject(e as Error); }
+            };
+            req.onerror = () => reject(req.error);
+        });
+    } catch (error) {
+        console.error('Error loading multisig profile:', error);
+        return null;
+    }
+}
+
+export async function listMultisigProfiles(): Promise<MultisigProfileData[]> {
+    try {
+        const db = await getDB();
+        if (!db) return [];
+        const tx = db.transaction([MULTISIG_STORE_NAME], 'readonly');
+        const store = tx.objectStore(MULTISIG_STORE_NAME);
+        return new Promise<MultisigProfileData[]>((resolve, reject) => {
+            const req = store.getAll();
+            req.onsuccess = () => resolve(req.result ?? []);
+            req.onerror = () => reject(req.error);
+        });
+    } catch (error) {
+        console.error('Error listing multisig profiles:', error);
+        return [];
+    }
+}
+
+export async function deleteMultisigProfile(profileId: string): Promise<void> {
+    try {
+        const db = await getDB();
+        if (!db) return;
+        const tx = db.transaction([MULTISIG_STORE_NAME], 'readwrite');
+        const store = tx.objectStore(MULTISIG_STORE_NAME);
+        await new Promise<void>((resolve, reject) => {
+            const req = store.delete(profileId);
+            req.onsuccess = () => resolve();
+            req.onerror = () => reject(req.error);
+        });
+    } catch (error) {
+        console.error('Error deleting multisig profile:', error);
     }
 }

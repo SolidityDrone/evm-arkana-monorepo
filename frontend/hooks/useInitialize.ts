@@ -13,6 +13,7 @@ import { computePrivateKeyFromSignature, getSpendingKeyCircuit, poseidonHash } f
 import { getSignerIdentityFromUserKey } from '@/lib/eddsa-circuit';
 import type { TwoFactorSetupResult_UI } from '@/components/TwoFactorSetupModal';
 import { saveTwoFactorData, loadTwoFactorData, type TwoFactorData } from '@/lib/indexeddb';
+import { useActiveProfile } from '@/context/ActiveProfileProvider';
 import { proveWithSnarkjs } from '@/lib/circuit-prove';
 import type { Groth16Args } from '@/lib/groth16';
 import { padHex } from 'viem';
@@ -30,6 +31,7 @@ export function useInitialize() {
     const { setZkAddress, account } = useAccountContext();
     const zkAddress = useZkAddress();
     const { setCurrentNonce, setBalanceEntries, setUserKey: setContextUserKey, userKey: contextUserKey } = useAccountState();
+    const { effectiveUserKey: msigUserKey, effectiveSignerPubkeyHash: msigSignerPubkeyHash, activeMultisigProfile } = useActiveProfile();
     const publicClient = usePublicClient();
     const chainId = useChainId();
     const { writeContract, data: hash, isPending, error: writeError } = useWriteContract();
@@ -126,6 +128,11 @@ export function useInitialize() {
     // Initialize user_key from existing signature when component mounts
     useEffect(() => {
         const initializeFromExisting = async () => {
+            if (msigUserKey) {
+                // Multisig profile active: use pre-computed user_key directly
+                setUserKey('0x' + msigUserKey.toString(16));
+                return;
+            }
             // If we have zkAddress and signature but no userKey, compute it
             if (zkAddress && account?.signature && !userKey && !contextUserKey) {
                 try {
@@ -141,7 +148,7 @@ export function useInitialize() {
             }
         };
         initializeFromExisting();
-    }, [zkAddress, account?.signature, userKey, contextUserKey]);
+    }, [zkAddress, account?.signature, userKey, contextUserKey, msigUserKey]);
 
     // Load token decimals
     useEffect(() => {
@@ -333,9 +340,11 @@ export function useInitialize() {
     }, [isApprovalConfirmed, approvalHashData, checkAllowance]);
 
     /**
-     * Opens the 2FA setup modal so the user picks single-key or 2FA.
-     * After the user completes the modal, onTwoFactorSetupComplete is called
-     * which runs the actual proof.
+     * Generates the entry proof, auto-detecting the signing mode from the active profile.
+     * - Multisig profile → uses profile's signerPubkeyHash directly, no modal.
+     * - Main account 2FA → loads stored signerPubkeyHash from IndexedDB, no modal.
+     * - Main account single → derives from user_key, no modal.
+     * Falls back to showing the setup modal only if profile data is unavailable.
      */
     const proveArkanaEntry = async () => {
         if (!userKey) {
@@ -346,7 +355,27 @@ export function useInitialize() {
             setProofError('Please fill in token_address');
             return;
         }
-        setTwoFactorSetupOpen(true);
+
+        // Multisig profile: use the group's signerPubkeyHash directly
+        if (activeMultisigProfile) {
+            await runEntryProof({ mode: '2fa', signerPubkeyHash: activeMultisigProfile.signerPubkeyHash });
+            return;
+        }
+
+        // Main account: check IndexedDB for stored 2FA data
+        const profileRawHex = zkAddress?.replace('zk', '') || '';
+        if (profileRawHex) {
+            try {
+                const twoFAData = await loadTwoFactorData(profileRawHex);
+                if (twoFAData?.is2FA && twoFAData.signerPubkeyHash) {
+                    await runEntryProof({ mode: '2fa', signerPubkeyHash: twoFAData.signerPubkeyHash });
+                    return;
+                }
+            } catch { /* fall through */ }
+        }
+
+        // Single key or no 2FA data: derive signer_pubkey_hash from user_key
+        await runEntryProof({ mode: 'single' });
     };
 
     const onTwoFactorSetupComplete = async (result: TwoFactorSetupResult_UI) => {
@@ -618,10 +647,14 @@ export function useInitialize() {
         return () => clearTimeout(timeout);
     }, [isSubmitting, isPending, hash, writeError]);
 
-    // Reset submitting state when transaction completes
+    // Reset proof + submitting state when transaction completes so the next action
+    // (e.g. a second Archon position) re-runs the offset search and generates a fresh proof.
     useEffect(() => {
         if (isConfirmed) {
             setIsSubmitting(false);
+            setProof('');
+            setPublicInputs([]);
+            groth16ResultRef.current = null;
         }
     }, [isConfirmed]);
 

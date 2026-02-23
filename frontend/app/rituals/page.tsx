@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { TokenIcon } from '@/lib/token-icons';
 import { ARKANA_ADDRESS, ARKANA_ABI } from '@/lib/abi/ArkanaConst';
 import { TwoFactorSetupModal } from '@/components/TwoFactorSetupModal';
+import { ProfileSelectorBadge } from '@/components/ProfileSelectorBadge';
 
 type RitualMode = 'mage' | 'archon';
 
@@ -275,6 +276,9 @@ export default function RitualsPage() {
             />
 
             <div className="max-w-2xl mx-auto relative z-10 w-full">
+                <div className="flex justify-end mb-4">
+                    <ProfileSelectorBadge />
+                </div>
                 {/* Section header */}
                 <div className="text-center mb-12">
                     <div className="inline-flex items-center gap-3 mb-6">

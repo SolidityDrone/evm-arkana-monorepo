@@ -5,6 +5,7 @@ import './globals.css'
 import ContextProvider from '@/context'
 import { AccountProvider } from '@/context/AccountProvider'
 import { AccountStateProvider } from '@/context/AccountStateProvider'
+import { ActiveProfileProvider } from '@/context/ActiveProfileProvider'
 import { BufferInit } from '@/components/BufferInit'
 import { ArcaneHeader } from '@/components/arcane-header'
 import { ToastContainer } from '@/components/Toast'
@@ -49,9 +50,11 @@ export default async function RootLayout({
         <ContextProvider cookies={cookies}>
           <AccountProvider>
             <AccountStateProvider>
-              <ArcaneHeader />
-              <main className="relative z-10 w-full min-w-0">{children}</main>
-              <ToastContainer />
+              <ActiveProfileProvider>
+                <ArcaneHeader />
+                <main className="relative z-10 w-full min-w-0">{children}</main>
+                <ToastContainer />
+              </ActiveProfileProvider>
             </AccountStateProvider>
           </AccountProvider>
         </ContextProvider>

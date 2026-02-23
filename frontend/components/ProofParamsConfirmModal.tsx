@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, X } from 'lucide-react';
 
 export interface ProofParamRow {
     label: string;
@@ -79,6 +79,15 @@ export function ProofParamsConfirmModal({
                 className="max-w-2xl w-[90vw] sm:w-[600px] min-w-[320px] max-h-[90vh] overflow-y-auto bg-card/98 backdrop-blur-xl border-primary/40 shadow-2xl mx-auto"
                 style={{ maxWidth: '600px', width: '90vw' }}
             >
+                {!isSigning && (
+                    <button
+                        onClick={() => onOpenChange(false)}
+                        className="absolute top-3 right-3 rounded-lg p-1.5 text-white/40 hover:text-white/80 hover:bg-white/[0.08] transition-all z-10"
+                        aria-label="Close"
+                    >
+                        <X size={16} />
+                    </button>
+                )}
                 <DialogHeader className="space-y-3 pb-4 border-b border-border/50">
                     <DialogTitle className="text-lg sm:text-xl font-semibold text-foreground tracking-tight">
                         {title}

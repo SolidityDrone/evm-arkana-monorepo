@@ -12,16 +12,28 @@ import Link from "next/link"
 import AccountModal from './AccountModal'
 import ZkAddressModal from './ZkAddressModal'
 import { ProfileBootstrapModal, type ProfileSetupResult } from './ProfileBootstrapModal'
-import { checkProfileSetup, saveProfileType } from '@/lib/indexeddb'
+import { checkProfileSetup, saveProfileType, listMultisigProfiles } from '@/lib/indexeddb'
+import { useActiveProfile } from '@/context/ActiveProfileProvider'
+import { Users, ChevronDown, Key } from 'lucide-react'
 
 export function ArcaneHeader() {
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
     const [accountModalOpen, setAccountModalOpen] = useState(false)
     const [zkAddressModalOpen, setZkAddressModalOpen] = useState(false)
     const [profileBootstrapOpen, setProfileBootstrapOpen] = useState(false)
+    const [profileDropdownOpen, setProfileDropdownOpen] = useState(false)
+    const [hasStoredMultisigs, setHasStoredMultisigs] = useState(false)
     const { isConnected, address } = useAccount()
     const zkAddress = useZkAddress()
     const { handleSign, isSigning, isLoading } = useAccountSigning()
+    const { activeProfileId, activeMultisigProfile, availableMultisigs, switchProfile, effectiveZkAddress, isSignerMode, enterSignerMode } = useActiveProfile()
+
+    // Check if device has any stored multisig profiles (for walletless signer mode)
+    useEffect(() => {
+        listMultisigProfiles()
+            .then(profiles => setHasStoredMultisigs(profiles.length > 0))
+            .catch(() => setHasStoredMultisigs(false))
+    }, [])
 
     // Check if profile has been set up whenever zkAddress becomes available
     useEffect(() => {
@@ -87,33 +99,86 @@ export function ArcaneHeader() {
 
                     {/* Wallet & Sign Buttons */}
                     <div className="hidden md:flex items-center space-x-3">
-                        <AppKitButtonWrapper />
-                        {isConnected && address && (
+
+                        {/* ── Signer mode (no wallet) ── */}
+                        {isSignerMode ? (
                             <>
-                                {zkAddress ? (
+                                {/* Profile switcher — multisig only, no "Main Account" */}
+                                <ProfileSwitcher
+                                    availableMultisigs={availableMultisigs}
+                                    activeProfileId={activeProfileId}
+                                    activeMultisigProfile={activeMultisigProfile}
+                                    switchProfile={switchProfile}
+                                    profileDropdownOpen={profileDropdownOpen}
+                                    setProfileDropdownOpen={setProfileDropdownOpen}
+                                    showMain={false}
+                                />
+                                <Button
+                                    onClick={() => setAccountModalOpen(true)}
+                                    size="sm"
+                                    variant="outline"
+                                    className="text-sm md:text-base font-mono font-bold uppercase tracking-wider transition-colors border-sky-500/50 hover:bg-sky-500/10 hover:border-sky-500 text-sky-300"
+                                >
+                                    ACCOUNT
+                                </Button>
+                            </>
+                        ) : (
+                            <>
+                                <AppKitButtonWrapper />
+
+                                {/* ── Wallet connected ── */}
+                                {isConnected && address && (
                                     <>
-                                        <ZkAddressDisplay 
-                                            zkAddress={zkAddress} 
-                                            variant="desktop" 
-                                            onClick={() => setZkAddressModalOpen(true)}
-                                        />
-                                        <Button
-                                            onClick={() => setAccountModalOpen(true)}
-                                            size="sm"
-                                            variant="outline"
-                                            className="text-sm md:text-base font-mono font-bold uppercase tracking-wider transition-colors border-primary/50 hover:bg-primary/10 hover:border-primary"
-                                        >
-                                            ACCOUNT
-                                        </Button>
+                                        {zkAddress ? (
+                                            <>
+                                                <ZkAddressDisplay
+                                                    zkAddress={effectiveZkAddress ?? zkAddress}
+                                                    variant="desktop"
+                                                    onClick={() => setZkAddressModalOpen(true)}
+                                                />
+                                                {availableMultisigs.length > 0 && (
+                                                    <ProfileSwitcher
+                                                        availableMultisigs={availableMultisigs}
+                                                        activeProfileId={activeProfileId}
+                                                        activeMultisigProfile={activeMultisigProfile}
+                                                        switchProfile={switchProfile}
+                                                        profileDropdownOpen={profileDropdownOpen}
+                                                        setProfileDropdownOpen={setProfileDropdownOpen}
+                                                        showMain={true}
+                                                    />
+                                                )}
+                                                <Button
+                                                    onClick={() => setAccountModalOpen(true)}
+                                                    size="sm"
+                                                    variant="outline"
+                                                    className="text-sm md:text-base font-mono font-bold uppercase tracking-wider transition-colors border-primary/50 hover:bg-primary/10 hover:border-primary"
+                                                >
+                                                    ACCOUNT
+                                                </Button>
+                                            </>
+                                        ) : (
+                                            <Button
+                                                onClick={handleSign}
+                                                disabled={isSigning || isLoading}
+                                                size="sm"
+                                                className="text-sm md:text-base bg-primary hover:bg-primary/90 text-primary-foreground font-mono font-bold uppercase tracking-wider transition-colors disabled:opacity-50 shadow-[0_0_14px_rgba(196,181,253,0.45)]"
+                                            >
+                                                {isSigning || isLoading ? 'SIGNING...' : 'SIGN SIGIL'}
+                                            </Button>
+                                        )}
                                     </>
-                                ) : (
+                                )}
+
+                                {/* ── No wallet, but stored multisigs → offer signer mode ── */}
+                                {!isConnected && hasStoredMultisigs && (
                                     <Button
-                                        onClick={handleSign}
-                                        disabled={isSigning || isLoading}
+                                        onClick={() => enterSignerMode()}
                                         size="sm"
-                                        className="text-sm md:text-base bg-primary hover:bg-primary/90 text-primary-foreground font-mono font-bold uppercase tracking-wider transition-colors disabled:opacity-50 shadow-[0_0_14px_rgba(196,181,253,0.45)]"
+                                        variant="outline"
+                                        className="text-xs font-mono uppercase tracking-wider border-sky-500/40 text-sky-300/70 hover:border-sky-500/70 hover:text-sky-300 hover:bg-sky-500/10"
                                     >
-                                        {isSigning || isLoading ? 'SIGNING...' : 'SIGN SIGIL'}
+                                        <Key className="w-3.5 h-3.5 mr-1.5" />
+                                        Continue as Signer
                                     </Button>
                                 )}
                             </>
@@ -152,39 +217,72 @@ export function ArcaneHeader() {
 
                         {/* Mobile Wallet & Sign */}
                         <div className="mt-4 pt-4 border-t border-zinc-800 space-y-2">
-                            <div className="w-full">
-                                <AppKitButtonWrapper />
-                            </div>
-                            {isConnected && address && (
+                            {isSignerMode ? (
                                 <>
-                                    {zkAddress ? (
+                                    <ProfileSwitcher
+                                        availableMultisigs={availableMultisigs}
+                                        activeProfileId={activeProfileId}
+                                        activeMultisigProfile={activeMultisigProfile}
+                                        switchProfile={switchProfile}
+                                        profileDropdownOpen={profileDropdownOpen}
+                                        setProfileDropdownOpen={setProfileDropdownOpen}
+                                        showMain={false}
+                                    />
+                                    <Button
+                                        onClick={() => { setAccountModalOpen(true); setMobileMenuOpen(false); }}
+                                        variant="outline"
+                                        className="w-full text-base font-mono font-bold uppercase tracking-wider border-sky-500/50 text-sky-300 hover:bg-sky-500/10"
+                                    >
+                                        ACCOUNT
+                                    </Button>
+                                </>
+                            ) : (
+                                <>
+                                    <div className="w-full">
+                                        <AppKitButtonWrapper />
+                                    </div>
+                                    {isConnected && address && (
                                         <>
-                                            <ZkAddressDisplay 
-                                                zkAddress={zkAddress} 
-                                                variant="mobile" 
-                                                onClick={() => {
-                                                    setZkAddressModalOpen(true)
-                                                    setMobileMenuOpen(false)
-                                                }}
-                                            />
-                                            <Button
-                                                onClick={() => {
-                                                    setAccountModalOpen(true)
-                                                    setMobileMenuOpen(false)
-                                                }}
-                                                variant="outline"
-                                                className="w-full text-base font-mono font-bold uppercase tracking-wider transition-colors border-primary/50 hover:bg-primary/10 hover:border-primary"
-                                            >
-                                                ACCOUNT
-                                            </Button>
+                                            {zkAddress ? (
+                                                <>
+                                                    <ZkAddressDisplay
+                                                        zkAddress={effectiveZkAddress ?? zkAddress}
+                                                        variant="mobile"
+                                                        onClick={() => {
+                                                            setZkAddressModalOpen(true)
+                                                            setMobileMenuOpen(false)
+                                                        }}
+                                                    />
+                                                    <Button
+                                                        onClick={() => {
+                                                            setAccountModalOpen(true)
+                                                            setMobileMenuOpen(false)
+                                                        }}
+                                                        variant="outline"
+                                                        className="w-full text-base font-mono font-bold uppercase tracking-wider transition-colors border-primary/50 hover:bg-primary/10 hover:border-primary"
+                                                    >
+                                                        ACCOUNT
+                                                    </Button>
+                                                </>
+                                            ) : (
+                                                <Button
+                                                    onClick={handleSign}
+                                                    disabled={isSigning || isLoading}
+                                                    className="w-full text-base bg-primary hover:bg-primary/90 text-primary-foreground font-mono font-bold uppercase tracking-wider transition-colors disabled:opacity-50 shadow-[0_0_14px_rgba(196,181,253,0.45)]"
+                                                >
+                                                    {isSigning || isLoading ? 'SIGNING...' : 'SIGN SIGIL'}
+                                                </Button>
+                                            )}
                                         </>
-                                    ) : (
+                                    )}
+                                    {!isConnected && hasStoredMultisigs && (
                                         <Button
-                                            onClick={handleSign}
-                                            disabled={isSigning || isLoading}
-                                            className="w-full text-base bg-primary hover:bg-primary/90 text-primary-foreground font-mono font-bold uppercase tracking-wider transition-colors disabled:opacity-50 shadow-[0_0_14px_rgba(196,181,253,0.45)]"
+                                            onClick={() => { enterSignerMode(); setMobileMenuOpen(false); }}
+                                            variant="outline"
+                                            className="w-full text-sm font-mono uppercase tracking-wider border-sky-500/40 text-sky-300/70 hover:border-sky-500/70 hover:text-sky-300"
                                         >
-                                            {isSigning || isLoading ? 'SIGNING...' : 'SIGN SIGIL'}
+                                            <Key className="w-3.5 h-3.5 mr-1.5" />
+                                            Continue as Signer
                                         </Button>
                                     )}
                                 </>
@@ -200,6 +298,74 @@ export function ArcaneHeader() {
                 onComplete={handleProfileBootstrapComplete}
             />
         </header>
+    )
+}
+
+// ── Shared profile-switcher dropdown ────────────────────────────────────────
+function ProfileSwitcher({
+    availableMultisigs,
+    activeProfileId,
+    activeMultisigProfile,
+    switchProfile,
+    profileDropdownOpen,
+    setProfileDropdownOpen,
+    showMain,
+}: {
+    availableMultisigs: import('@/context/ActiveProfileProvider').ProfileSummary[]
+    activeProfileId: string
+    activeMultisigProfile: import('@/lib/indexeddb').MultisigProfileData | null
+    switchProfile: (id: string) => void
+    profileDropdownOpen: boolean
+    setProfileDropdownOpen: (v: boolean | ((prev: boolean) => boolean)) => void
+    showMain: boolean
+}) {
+    const label = activeProfileId === 'main'
+        ? 'Main'
+        : (activeMultisigProfile?.name ?? 'Multisig')
+
+    return (
+        <div className="relative">
+            <button
+                onClick={() => setProfileDropdownOpen(v => !v)}
+                className="
+                    inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                    border border-sky-500/30 bg-sky-500/10 text-sky-300/70 text-xs font-mono
+                    hover:bg-sky-500/15 hover:text-sky-300 hover:border-sky-500/50 transition-all
+                "
+            >
+                <Users className="w-3.5 h-3.5" />
+                <span className="max-w-[100px] truncate">{label}</span>
+                <ChevronDown className={`w-3 h-3 transition-transform ${profileDropdownOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {profileDropdownOpen && (
+                <div
+                    className="absolute right-0 top-full mt-1 z-50 min-w-[180px] rounded-xl border border-white/[0.08] bg-background/95 backdrop-blur-md shadow-xl overflow-hidden"
+                    onMouseLeave={() => setProfileDropdownOpen(false)}
+                >
+                    {showMain && (
+                        <button
+                            onClick={() => { switchProfile('main'); setProfileDropdownOpen(false); }}
+                            className={`w-full text-left px-3 py-2.5 text-xs hover:bg-white/[0.06] transition-colors ${activeProfileId === 'main' ? 'text-white/90 bg-violet-500/10' : 'text-white/60'}`}
+                        >
+                            Main Account
+                        </button>
+                    )}
+                    {availableMultisigs.map(ms => (
+                        <button
+                            key={ms.profileId}
+                            onClick={() => { switchProfile(ms.profileId); setProfileDropdownOpen(false); }}
+                            className={`w-full text-left px-3 py-2.5 text-xs hover:bg-white/[0.06] transition-colors ${activeProfileId === ms.profileId ? 'text-white/90 bg-sky-500/10' : 'text-white/60'}`}
+                        >
+                            <div className="flex items-center gap-2">
+                                <Users className="w-3 h-3 text-sky-400/50 shrink-0" />
+                                <span className="truncate">{ms.name}</span>
+                                <span className="text-[9px] text-white/30 ml-auto">{ms.threshold}/{ms.maxSigners}</span>
+                            </div>
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
     )
 }
 

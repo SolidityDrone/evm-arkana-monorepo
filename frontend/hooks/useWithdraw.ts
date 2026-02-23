@@ -4,10 +4,11 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useAccount as useWagmiAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from 'wagmi';
 import { useAccount as useAccountContext, useZkAddress } from '@/context/AccountProvider';
 import { useAccountState } from '@/context/AccountStateProvider';
+import { useActiveProfile } from '@/context/ActiveProfileProvider';
 import { parseAbi, Address, keccak256, padHex } from 'viem';
 import { getChainId } from '@/config';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
-import { useNonceDiscovery } from '@/hooks/useNonceDiscovery';
+import { useNonceDiscovery, type ArchonPosition } from '@/hooks/useNonceDiscovery';
 import { loadAccountData, saveTokenAccountData } from '@/lib/indexeddb';
 import { parseZkAddress } from '@/lib/zk-address';
 import { convertSharesToAssets } from '@/lib/shares-to-assets';
@@ -23,6 +24,7 @@ import {
   type SigningRound2,
   type SigningRequestPayload,
 } from '@/lib/frost-2fa';
+import type { SigningRequestPayload as MsigSigningRequestPayload } from '@/lib/frost-multisig';
 import { loadTwoFactorData, type TwoFactorData } from '@/lib/indexeddb';
 import { proveWithSnarkjs } from '@/lib/circuit-prove';
 import type { Groth16Args } from '@/lib/groth16';
@@ -80,6 +82,13 @@ export function useWithdraw() {
     const withdrawCircuitRef = useRef<'withdraw' | 'absorb_withdraw'>('withdraw');
     const [withdrawCircuit, setWithdrawCircuit] = useState<'withdraw' | 'absorb_withdraw'>('withdraw');
 
+    // Archon mode state
+    const [withdrawMode, setWithdrawModeInternal] = useState<'mage' | 'archon'>('mage');
+    const [archonPositions, setArchonPositions] = useState<ArchonPosition[]>([]);
+    const [selectedArchonPosition, setSelectedArchonPositionInternal] = useState<ArchonPosition | null>(null);
+    const withdrawModeRef = useRef<'mage' | 'archon'>('mage');
+    const selectedArchonPositionRef = useRef<ArchonPosition | null>(null);
+
     // 2FA state
     const [twoFactorSignOpen, setTwoFactorSignOpen] = useState(false);
     const [twoFactorError, setTwoFactorError] = useState<string | null>(null);
@@ -93,6 +102,36 @@ export function useWithdraw() {
     } | null>(null);
 
     const { balanceEntries } = useAccountState();
+
+    // Multisig signing state
+    const [multisigSignOpen, setMultisigSignOpen] = useState(false);
+    const [multisigRequest, setMultisigRequest] = useState<MsigSigningRequestPayload | null>(null);
+
+    // Active profile — for multisig, these override the wallet-derived values
+    const { effectiveUserKey: msigUserKey, effectiveSignerPubkeyHash: msigSignerPubkeyHash, effectiveZkAddress, activeMultisigProfile } = useActiveProfile();
+    const activeZkAddress = effectiveZkAddress ?? zkAddress;
+
+    const setWithdrawMode = useCallback((mode: 'mage' | 'archon') => {
+        withdrawModeRef.current = mode;
+        setWithdrawModeInternal(mode);
+        selectedArchonPositionRef.current = null;
+        setSelectedArchonPositionInternal(null);
+        setArchonPositions([]);
+        setTokenCurrentNonce(null);
+        setIsTokenInitialized(null);
+    }, []);
+
+    const setSelectedArchonPosition = useCallback((pos: ArchonPosition | null) => {
+        selectedArchonPositionRef.current = pos;
+        setSelectedArchonPositionInternal(pos);
+        if (pos) {
+            setTokenCurrentNonce(pos.currentNonce);
+            setIsTokenInitialized(true);
+        } else {
+            setTokenCurrentNonce(null);
+            setIsTokenInitialized(null);
+        }
+    }, []);
 
     useEffect(() => {
         let interval: NodeJS.Timeout;
@@ -109,6 +148,10 @@ export function useWithdraw() {
 
     useEffect(() => {
         const init = async () => {
+            if (msigUserKey) {
+                setUserKey('0x' + msigUserKey.toString(16));
+                return;
+            }
             if (zkAddress && account?.signature && !userKey && !contextUserKey) {
                 try {
                     const userKeyHex = await computePrivateKeyFromSignature(account.signature);
@@ -121,7 +164,7 @@ export function useWithdraw() {
             }
         };
         init();
-    }, [zkAddress, account?.signature, userKey, contextUserKey]);
+    }, [zkAddress, account?.signature, userKey, contextUserKey, msigUserKey]);
 
     useEffect(() => {
         if (!tokenAddress || !publicClient) {
@@ -156,18 +199,53 @@ export function useWithdraw() {
         }
     }, [arbitraryCalldata]);
 
+    // Reset archon position when token address changes
+    useEffect(() => {
+        selectedArchonPositionRef.current = null;
+        setSelectedArchonPositionInternal(null);
+        if (withdrawModeRef.current === 'archon') {
+            setTokenCurrentNonce(null);
+            setIsTokenInitialized(null);
+        }
+    }, [tokenAddress]);
+
     useEffect(() => {
         const loadTokenNonce = async () => {
-            if (!tokenAddress || !zkAddress) {
+            if (!tokenAddress || !activeZkAddress) {
                 setTokenCurrentNonce(null);
                 setIsTokenInitialized(null);
                 return;
             }
             const normalized = tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : '0x' + tokenAddress.toLowerCase();
+
+            if (withdrawMode === 'archon') {
+                // Archon: discover all positions for this token
+                if (!publicClient || !account?.signature) return;
+                setIsCheckingTokenState(true);
+                setIsTokenInitialized(null);
+                try {
+                    const result = await computeCurrentNonce(tokenAddress as `0x${string}`, null, [], 'archon');
+                    if (result?.archonPositions && result.archonPositions.length > 0) {
+                        setArchonPositions(result.archonPositions);
+                    } else {
+                        setArchonPositions([]);
+                        setIsTokenInitialized(false);
+                    }
+                    // tokenCurrentNonce stays null until user selects a position
+                } catch (e) {
+                    console.error('Error discovering archon positions for withdraw:', e);
+                    setArchonPositions([]);
+                    setIsTokenInitialized(false);
+                } finally {
+                    setIsCheckingTokenState(false);
+                }
+                return;
+            }
+
             if (!publicClient || !account?.signature) {
                 try {
                     const { loadTokenAccountData } = await import('@/lib/indexeddb');
-                    const tokenData = await loadTokenAccountData(zkAddress, normalized, 'mage');
+                    const tokenData = await loadTokenAccountData(activeZkAddress!, normalized, 'mage');
                     if (tokenData?.currentNonce != null && tokenData.currentNonce > BigInt(0)) {
                         setTokenCurrentNonce(tokenData.currentNonce);
                         setIsTokenInitialized(true);
@@ -184,14 +262,14 @@ export function useWithdraw() {
             setIsCheckingTokenState(true);
             setIsTokenInitialized(null);
             try {
-                const cachedData = await loadAccountData(zkAddress);
+                const cachedData = await loadAccountData(activeZkAddress!);
                 const mageTokenData = cachedData?.mageTokenData || [];
                 const tokenData = mageTokenData.find(t => t.tokenAddress.toLowerCase() === normalized);
                 const cachedNonce = tokenData?.currentNonce ?? null;
                 const cachedBalanceEntries = tokenData?.balanceEntries || [];
                 const result = await computeCurrentNonce(tokenAddress as `0x${string}`, cachedNonce, cachedBalanceEntries, 'mage');
                 if (result) {
-                    await saveTokenAccountData(zkAddress, tokenAddress, result.currentNonce, result.balanceEntries, 'mage');
+                    await saveTokenAccountData(activeZkAddress!, tokenAddress, result.currentNonce, result.balanceEntries, 'mage');
                     if (result.balanceEntries.length > 0) setBalanceEntries(result.balanceEntries);
                     if (result.currentNonce != null && result.currentNonce > BigInt(0)) {
                         setTokenCurrentNonce(result.currentNonce);
@@ -219,11 +297,11 @@ export function useWithdraw() {
         };
         const t = setTimeout(loadTokenNonce, 100);
         return () => clearTimeout(t);
-    }, [tokenAddress, zkAddress, publicClient, account?.signature, computeCurrentNonce, setBalanceEntries]);
+    }, [tokenAddress, activeZkAddress, publicClient, account?.signature, computeCurrentNonce, setBalanceEntries, withdrawMode]);
 
     // Available balance = current + (incoming - nullifier). Fetch incoming notes when token/zk/nonce/balanceEntries ready.
     useEffect(() => {
-        if (!tokenAddress || !zkAddress || !tokenCurrentNonce || tokenCurrentNonce === BigInt(0)) {
+        if (!tokenAddress || !activeZkAddress || !tokenCurrentNonce || tokenCurrentNonce === BigInt(0)) {
             setAvailableBalance(null);
             setAvailableBalanceAssets(null);
             setCanAbsorb(false);
@@ -231,13 +309,31 @@ export function useWithdraw() {
         }
         const tokenAddrBigInt = BigInt(tokenAddress.startsWith('0x') ? tokenAddress : '0x' + tokenAddress);
         const prevNonce = tokenCurrentNonce - BigInt(1);
-        const entry = balanceEntries.find(e => {
-            const a = typeof e.tokenAddress === 'string' ? BigInt(e.tokenAddress) : e.tokenAddress;
-            const n = typeof e.nonce === 'string' ? BigInt(e.nonce) : e.nonce;
-            return a === tokenAddrBigInt && n === prevNonce;
-        });
+
+        // For archon mode: use the selected position's balance entries directly
+        let entry;
+        if (withdrawMode === 'archon' && selectedArchonPosition) {
+            entry = selectedArchonPosition.balanceEntries.find(e => {
+                const n = typeof e.nonce === 'string' ? BigInt(e.nonce) : e.nonce;
+                return n === prevNonce;
+            });
+        } else {
+            entry = balanceEntries.find(e => {
+                const a = typeof e.tokenAddress === 'string' ? BigInt(e.tokenAddress) : e.tokenAddress;
+                const n = typeof e.nonce === 'string' ? BigInt(e.nonce) : e.nonce;
+                return a === tokenAddrBigInt && n === prevNonce;
+            });
+        }
+
         const currentShares = entry?.amount != null ? (typeof entry.amount === 'string' ? BigInt(entry.amount) : entry.amount) : BigInt(0);
         const nullifier = (entry as { nullifier?: bigint } | undefined)?.nullifier ?? BigInt(0);
+
+        // Archon mode: just show current shares, no incoming notes
+        if (withdrawMode === 'archon') {
+            setAvailableBalance(currentShares);
+            setCanAbsorb(false);
+            return;
+        }
 
         if (!fetchIncomingNotes || !account?.signature || !publicClient) {
             setAvailableBalance(currentShares);
@@ -260,7 +356,7 @@ export function useWithdraw() {
                     if (!cancelled) setAvailableBalance(currentShares);
                     return;
                 }
-                const { x: rx, y: ry } = parseZkAddress(zkAddress);
+                const { x: rx, y: ry } = parseZkAddress(activeZkAddress!);
                 const { notes } = await fetchIncomingNotes(tokenAddress as `0x${string}`, rx, ry, userKeyBigInt);
                 if (cancelled) return;
                 const sumIncoming = notes.reduce((acc, n) => acc + n.amount, BigInt(0));
@@ -276,7 +372,7 @@ export function useWithdraw() {
             }
         })();
         return () => { cancelled = true; };
-    }, [tokenAddress, zkAddress, balanceEntries, tokenCurrentNonce, account?.signature, contextUserKey, userKey, fetchIncomingNotes, publicClient]);
+    }, [tokenAddress, activeZkAddress, balanceEntries, tokenCurrentNonce, account?.signature, contextUserKey, userKey, fetchIncomingNotes, publicClient, withdrawMode, selectedArchonPosition]);
 
     // Convert available balance (shares) to assets for display
     useEffect(() => {
@@ -293,7 +389,7 @@ export function useWithdraw() {
         return () => { cancelled = true; };
     }, [publicClient, tokenAddress, availableBalance]);
 
-    const calculateCircuitInputs = useCallback(async (phonePartialSig?: SigningRound2) => {
+    const calculateCircuitInputs = useCallback(async (phonePartialSig?: SigningRound2, msigGroupSigningKey?: bigint) => {
         if (!tokenAddress || !amount || !receiverAddress || !receiverFeeAmount || !zkAddress || !publicClient) {
             throw new Error('Missing required fields or client');
         }
@@ -302,13 +398,23 @@ export function useWithdraw() {
         }
         setIsCalculatingInputs(true);
         try {
-        let userKeyToUse: string | null = contextUserKey ? '0x' + contextUserKey.toString(16) : userKey;
-        if (!userKeyToUse && account?.signature) {
-            const hex = await computePrivateKeyFromSignature(account.signature);
-            userKeyToUse = hex.startsWith('0x') ? hex : '0x' + hex;
-            if (userKeyToUse) setUserKey(userKeyToUse);
+        let userKeyToUse: string | null = null;
+        if (msigUserKey) {
+            userKeyToUse = '0x' + msigUserKey.toString(16);
+        } else {
+            userKeyToUse = contextUserKey ? '0x' + contextUserKey.toString(16) : userKey;
+            if (!userKeyToUse && account?.signature) {
+                const hex = await computePrivateKeyFromSignature(account.signature);
+                userKeyToUse = hex.startsWith('0x') ? hex : '0x' + hex;
+                if (userKeyToUse) setUserKey(userKeyToUse);
+            }
         }
         if (!userKeyToUse) throw new Error('Missing userKey. Sign the message first.');
+
+        // For archon mode: override userKey with the selected position's effective userKey (base + offset)
+        if (!msigUserKey && withdrawModeRef.current === 'archon' && selectedArchonPositionRef.current) {
+            userKeyToUse = '0x' + selectedArchonPositionRef.current.userKey.toString(16);
+        }
 
         const tokenAddressBigInt = BigInt(tokenAddress.startsWith('0x') ? tokenAddress : '0x' + tokenAddress);
         const tokenPreviousNonce = tokenCurrentNonce > BigInt(0) ? tokenCurrentNonce - BigInt(1) : BigInt(0);
@@ -355,19 +461,25 @@ export function useWithdraw() {
         let unlocksAtValue: bigint;
         let previousOpType: number = 0;
 
-        // Resolve signer identity: use stored 2FA data or derive from user_key
-        const zkAddr = zkAddress?.replace('zk', '') || '';
-        const storedTwoFactor = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
-        twoFactorDataRef.current = storedTwoFactor ?? null;
+        // Resolve signer identity: multisig > 2FA > single-key
         let wdSignerHash: string;
         let wdSignerPk: [string, string];
-        if (storedTwoFactor?.is2FA) {
-            wdSignerHash = storedTwoFactor.signerPubkeyHash;
-            wdSignerPk = storedTwoFactor.signerPublicKey;
+        if (msigSignerPubkeyHash && activeMultisigProfile) {
+            wdSignerHash = msigSignerPubkeyHash;
+            wdSignerPk = activeMultisigProfile.groupPublicKey;
+            twoFactorDataRef.current = null;
         } else {
-            const signerIdentity = await getSignerIdentityFromUserKey(userKeyBigInt);
-            wdSignerHash = signerIdentity.signer_pubkey_hash;
-            wdSignerPk = signerIdentity.signer_public_key;
+            const zkAddr = zkAddress?.replace('zk', '') || '';
+            const storedTwoFactor = zkAddr ? await loadTwoFactorData(zkAddr) : undefined;
+            twoFactorDataRef.current = storedTwoFactor ?? null;
+            if (storedTwoFactor?.is2FA) {
+                wdSignerHash = storedTwoFactor.signerPubkeyHash;
+                wdSignerPk = storedTwoFactor.signerPublicKey;
+            } else {
+                const signerIdentity = await getSignerIdentityFromUserKey(userKeyBigInt);
+                wdSignerHash = signerIdentity.signer_pubkey_hash;
+                wdSignerPk = signerIdentity.signer_public_key;
+            }
         }
 
         let sharesFromContract: bigint | undefined;
@@ -399,7 +511,7 @@ export function useWithdraw() {
                 abi: ArkanaAbi,
                 functionName: 'getNonceCommitmentInfo',
                 args: [finalPreviousNonceCommitmentBytes32],
-            }) as [number, bigint, string, `0x${string}`, `0x${string}`];
+            }) as [number, bigint, string, `0x${string}`, `0x${string}`, bigint];
             const [opType, sharesMinted, , encryptedBalance, encryptedNullifier] = operationInfo;
             previousOpType = opType;
             let decryptedShares: bigint;
@@ -416,7 +528,7 @@ export function useWithdraw() {
                 abi: ArkanaAbi,
                 functionName: 'getNonceCommitmentInfo',
                 args: [prevNonceCommitmentBytes32],
-            }) as [number, bigint, string, `0x${string}`, `0x${string}`];
+            }) as [number, bigint, string, `0x${string}`, `0x${string}`, bigint];
             nullifierValue = await poseidonCtrDecrypt(BigInt(prevEncryptedNullifier), viewKeyBigInt, 1);
             unlocksAtValue = BigInt(0);
         }
@@ -457,7 +569,7 @@ export function useWithdraw() {
             if (tokenPreviousNonce === BigInt(0)) {
                 nullifierEncodedForLeaf = nullifierValue; // Use 0 directly, no encoding
             } else if (previousOpType === 5 || previousOpType === 4) {
-                const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+                const { x: ourX, y: ourY } = parseZkAddress(activeZkAddress!);
                 const { noteStackM } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
                 nullifierEncodedForLeaf = nullifierValue > noteStackM ? nullifierValue - noteStackM : BigInt(0);
             } else {
@@ -528,7 +640,7 @@ export function useWithdraw() {
         if (tokenPreviousNonce === BigInt(0)) {
             nullifierEncoded = nullifierValue; // Use 0 directly, no encoding
         } else if (previousOpType === 5 || previousOpType === 4) {
-            const { x: ourX, y: ourY } = parseZkAddress(zkAddress);
+            const { x: ourX, y: ourY } = parseZkAddress(activeZkAddress!);
             const { noteStackM } = await fetchIncomingNotes(tokenAddr, ourX, ourY, userKeyBigInt);
             nullifierEncoded = nullifierValue > noteStackM ? nullifierValue - noteStackM : BigInt(0);
         } else {
@@ -546,7 +658,7 @@ export function useWithdraw() {
 
         if (previousSharesNum < totalRequired) {
             // Try absorb_withdraw: need absorbable notes to cover the shortfall
-            const { x: receiverX, y: receiverY } = parseZkAddress(zkAddress);
+            const { x: receiverX, y: receiverY } = parseZkAddress(activeZkAddress!);
             const { noteStackM, noteStackR } = await fetchIncomingNotes(
                 tokenAddr,
                 receiverX,
@@ -606,7 +718,14 @@ export function useWithdraw() {
             }
             const currentNonceForAbsorbSig = (tokenPreviousNonce + BigInt(1)).toString();
             let absorbWdSig: { signature: [string, string, string]; message: string };
-            if (twoFactorDataRef.current?.is2FA && phonePartialSig) {
+            if (msigGroupSigningKey) {
+                absorbWdSig = await signWithdrawMessage(
+                    msigGroupSigningKey, tokenAddressBigInt.toString(), chainId.toString(),
+                    amountBigInt.toString(), receiverFeeAmountBigInt.toString(), currentNonceForAbsorbSig,
+                    BigInt(arbitraryCalldataHash).toString(),
+                    receiverAddressBigInt.toString(),
+                );
+            } else if (twoFactorDataRef.current?.is2FA && phonePartialSig) {
                 // Threshold signing: combine partial signatures
                 const message = await getWithdrawMessageForThreshold(
                     tokenAddressBigInt.toString(), chainId.toString(),
@@ -672,7 +791,14 @@ export function useWithdraw() {
             signerPublicKey: wdSignerPk,
         });
         let wdSig: { signature: [string, string, string]; message: string };
-        if (twoFactorDataRef.current?.is2FA && phonePartialSig) {
+        if (msigGroupSigningKey) {
+            wdSig = await signWithdrawMessage(
+                msigGroupSigningKey, tokenAddressBigInt.toString(), chainId.toString(),
+                amountBigInt.toString(), receiverFeeAmountBigInt.toString(), currentNonceForSig,
+                BigInt(arbitraryCalldataHash).toString(),
+                receiverAddressBigInt.toString(),
+            );
+        } else if (twoFactorDataRef.current?.is2FA && phonePartialSig) {
             // Threshold signing: combine partial signatures
             const message = await getWithdrawMessageForThreshold(
                 tokenAddressBigInt.toString(), chainId.toString(),
@@ -729,17 +855,17 @@ export function useWithdraw() {
     }, [
         tokenAddress, amount, receiverAddress, receiverFeeAmount, arbitraryCalldataHash, tokenDecimals,
         zkAddress, publicClient, account?.signature, contextUserKey, userKey, tokenCurrentNonce, balanceEntries,
-        fetchIncomingNotes,
+        fetchIncomingNotes, msigUserKey, msigSignerPubkeyHash, activeMultisigProfile,
     ]);
 
-    const runWithdrawProof = useCallback(async (phonePartialSig?: SigningRound2) => {
+    const runWithdrawProof = useCallback(async (phonePartialSig?: SigningRound2, msigGroupSigningKey?: bigint) => {
         try {
             setIsProving(true);
             setProofError(null);
             setProvingTime(null);
             groth16ResultRef.current = null;
             const startTime = performance.now();
-            const { circuit, inputs } = await calculateCircuitInputs(phonePartialSig);
+            const { circuit, inputs } = await calculateCircuitInputs(phonePartialSig, msigGroupSigningKey);
             withdrawCircuitRef.current = circuit;
             console.log('Circuit (before proof):', circuit, 'inputs:', inputs);
             const result = await proveWithSnarkjs(inputs, circuit);
@@ -779,6 +905,41 @@ export function useWithdraw() {
         }
         if (isTokenInitialized === false) {
             setProofError('Token not initialized. Use Initialize page first.');
+            return;
+        }
+        // Check if multisig profile is active
+        if (activeMultisigProfile && msigSignerPubkeyHash) {
+            if (!publicClient || tokenDecimals === null) {
+                setProofError('Public client or token decimals not available');
+                return;
+            }
+            const parseAmountLocal = (value: string, decimals: number): bigint => {
+                if (!value || value === '') return BigInt(0);
+                const sanitized = (value || '').trim().replace(',', '.');
+                if (!/^\d+\.?\d*$/.test(sanitized)) return BigInt(0);
+                const parts = sanitized.split('.');
+                if (parts.length === 1) return BigInt(sanitized) * BigInt(10 ** decimals);
+                const intPart = parts[0] || '0';
+                const decPart = (parts[1] || '').slice(0, decimals).padEnd(decimals, '0');
+                return BigInt(intPart) * BigInt(10 ** decimals) + BigInt(decPart);
+            };
+            const tokenAddr = (tokenAddress.startsWith('0x') ? tokenAddress : `0x${tokenAddress}`) as `0x${string}`;
+            const amountInRaw = parseAmountLocal(amount, tokenDecimals);
+            const feeInRaw = parseAmountLocal(receiverFeeAmount, tokenDecimals);
+            const amountShares = await convertAssetsToShares(publicClient, tokenAddr, amountInRaw);
+            const feeShares = await convertAssetsToShares(publicClient, tokenAddr, feeInRaw);
+            const msigRequest: MsigSigningRequestPayload = {
+                type: 'msig-sign-request',
+                profileId: activeMultisigProfile.profileId,
+                tokenAddress: BigInt(tokenAddress.startsWith('0x') ? tokenAddress : '0x' + tokenAddress).toString(),
+                amount: (amountShares ?? amountInRaw).toString(),
+                fee: (feeShares ?? feeInRaw).toString(),
+                nonce: tokenCurrentNonce!.toString(),
+                calldataHash: BigInt(arbitraryCalldataHash).toString(),
+                receiver: BigInt(receiverAddress.startsWith('0x') ? receiverAddress : '0x' + receiverAddress).toString(),
+            };
+            setMultisigRequest(msigRequest);
+            setMultisigSignOpen(true);
             return;
         }
         // Check if 2FA is active
@@ -867,7 +1028,12 @@ export function useWithdraw() {
             return;
         }
         await runWithdrawProof();
-    }, [zkAddress, tokenAddress, amount, receiverAddress, receiverFeeAmount, arbitraryCalldataHash, tokenCurrentNonce, isTokenInitialized, tokenDecimals, publicClient, runWithdrawProof]);
+    }, [zkAddress, tokenAddress, amount, receiverAddress, receiverFeeAmount, arbitraryCalldataHash, tokenCurrentNonce, isTokenInitialized, tokenDecimals, publicClient, runWithdrawProof, activeMultisigProfile, msigSignerPubkeyHash, convertAssetsToShares]);
+
+    const onMultisigSigningKeyReady = useCallback(async (signingKey: bigint) => {
+        setMultisigSignOpen(false);
+        await runWithdrawProof(undefined, signingKey);
+    }, [runWithdrawProof]);
 
     const onTwoFactorWithdrawSign = useCallback(async (phoneResponse: string) => {
         setTwoFactorSigning(true);
@@ -1030,5 +1196,17 @@ export function useWithdraw() {
         twoFactorSigning,
         onTwoFactorWithdrawSign,
         twoFactorSigningRequest: signingRound1Ref.current?.signingRequestPayload || null,
+        // Multisig
+        multisigSignOpen,
+        setMultisigSignOpen,
+        multisigRequest,
+        activeMultisigProfile,
+        onMultisigSigningKeyReady,
+        // Archon mode
+        withdrawMode,
+        setWithdrawMode,
+        archonPositions,
+        selectedArchonPosition,
+        setSelectedArchonPosition,
     };
 }
