@@ -2,7 +2,7 @@
 
 import { CommitmentState, CommitmentPoint } from './store';
 import { pedersenCommitment5 } from './pedersen-commitments';
-import { getSpendingKey, poseidonHash, reduceToBn254Field } from './circuit-utils';
+import { getSpendingKey, getViewKeyFromUserKey, poseidonHash, reduceToBn254Field } from './circuit-utils';
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from './abi/ArkanaConst';
 import { PublicClient } from 'viem';
 
@@ -11,7 +11,7 @@ import { PublicClient } from 'viem';
  * Matches the logic in circuits (spending_key = Poseidon4(user_key, chain_id, token_address, signer_pubkey_hash)).
  *
  * Pedersen commitment: m1*G + m2*H + m3*D + m4*K + r*J
- * where m3 = spending_key, r = nonce_commitment.
+ * where m3 = spending_key, r = nonce_commitment (derived from view_key).
  */
 export async function reconstructCommitmentPoint(
     userKey: bigint,
@@ -55,7 +55,7 @@ export async function computeCommitmentLeaf(
 
 /**
  * Reconstruct commitment state from stored data.
- * spending_key = Poseidon4(user_key, chain_id, token_address, signer_pubkey_hash) via getSpendingKey.
+ * nonce_commitment = Poseidon3(view_key, nonce, token_address); view_key = Poseidon2(VIEW_STRING, user_key).
  */
 export async function reconstructCommitmentStateFromBalanceEntry(
     userKey: bigint,
@@ -69,8 +69,8 @@ export async function reconstructCommitmentStateFromBalanceEntry(
     sharesMinted?: bigint,
     publicClient?: PublicClient
 ): Promise<CommitmentState> {
-    const spendingKey = await getSpendingKey(userKey, chainId, tokenAddress, signerPubkeyHash);
-    const nonceCommitment = await poseidonHash([spendingKey, nonce, tokenAddress]);
+    const viewKey = await getViewKeyFromUserKey(userKey);
+    const nonceCommitment = await poseidonHash([viewKey, nonce, tokenAddress]);
 
     // CRITICAL UNDERSTANDING:
     // For nonce 0 (entry):

@@ -31,9 +31,16 @@ template Entry() {
     signal spending_key;
     spending_key <== spending_key_hash.out;
     
-    // Calculate nonceCommitment = hash(spending_key, nonce, token_address)
+    // view_key = Poseidon(VIEW_STRING, user_key) — used for nonce discovery (auditor can reconstruct positions)
+    component view_key_hash = Poseidon2Hash2();
+    view_key_hash.in[0] <== 143150966920908953357084025;  // VIEW_STRING
+    view_key_hash.in[1] <== user_key;
+    signal view_key;
+    view_key <== view_key_hash.out;
+    
+    // nonceCommitment = hash(view_key, nonce, token_address) — derivable from view_key for discovery
     component nonce_commitment_hash = Poseidon2Hash3();
-    nonce_commitment_hash.in[0] <== spending_key;
+    nonce_commitment_hash.in[0] <== view_key;
     nonce_commitment_hash.in[1] <== nonce;
     nonce_commitment_hash.in[2] <== token_address;
     nonce_commitment <== nonce_commitment_hash.out;

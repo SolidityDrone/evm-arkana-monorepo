@@ -14,7 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { poseidon2Hash1, poseidon2Hash2, poseidon2Hash3, getSpendingKeyFromHashes } = require('./poseidon_hash_helper');
+const { poseidon2Hash1, poseidon2Hash2, poseidon2Hash3, getSpendingKeyFromHashes, getViewKeyFromUserKey, getNonceCommitmentFromViewKey } = require('./poseidon_hash_helper');
 
 // Default inputs (same as frontend discovery log)
 const DEFAULT_INPUT = {
@@ -41,9 +41,10 @@ async function runCircuitOnly(input) {
   const sph = toDecimalString(input.signer_pubkey_hash);
 
   const spending_key = await getSpendingKeyFromHashes(uk, ch, ta, sph);
+  const view_key = await getViewKeyFromUserKey(uk);
   const nonce = '0';
-  const nonce_commitment = await poseidon2Hash3(spending_key, nonce, ta);
-  return { spending_key, nonce_commitment };
+  const nonce_commitment = await getNonceCommitmentFromViewKey(view_key, nonce, ta);
+  return { spending_key, view_key, nonce_commitment };
 }
 
 async function runFullCircuitIfBuilt(input) {
@@ -135,7 +136,7 @@ async function main() {
   console.log('  spending_key (decimal):', sk);
   console.log('  spending_key (hex):    ', toHex(sk));
   console.log('');
-  console.log('  Circuit computeNonceCommitment (Poseidon2Hash3(spending_key, 0, token_address))');
+  console.log('  Circuit computeNonceCommitment (Poseidon2Hash3(view_key, 0, token_address))');
   console.log('───────────────────────────────────────────────────────────────');
   console.log('  nonce_commitment (decimal):', nonce_commitment);
   console.log('  nonce_commitment (hex):    ', toHex(nonce_commitment));
@@ -154,6 +155,7 @@ async function main() {
     const okNc = fullResult.nonce_commitment === nonce_commitment;
     console.log('');
     console.log('  SpendingKeyNonceCommitment circuit check:', okSk && okNc ? '✅' : '❌');
+    console.log('  (Note: nonce_commitment now uses view_key; test circuit may need rebuild)');
     if (!okSk) console.log('    spending_key mismatch');
     if (!okNc) console.log('    nonce_commitment mismatch');
   }

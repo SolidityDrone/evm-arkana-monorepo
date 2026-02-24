@@ -60,6 +60,25 @@ async function poseidon2Hash4(a, b, c, d) {
     return F.toString(out);
 }
 
+const VIEW_STRING = BigInt('0x76696577696e675f6b6579');
+
+/**
+ * View key = Poseidon2(VIEW_STRING, user_key).
+ * Matches circuit view_key_hash = Poseidon2Hash2().
+ */
+async function getViewKeyFromUserKey(userKey) {
+    return poseidon2Hash2(VIEW_STRING, userKey);
+}
+
+/**
+ * Nonce commitment = Poseidon3(view_key, nonce, token_address).
+ * Matches circuit nonce_commitment_hash = Poseidon2Hash3().
+ * Used for discovery — derivable from view_key so auditor can reconstruct positions.
+ */
+async function getNonceCommitmentFromViewKey(viewKey, nonce, tokenAddress) {
+    return poseidon2Hash3(viewKey, nonce, tokenAddress);
+}
+
 /**
  * Spending key = Poseidon4(user_key, chain_id, token_address, signer_pubkey_hash).
  * Matches circuit spending_key_hash = Poseidon2Hash4().
@@ -99,6 +118,8 @@ module.exports = {
     poseidon2Hash2,
     poseidon2Hash3,
     poseidon2Hash4,
+    getViewKeyFromUserKey,
+    getNonceCommitmentFromViewKey,
     getSpendingKeyFromHashes,
     getSendMessageHash,
     getWithdrawMessageHash

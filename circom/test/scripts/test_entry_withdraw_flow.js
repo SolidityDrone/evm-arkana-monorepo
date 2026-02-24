@@ -10,7 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { poseidon2Hash2, poseidon2Hash3, getSpendingKeyFromHashes } = require('./poseidon_hash_helper');
+const { poseidon2Hash2, poseidon2Hash3, getSpendingKeyFromHashes, getViewKeyFromUserKey, getNonceCommitmentFromViewKey } = require('./poseidon_hash_helper');
 const { getSignerKeyPair, signWithdrawMessage, TEST_SIGNER_PRIVKEY_HEX } = require('./eddsa_helper');
 const { simulateLeanIMTInsert, generateMerkleProof } = require('./lean_imt_helpers');
 const { simulateContractShareAddition } = require('./babyjub_operations');
@@ -309,16 +309,18 @@ async function testEntryDepositWithdrawFlow() {
     
     // Debug: Try to manually reconstruct to see what we get
     try {
-        // Circuit uses spending_key = Hash3(user_key, chain_id, token_address) only (no signer_pubkey_hash)
-        const spending_key = await poseidon2Hash3(
+        // Circuit uses spending_key = Hash4(user_key, chain_id, token_address, signer_pubkey_hash)
+        const spending_key = await getSpendingKeyFromHashes(
             withdrawInput.user_key,
             withdrawInput.chain_id,
-            withdrawInput.token_address
+            withdrawInput.token_address,
+            withdrawInput.signer_pubkey_hash
         );
         
-        // Compute previous_nonce_commitment = Poseidon2Hash3(spending_key, previous_nonce, token_address)
-        const previous_nonce_commitment = await poseidon2Hash3(
-            spending_key,
+        // nonceCommitment = hash(view_key, nonce, token_address) — derivable from view_key for discovery
+        const view_key = await getViewKeyFromUserKey(withdrawInput.user_key);
+        const previous_nonce_commitment = await getNonceCommitmentFromViewKey(
+            view_key,
             withdrawInput.previous_nonce,
             withdrawInput.token_address
         );

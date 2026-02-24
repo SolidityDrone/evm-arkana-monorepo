@@ -8,7 +8,7 @@ import { BJJ_IDENTITY, DEFAULT_NONCE_DISCOVERY_POINT, bjjAdd, nonceDiscoveryEntr
 import { useZkAddress, useAccount as useAccountContext } from '@/context/AccountProvider';
 import { poseidonCtrDecrypt } from '@/lib/poseidon-ctr-encryption';
 import { DiscoveryMode, type IncomingNote } from '@/lib/indexeddb';
-import { getSpendingKeyCircuit, poseidonHash } from '@/lib/circuit-utils';
+import { getSpendingKeyCircuit, getViewKeyFromUserKey, poseidonHash } from '@/lib/circuit-utils';
 import { getSignerIdentityFromUserKey } from '@/lib/eddsa-circuit';
 import { loadTwoFactorData } from '@/lib/indexeddb';
 import { computeSharedKeyHashForNote } from '@/lib/crypto-keys';
@@ -112,9 +112,10 @@ export function useNonceDiscovery() {
     [zkAddress, activeMultisigProfile]
   );
 
+  // nonceCommitment = hash(view_key, nonce, token_address) — derivable from view_key for discovery/audit
   const getNonceCommitmentForDiscovery = useCallback(
-    async (spendingKey: bigint, nonce: bigint, tokenAddress: bigint): Promise<bigint> => {
-      const h = await poseidonHash([spendingKey, nonce, tokenAddress]);
+    async (viewKey: bigint, nonce: bigint, tokenAddress: bigint): Promise<bigint> => {
+      const h = await poseidonHash([viewKey, nonce, tokenAddress]);
       return toBigInt(h);
     },
     []
@@ -235,14 +236,10 @@ export function useNonceDiscovery() {
       const { ensureBufferPolyfill } = await import('@/lib/buffer-polyfill');
       await ensureBufferPolyfill();
 
-      const VIEW_STRING = BigInt('0x76696577696e675f6b6579');
-      const viewKeyBigInt = await poseidonHash([VIEW_STRING, userKey]);
+      const viewKeyBigInt = await getViewKeyFromUserKey(userKey);
       const entries: BalanceEntry[] = [];
-      const chainId = BigInt(await publicClient.getChainId());
-
       for (let nonce = BigInt(0); nonce <= highestNonce; nonce++) {
-        const spendingKeyBigInt = await getSpendingKeyForDiscovery(userKey, chainId, tokenAddress);
-        const nonceCommitmentBigInt = await getNonceCommitmentForDiscovery(spendingKeyBigInt, nonce, tokenAddress);
+        const nonceCommitmentBigInt = await getNonceCommitmentForDiscovery(viewKeyBigInt, nonce, tokenAddress);
 
         const { padHex: padHexState } = await import('viem');
         const nonceCommitmentBytes32ForState = padHexState(`0x${nonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
@@ -301,7 +298,7 @@ export function useNonceDiscovery() {
     } finally {
       setIsDecrypting(false);
     }
-  }, [publicClient, account?.signature, msigUserKey, getSpendingKeyForDiscovery]);
+  }, [publicClient, account?.signature, msigUserKey, getNonceCommitmentForDiscovery]);
 
   const computeCurrentNonceArchon = useCallback(async (tokenAddress: `0x${string}`, _cachedNonce: bigint | null = null, _cachedBalanceEntries: BalanceEntry[] = [], _cachedUserKeyOffset: bigint | null = null) => {
     setIsComputing(true);
@@ -340,10 +337,10 @@ export function useNonceDiscovery() {
 
       for (let offset = BigInt(1); offset < maxOffset; offset++) {
         const currentUserKey = baseUserKey + offset;
-        const spendingKey = await getSpendingKeyForDiscovery(currentUserKey, chainId, tokenAddressBigInt);
+        const viewKey = await getViewKeyFromUserKey(currentUserKey);
 
         // Check nonce 0 — if not used, no more positions
-        const nonce0Commitment = await getNonceCommitmentForDiscovery(spendingKey, BigInt(0), tokenAddressBigInt);
+        const nonce0Commitment = await getNonceCommitmentForDiscovery(viewKey, BigInt(0), tokenAddressBigInt);
         const nonce0Bytes32 = padHex(`0x${nonce0Commitment.toString(16)}`, { size: 32 }) as `0x${string}`;
         const nonce0Used = await publicClient.readContract({
           address: ArkanaAddress,
@@ -357,7 +354,7 @@ export function useNonceDiscovery() {
         // Vertical search: find the first unused nonce for this position
         let positionCurrentNonce = BigInt(0);
         for (let n = BigInt(1); n < maxNoncePerPosition; n++) {
-          const nCommitment = await getNonceCommitmentForDiscovery(spendingKey, n, tokenAddressBigInt);
+          const nCommitment = await getNonceCommitmentForDiscovery(viewKey, n, tokenAddressBigInt);
           const nBytes32 = padHex(`0x${nCommitment.toString(16)}`, { size: 32 }) as `0x${string}`;
           const nUsed = await publicClient.readContract({
             address: ArkanaAddress,
@@ -495,11 +492,11 @@ export function useNonceDiscovery() {
       // If deposit used hardcoded 31337 (old useDeposit bug), nonce 0 won't be found with real chainId; try 31337
       const ANVIL_CHAIN_ID = BigInt(31337);
 
-      // Log frontend spending_key and nonce_commitment (same formula as circuits: Poseidon2Hash3(user_key, chain_id, token_address))
+      // Log frontend view_key and nonce_commitment (nonceCommitment = hash(view_key, nonce, token_address))
       try {
-        const spendingKeyLog = await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt);
-        const nonce0CommitmentLog = await getNonceCommitmentForDiscovery(spendingKeyLog, BigInt(0), tokenAddressBigInt);
-        console.log('🔍 [MAGE DISCOVERY] circuit spending_key (hex):', '0x' + spendingKeyLog.toString(16));
+        const viewKeyLog = await getViewKeyFromUserKey(userKey);
+        const nonce0CommitmentLog = await getNonceCommitmentForDiscovery(viewKeyLog, BigInt(0), tokenAddressBigInt);
+        console.log('🔍 [MAGE DISCOVERY] circuit view_key (hex):', '0x' + viewKeyLog.toString(16));
         console.log('🔍 [MAGE DISCOVERY] circuit nonce_commitment(0) (hex):', '0x' + nonce0CommitmentLog.toString(16));
       } catch (circuitLogErr) {
         console.warn('🔍 [DISCOVERY] Circuit log failed:', circuitLogErr);
@@ -521,10 +518,9 @@ export function useNonceDiscovery() {
       let foundAtLeastOne = false; // Declare here before use
 
       if (cachedNonce !== null && cachedNonce !== undefined && cachedNonce > BigInt(0)) {
-        const spendingKeyForCacheBigInt =
-          await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt);
+        const viewKeyForCacheBigInt = await getViewKeyFromUserKey(userKey);
         const cachedNonceCommitmentBigInt =
-          await getNonceCommitmentForDiscovery(spendingKeyForCacheBigInt, cachedNonce, tokenAddressBigInt);
+          await getNonceCommitmentForDiscovery(viewKeyForCacheBigInt, cachedNonce, tokenAddressBigInt);
         const cachedNonceCommitmentBytes32 = padHex(`0x${cachedNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
 
         const isCachedNonceKnown = await publicClient.readContract({
@@ -550,10 +546,9 @@ export function useNonceDiscovery() {
       }
 
       if (!shouldSkipDebugVerification) {
-        let spendingKeyDebugBigInt =
-          await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt);
+        let viewKeyDebugBigInt = await getViewKeyFromUserKey(userKey);
         let nonce0CommitmentDebugBigInt =
-          await getNonceCommitmentForDiscovery(spendingKeyDebugBigInt, BigInt(0), tokenAddressBigInt);
+          await getNonceCommitmentForDiscovery(viewKeyDebugBigInt, BigInt(0), tokenAddressBigInt);
         let nonce0CommitmentBytes32Debug = padHex(`0x${nonce0CommitmentDebugBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
 
         let nonce0Exists = await publicClient.readContract({
@@ -563,17 +558,16 @@ export function useNonceDiscovery() {
           args: [nonce0CommitmentBytes32Debug],
         }) as boolean;
 
-        console.log('🔍 [MAGE DISCOVERY] spending_key (decimal):', spendingKeyDebugBigInt.toString());
-        console.log('🔍 [MAGE DISCOVERY] spending_key (hex):    0x' + spendingKeyDebugBigInt.toString(16));
+        console.log('🔍 [MAGE DISCOVERY] view_key (decimal):', viewKeyDebugBigInt.toString());
+        console.log('🔍 [MAGE DISCOVERY] view_key (hex):    0x' + viewKeyDebugBigInt.toString(16));
         console.log('🔍 [MAGE DISCOVERY] nonce_commitment (decimal):', nonce0CommitmentDebugBigInt.toString());
         console.log('🔍 [MAGE DISCOVERY] nonce_commitment (hex):    0x' + nonce0CommitmentDebugBigInt.toString(16));
         console.log('🔍 [MAGE DISCOVERY] nonce=0 | commitment(hex):', nonce0CommitmentBytes32Debug, '| usedCommitments:', nonce0Exists);
 
         if (!nonce0Exists && chainId !== ANVIL_CHAIN_ID) {
-          spendingKeyDebugBigInt =
-            await getSpendingKeyForDiscovery(userKey, ANVIL_CHAIN_ID, tokenAddressBigInt);
+          viewKeyDebugBigInt = await getViewKeyFromUserKey(userKey);
           nonce0CommitmentDebugBigInt =
-            await getNonceCommitmentForDiscovery(spendingKeyDebugBigInt, BigInt(0), tokenAddressBigInt);
+            await getNonceCommitmentForDiscovery(viewKeyDebugBigInt, BigInt(0), tokenAddressBigInt);
           nonce0CommitmentBytes32Debug = padHex(`0x${nonce0CommitmentDebugBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
           nonce0Exists = await publicClient.readContract({
             address: ArkanaAddress,
@@ -584,8 +578,8 @@ export function useNonceDiscovery() {
           if (nonce0Exists) {
             chainId = ANVIL_CHAIN_ID;
             console.warn('🔍 [MAGE DISCOVERY] Using chainId 31337 (deposit may have used hardcoded Anvil chain_id).');
-            console.log('🔍 [MAGE DISCOVERY] spending_key (chainId 31337, decimal):', spendingKeyDebugBigInt.toString());
-            console.log('🔍 [MAGE DISCOVERY] spending_key (chainId 31337, hex):    0x' + spendingKeyDebugBigInt.toString(16));
+            console.log('🔍 [MAGE DISCOVERY] view_key (chainId 31337, decimal):', viewKeyDebugBigInt.toString());
+            console.log('🔍 [MAGE DISCOVERY] view_key (chainId 31337, hex):    0x' + viewKeyDebugBigInt.toString(16));
             console.log('🔍 [MAGE DISCOVERY] nonce_commitment (chainId 31337, decimal):', nonce0CommitmentDebugBigInt.toString());
             console.log('🔍 [MAGE DISCOVERY] nonce_commitment (chainId 31337, hex):    0x' + nonce0CommitmentDebugBigInt.toString(16));
             console.log('🔍 [MAGE DISCOVERY] nonce=0 (chainId 31337) | commitment(hex):', nonce0CommitmentBytes32Debug, '| usedCommitments: true');
@@ -613,10 +607,9 @@ export function useNonceDiscovery() {
 
         const lastNonceToRebuild = startNonce > BigInt(0) ? startNonce - BigInt(1) : BigInt(-1);
         if (lastNonceToRebuild >= BigInt(0)) {
+          const viewKeyRebuildBigInt = await getViewKeyFromUserKey(userKey);
           for (let n = BigInt(0); n <= lastNonceToRebuild; n++) {
-            const spendingKeyBigInt =
-              await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt);
-            const nonceCommitmentBigInt = await getNonceCommitmentForDiscovery(spendingKeyBigInt, n, tokenAddressBigInt);
+            const nonceCommitmentBigInt = await getNonceCommitmentForDiscovery(viewKeyRebuildBigInt, n, tokenAddressBigInt);
             const inner = nonceDiscoveryEntryBJJ(nonceCommitmentBigInt);
             ourLocalPoint = bjjAdd(ourLocalPoint, inner);
             ourLocalM = aggregateOpeningValue(ourLocalM, BigInt(1));
@@ -633,10 +626,9 @@ export function useNonceDiscovery() {
       const maxNonce = BigInt(100);
       console.log('🔍 [MAGE DISCOVERY] startNonce:', startNonce.toString(), '| checking usedCommitments for nonces...');
 
+      const viewKeyMageBigInt = await getViewKeyFromUserKey(userKey);
       while (nonce < maxNonce) {
-        const spendingKeyBigInt =
-          await getSpendingKeyForDiscovery(userKey, chainId, tokenAddressBigInt);
-        const nonceCommitmentBigInt = await getNonceCommitmentForDiscovery(spendingKeyBigInt, nonce, tokenAddressBigInt);
+        const nonceCommitmentBigInt = await getNonceCommitmentForDiscovery(viewKeyMageBigInt, nonce, tokenAddressBigInt);
         const nonceCommitmentBytes32 = padHex(`0x${nonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
 
         const isKnown = await publicClient.readContract({
@@ -674,7 +666,7 @@ export function useNonceDiscovery() {
             const nextNonce = nonce + BigInt(1);
             if (nextNonce <= BigInt(10)) {
               const nextNonceCommitmentBigInt =
-                await getNonceCommitmentForDiscovery(spendingKeyBigInt, nextNonce, tokenAddressBigInt);
+                await getNonceCommitmentForDiscovery(viewKeyMageBigInt, nextNonce, tokenAddressBigInt);
 
               const nextNonceCommitmentBytes32 = padHex(`0x${nextNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
               const nextIsKnown = await publicClient.readContract({

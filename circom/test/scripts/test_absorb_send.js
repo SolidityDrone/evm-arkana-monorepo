@@ -12,7 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { poseidon2Hash1, poseidon2Hash2, poseidon2Hash3, getSpendingKeyFromHashes } = require('./poseidon_hash_helper');
+const { poseidon2Hash1, poseidon2Hash2, poseidon2Hash3, getSpendingKeyFromHashes, getViewKeyFromUserKey, getNonceCommitmentFromViewKey } = require('./poseidon_hash_helper');
 const { getSignerKeyPair, signSendMessage, TEST_SIGNER_PRIVKEY_HEX } = require('./eddsa_helper');
 const { simulateLeanIMTInsert, generateMerkleProof } = require('./lean_imt_helpers');
 const { simulateContractShareAddition, scalarMul } = require('./babyjub_operations');
@@ -316,10 +316,10 @@ async function testAbsorbSendFlow() {
     const current_balance = finalSharesAfterSend; // 49 (actual shares after send, no encoding)
     const nullifier_after_send = "0"; // Nullifier stays 0 after send
     
-    // Calculate previous_nonce_commitment for absorb (debug)
+    // Calculate previous_nonce_commitment for absorb (debug) — nonceCommitment uses view_key
     // The send used nonce 1, so previous_nonce should be 1
-    const spending_key = await getSpendingKeyFromHashes(userKey, chainId, tokenAddress, signer_pubkey_hash);
-    const previous_nonce_commitment_1 = await poseidon2Hash3(spending_key, "1", tokenAddress);
+    const view_key = await getViewKeyFromUserKey(userKey);
+    const previous_nonce_commitment_1 = await getNonceCommitmentFromViewKey(view_key, "1", tokenAddress);
     
     const absorbSendAmount = hexToDecimal("0x1e"); // 30
     const relayerFee = "1"; // Single fee for absorb+send

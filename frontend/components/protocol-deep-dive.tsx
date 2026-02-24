@@ -480,7 +480,7 @@ function NonceDiscoveryDiagram() {
         <div className="font-mono mb-1" style={{ fontSize: 9, color: K.cyan, opacity: 0.6 }}>loop  ↻</div>
         <Chain items={[
           { label: "spending_key", sub: "H(user_key, chain_id, token)", col: "cyan", edge: "hash with nonce" },
-          { label: "nonce_commit", sub: "H(spending_key, nonce, token)", col: "cyan", edge: "derive leaf candidate" },
+          { label: "nonce_commit", sub: "H(view_key, nonce, token)", col: "cyan", edge: "derive leaf candidate" },
           { label: "Merkle leaf candidate", sub: "Poseidon2(commit, ...)  →  check on-chain tree", col: "cyan" },
         ]} />
       </div>
@@ -782,7 +782,7 @@ export function ProtocolDeepDive() {
             Arkana has no backend database. Your positions live in the public Merkle tree as opaque leaves. The frontend recovers your state by running a local scan using only your <span style={{ color: K.cyan }}>user_key</span>.
           </p>
           <div className="space-y-3">
-            <Step n={1}>Start at <code style={{ color: K.cyan }}>nonce = 0</code>. For each (token, nonce) pair, deterministically compute the <code style={{ color: K.cyan }}>spending_key</code> and <code style={{ color: K.cyan }}>nonce_commit</code> using Poseidon hashes of your user_key.</Step>
+            <Step n={1}>Start at <code style={{ color: K.cyan }}>nonce = 0</code>. For each (token, nonce) pair, compute <code style={{ color: K.cyan }}>view_key</code> from user_key, then <code style={{ color: K.cyan }}>nonce_commit</code> = H(view_key, nonce, token).</Step>
             <Step n={2}>Derive the Merkle leaf that would exist if you had a position at that nonce. Query the public on-chain tree — O(log n) Merkle proof check.</Step>
             <Step n={3}>If the leaf is found, record the note (share count, nonce) and increment nonce. If not found, the scan terminates.</Step>
             <Step n={4}>All positions are recovered — balance in shares, full nonce history — without contacting any server. The entire state is reconstructible from your wallet and the public Merkle tree alone.</Step>

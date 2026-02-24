@@ -116,9 +116,9 @@ template AbsorbSend() {
     unlocks_is_zero.in[1] <== 0;
     unlocks_is_zero.out === 1;
     
-    // Calculate previous_nonce_commitment
+    // previous_nonce_commitment = hash(view_key, previous_nonce, token_address)
     component previous_nonce_commitment_hash = Poseidon2Hash3();
-    previous_nonce_commitment_hash.in[0] <== spending_key;
+    previous_nonce_commitment_hash.in[0] <== view_key;
     previous_nonce_commitment_hash.in[1] <== previous_nonce;
     previous_nonce_commitment_hash.in[2] <== token_address;
     signal previous_nonce_commitment;
@@ -234,7 +234,7 @@ template AbsorbSend() {
     // === CALCULATE NEW NONCE COMMITMENT ===
     // current_nonce = previous_nonce + 1 was already computed for EdDSA message
     component new_nonce_commitment_hash = Poseidon2Hash3();
-    new_nonce_commitment_hash.in[0] <== spending_key;
+    new_nonce_commitment_hash.in[0] <== view_key;
     new_nonce_commitment_hash.in[1] <== current_nonce;
     new_nonce_commitment_hash.in[2] <== token_address;
     new_nonce_commitment <== new_nonce_commitment_hash.out;

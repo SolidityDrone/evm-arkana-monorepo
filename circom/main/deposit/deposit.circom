@@ -52,9 +52,9 @@ template Deposit() {
     signal view_key;
     view_key <== view_key_hash.out;
     
-    // Calculate previous_nonce_commitment
+    // previous_nonce_commitment = hash(view_key, previous_nonce, token_address)
     component previous_nonce_commitment_hash = Poseidon2Hash3();
-    previous_nonce_commitment_hash.in[0] <== spending_key;
+    previous_nonce_commitment_hash.in[0] <== view_key;
     previous_nonce_commitment_hash.in[1] <== previous_nonce;
     previous_nonce_commitment_hash.in[2] <== token_address;
     signal previous_nonce_commitment;
@@ -125,9 +125,9 @@ template Deposit() {
     signal nonce;
     nonce <== previous_nonce + 1;
     
-    // new nonceCommitment includes token_address as a factor
+    // new_nonce_commitment = hash(view_key, nonce, token_address)
     component new_nonce_commitment_hash = Poseidon2Hash3();
-    new_nonce_commitment_hash.in[0] <== spending_key;
+    new_nonce_commitment_hash.in[0] <== view_key;
     new_nonce_commitment_hash.in[1] <== nonce;
     new_nonce_commitment_hash.in[2] <== token_address;
     new_nonce_commitment <== new_nonce_commitment_hash.out;

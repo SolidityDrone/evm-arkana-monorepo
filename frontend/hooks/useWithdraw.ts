@@ -484,8 +484,8 @@ export function useWithdraw() {
 
         let sharesFromContract: bigint | undefined;
         if (tokenPreviousNonce === BigInt(0)) {
-            const spendingKey0 = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, wdSignerHash);
-            const nonceCommitmentBigInt = await poseidonHash([spendingKey0, tokenPreviousNonce, tokenAddressBigInt]);
+            const viewKey0 = await getViewKeyFromUserKey(userKeyBigInt);
+            const nonceCommitmentBigInt = await poseidonHash([viewKey0, tokenPreviousNonce, tokenAddressBigInt]);
             const nonceCommitmentBytes32 = padHex(`0x${nonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
             const encryptedStateDetails = await publicClient.readContract({
                 address: ArkanaAddress,
@@ -503,8 +503,7 @@ export function useWithdraw() {
         } else {
             const { poseidonCtrDecrypt } = await import('@/lib/poseidon-ctr-encryption');
             const viewKeyBigInt = await getViewKeyFromUserKey(userKeyBigInt);
-                const spendingKeyBigInt = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, wdSignerHash);
-            const finalPreviousNonceCommitmentBigInt = await poseidonHash([spendingKeyBigInt, tokenPreviousNonce, tokenAddressBigInt]);
+            const finalPreviousNonceCommitmentBigInt = await poseidonHash([viewKeyBigInt, tokenPreviousNonce, tokenAddressBigInt]);
             const finalPreviousNonceCommitmentBytes32 = padHex(`0x${finalPreviousNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
             const operationInfo = await publicClient.readContract({
                 address: ArkanaAddress,
@@ -521,7 +520,7 @@ export function useWithdraw() {
                 decryptedShares = await poseidonCtrDecrypt(BigInt(encryptedBalance), viewKeyBigInt, 0);
             }
             previousSharesForReconstruction = (opType === 0 || opType === 1) ? decryptedShares + sharesMinted : decryptedShares;
-            const prevNonceCommitmentBigInt = await poseidonHash([spendingKeyBigInt, tokenPreviousNonce, tokenAddressBigInt]);
+            const prevNonceCommitmentBigInt = await poseidonHash([viewKeyBigInt, tokenPreviousNonce, tokenAddressBigInt]);
             const prevNonceCommitmentBytes32 = padHex(`0x${prevNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
             const [, , , , prevEncryptedNullifier] = await publicClient.readContract({
                 address: ArkanaAddress,
@@ -562,7 +561,8 @@ export function useWithdraw() {
             const { pedersenCommitment5 } = await import('@/lib/pedersen-commitments');
             const reconstructModule = await import('@/lib/reconstructCommitment');
             const spendingKeyForCommit = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, wdSignerHash);
-            const prevNonceCommitmentBigInt = await poseidonHash([spendingKeyForCommit, tokenPreviousNonce, tokenAddressBigInt]);
+            const viewKeyForCommit = await getViewKeyFromUserKey(userKeyBigInt);
+            const prevNonceCommitmentBigInt = await poseidonHash([viewKeyForCommit, tokenPreviousNonce, tokenAddressBigInt]);
             const sharesEncodedForLeaf = previousSharesForReconstruction; // No encoding, use 0 directly
             // After AbsorbWithdraw(5) or AbsorbSend(4), the new commitment reuses base3 with OLD nullifier but we store NEW nullifier; use old = new - noteStackM for leaf
             let nullifierEncodedForLeaf: bigint;

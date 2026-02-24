@@ -9,7 +9,7 @@ import { sepolia, getActiveChain, getChainById, getRpcUrlForChain } from '@/conf
 import { ARKANA_ADDRESS as ArkanaAddress, ARKANA_ABI as ArkanaAbi } from '@/lib/abi/ArkanaConst';
 import { computeZkAddress, ARKANA_MESSAGE } from '@/lib/zk-address';
 import { loadAccountDataOnSign } from '@/lib/loadAccountDataOnSign';
-import { computePrivateKeyFromSignature, getSpendingKeyCircuit, poseidonHash } from '@/lib/circuit-utils';
+import { computePrivateKeyFromSignature, getSpendingKeyCircuit, getViewKeyFromUserKey, poseidonHash } from '@/lib/circuit-utils';
 import { getSignerIdentityFromUserKey } from '@/lib/eddsa-circuit';
 import type { TwoFactorSetupResult_UI } from '@/components/TwoFactorSetupModal';
 import { saveTwoFactorData, loadTwoFactorData, type TwoFactorData } from '@/lib/indexeddb';
@@ -426,9 +426,8 @@ export function useInitialize() {
                 let foundOffset = false;
                 for (let offset = BigInt(1); offset < maxOffset && !foundOffset; offset++) {
                     const currentUserKey = baseUserKey + offset;
-                    const spkHash = await resolveSignerHash(currentUserKey);
-                    const spendingKey = await getSpendingKeyCircuit(currentUserKey, chainIdBigInt, tokenAddressBigInt, spkHash);
-                    const nonceCommitment = await poseidonHash([spendingKey, BigInt(0), tokenAddressBigInt]);
+                    const viewKey = await getViewKeyFromUserKey(currentUserKey);
+                    const nonceCommitment = await poseidonHash([viewKey, BigInt(0), tokenAddressBigInt]);
                     const nonceCommitmentBytes32 = padHex(`0x${nonceCommitment.toString(16)}`, { size: 32 }) as `0x${string}`;
                     const isUsed = (await publicClient.readContract({
                         address: ArkanaAddress,

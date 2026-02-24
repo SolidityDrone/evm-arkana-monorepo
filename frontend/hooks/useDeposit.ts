@@ -637,8 +637,8 @@ export function useDeposit() {
 
             let sharesFromContract: bigint | undefined = undefined;
             if (finalTokenPreviousNonce === BigInt(0)) {
-                const spendingKey0 = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, depositSignerHash);
-                const nonceCommitmentBigInt = await poseidonHash([spendingKey0, finalTokenPreviousNonce, tokenAddressBigInt]);
+                const viewKey0 = await getViewKeyFromUserKey(userKeyBigInt);
+                const nonceCommitmentBigInt = await poseidonHash([viewKey0, finalTokenPreviousNonce, tokenAddressBigInt]);
 
                 const nonceCommitmentBytes32 = padHex(`0x${nonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
                 const encryptedStateDetails = await publicClient.readContract({
@@ -663,8 +663,7 @@ export function useDeposit() {
             } else {
                 const { poseidonCtrDecrypt } = await import('@/lib/poseidon-ctr-encryption');
                 const viewKeyBigInt = await getViewKeyFromUserKey(userKeyBigInt);
-                const spendingKeyBigInt = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, depositSignerHash);
-                const finalPreviousNonceCommitmentBigInt = await poseidonHash([spendingKeyBigInt, finalTokenPreviousNonce, tokenAddressBigInt]);
+                const finalPreviousNonceCommitmentBigInt = await poseidonHash([viewKeyBigInt, finalTokenPreviousNonce, tokenAddressBigInt]);
 
                 const finalPreviousNonceCommitmentBytes32 = padHex(`0x${finalPreviousNonceCommitmentBigInt.toString(16)}`, { size: 32 }) as `0x${string}`;
                 const operationInfoForFinalPrevious = await publicClient.readContract({
@@ -699,7 +698,7 @@ export function useDeposit() {
                     nullifierForReconstruction = BigInt(0);
                     unlocksAtForReconstruction = BigInt(0);
                 } else {
-                    const previousNonceCommitmentBigInt = await poseidonHash([spendingKeyBigInt, finalTokenPreviousNonce, tokenAddressBigInt]);
+                    const previousNonceCommitmentBigInt = await poseidonHash([viewKeyBigInt, finalTokenPreviousNonce, tokenAddressBigInt]);
 
                     console.log('🔍 DEPOSIT PROOF - Previous Nonce Commitment:');
                     console.log(`  Current Nonce: ${tokenCurrentNonceValue.toString()}`);
@@ -752,7 +751,8 @@ export function useDeposit() {
                 const reconstructModule = await import('@/lib/reconstructCommitment');
 
                 const spendingKeyForCommit = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, depositSignerHash);
-                const prevNonceCommitmentBigInt = await poseidonHash([spendingKeyForCommit, finalTokenPreviousNonce, tokenAddressBigInt]);
+                const viewKeyForCommit = await getViewKeyFromUserKey(userKeyBigInt);
+                const prevNonceCommitmentBigInt = await poseidonHash([viewKeyForCommit, finalTokenPreviousNonce, tokenAddressBigInt]);
 
                 // Use values directly: no encoding needed (circuits use 0 directly)
                 const sharesEncoded = previousSharesForReconstruction;

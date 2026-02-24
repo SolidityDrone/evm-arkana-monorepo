@@ -359,8 +359,8 @@ export function useSend() {
         let previousOpType = 0;
         let sharesFromContract: bigint | undefined;
         if (tokenPreviousNonce === 0n) {
-            const sk0 = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, sendSignerHash);
-            const nc = await poseidonHash([sk0, tokenPreviousNonce, tokenAddressBigInt]);
+            const viewKey0 = await getViewKeyFromUserKey(userKeyBigInt);
+            const nc = await poseidonHash([viewKey0, tokenPreviousNonce, tokenAddressBigInt]);
             const nc32 = padHex('0x' + nc.toString(16), { size: 32 }) as `0x${string}`;
             const enc = await publicClient.readContract({
                 address: ArkanaAddress,
@@ -378,8 +378,7 @@ export function useSend() {
         } else {
             const { poseidonCtrDecrypt } = await import('@/lib/poseidon-ctr-encryption');
             const viewKey = await getViewKeyFromUserKey(userKeyBigInt);
-            const sk = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, sendSignerHash);
-            const fnc = await poseidonHash([sk, tokenPreviousNonce, tokenAddressBigInt]);
+            const fnc = await poseidonHash([viewKey, tokenPreviousNonce, tokenAddressBigInt]);
             const fnc32 = padHex('0x' + fnc.toString(16), { size: 32 }) as `0x${string}`;
             const op = await publicClient.readContract({
                 address: ArkanaAddress,
@@ -393,7 +392,7 @@ export function useSend() {
             if (opType === 0) decShares = BigInt(encBal);
             else decShares = await poseidonCtrDecrypt(BigInt(encBal), viewKey, 0);
             previousShares = (opType === 0 || opType === 1) ? decShares + sharesMinted : decShares;
-            const pnc = await poseidonHash([sk, tokenPreviousNonce, tokenAddressBigInt]);
+            const pnc = await poseidonHash([viewKey, tokenPreviousNonce, tokenAddressBigInt]);
             const pnc32 = padHex('0x' + pnc.toString(16), { size: 32 }) as `0x${string}`;
             const [, , , , prevEncNull] = await publicClient.readContract({
                 address: ArkanaAddress,
@@ -432,7 +431,8 @@ export function useSend() {
             const { pedersenCommitment5 } = await import('@/lib/pedersen-commitments');
             const { computeCommitmentLeaf } = await import('@/lib/reconstructCommitment');
             const skCommit = await getSpendingKeyCircuit(userKeyBigInt, chainId, tokenAddressBigInt, sendSignerHash);
-            const pncCommit = await poseidonHash([skCommit, tokenPreviousNonce, tokenAddressBigInt]);
+            const viewKeyCommit = await getViewKeyFromUserKey(userKeyBigInt);
+            const pncCommit = await poseidonHash([viewKeyCommit, tokenPreviousNonce, tokenAddressBigInt]);
             const sharesEnc = previousShares; // No encoding, use 0 directly
             // After AbsorbWithdraw(5) or AbsorbSend(4), new commitment uses OLD nullifier; use old = new - noteStackM for leaf
             let nullEnc: bigint;
