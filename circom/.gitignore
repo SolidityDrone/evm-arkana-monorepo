@@ -55,3 +55,6 @@ main/**/*.wasm
 main/**/*_cpp/
 main/**/*_js/
 
+powers-of-tau.ptau
+pot_0000.ptau
+pot_0001.ptau
