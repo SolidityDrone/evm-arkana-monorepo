@@ -32,6 +32,10 @@ Arkana is a zero-knowledge privacy protocol built on Ethereum that allows users 
 
 All operations are verified using zero-knowledge proofs (Noir circuits), ensuring that transaction details remain private while maintaining cryptographic integrity.
 
+### Security Disclaimer
+
+The protocol is known to be insecure against shor. DH is a privacy leak, Pedersen Commitments can be faked and Groth16 Proof would be forged. The path to fix that is to adopt a UTXO model like railgun with a dual pubkey, add ML-Kem and an authentication key for notes. This requires a complete rewrite of the circuits and protocol as pedersen commitment can't be replaced realistically onchain by Ajtai commitments or similar pq primitives
+
 ## Sepolia Testnet Deployment
 
 The protocol is deployed on Sepolia testnet. You can interact with these contracts:
