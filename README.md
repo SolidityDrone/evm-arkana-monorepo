@@ -916,7 +916,10 @@ For a production deployment, consider:
 ## Development Roadmap & TODO
 
 ### Circom2 
-- [ ] Port the circuits in circom2 to avoid Noir infeasable verification gas cost. This will also enable more cheap use of alt_bn_128 precompiles vs grumpkin implementation, which comes at cost
+- [x] Port the circuits in circom2 to avoid Noir infeasable verification gas cost. This will also enable more cheap use of alt_bn_128 precompiles vs grumpkin implementation, which comes at cost
+
+  → See [`feat/circom`](https://github.com/SolidityDrone/evm-arkana-monorepo/tree/feat/circom) branch
+  - [x] Remove Uniswap Timelock swaps
 
 ### Circuit Development
 - [ ] Complete circuits for `absorb → send` operation flow
